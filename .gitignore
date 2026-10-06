@@ -1,0 +1,10 @@
+# build outputs (dropped into SRC/ by the build bats)
+*.obj
+*.exe
+*.pdb
+*.map
+*.ilk
+*_debug.log
+
+# original game data and saves - never commit
+*.SAV
