@@ -272,7 +272,6 @@ HDC __stdcall CreateMainWindow(struct VideoConfigEx *config)
   int captionHeight; // [esp-4h] [ebp-40h]
   int frameHeight; // [esp+10h] [ebp-2Ch]
   int borderHeight; // [esp+10h] [ebp-2Ch]
-  WNDCLASSA WndClass; // [esp+14h] [ebp-28h] BYREF
 
   windowPosX = 0x80000000;                      // Default position = CW_USEDEFAULT (0x80000000)
   windowPosY = 0x80000000;
@@ -318,30 +317,24 @@ HDC __stdcall CreateMainWindow(struct VideoConfigEx *config)
     }
     windowStyle = 34209792;                     // windowStyle = WS_CLIPCHILDREN | WS_SYSMENU | WS_MINIMIZEBOX (0x020A0000)
   }
-  WndClass.style = 4128;                        // Register window class: CS_OWNDC | CS_BYTEALIGNCLIENT (0x1020)
-  WndClass.lpfnWndProc = MainWndProc;
-  WndClass.cbClsExtra = 0;
-  WndClass.cbWndExtra = 0;
-  WndClass.hInstance = g_hAppInstance;
-  WndClass.hIcon = LoadIconA(g_hAppInstance, (LPCSTR)0x64);// Load application icon from resource ID 100 (0x64)
-  WndClass.hCursor = GetGameCursor();           // Load cursor (arrow if config allows, else hidden)
-  WndClass.hbrBackground = (HBRUSH)GetStockObject(4);// Background brush = HOLLOW_BRUSH (stock object 4)
-  WndClass.lpszMenuName = 0;
-  WndClass.lpszClassName = ClassName;
-  RegisterClassA(&WndClass);                    // Create the main window with computed style, position, and client area size
-  g_MainWindow = CreateWindowExA(
-                   0,
-                   ClassName,
-                   (LPCSTR)&config[2].field_8,
-                   windowStyle,
-                   windowPosX,
-                   windowPosY,
-                   g_VideoConfig.borderWidth + g_VideoConfig.clientWidth,
-                   g_VideoConfig.titleBarHeight + g_VideoConfig.clientHeight,
-                   0,
-                   0,
-                   g_hAppInstance,
-                   0);
+  { /* Create the window through SDL (windowStyle above is the original style, kept for the
+       metric math): SDL owns the class, we subclass its wndproc in SdlBackendCreateWindow.
+       The window is created hidden - like the original style without WS_VISIBLE - and shown
+       by the game's own ShowWindow calls in InitDisplay/PlayIntroVideo. */
+    g_MainWindow = SdlBackendCreateWindow(
+                      windowPosX,
+                      windowPosY,
+                      g_VideoConfig.clientWidth,
+                      g_VideoConfig.clientHeight,
+                      LOBYTE(config->field_24) != 0,
+                      (LPCSTR)&config[2].field_8);
+    if ( !g_MainWindow )
+    {
+      DBG_LOG("CreateMainWindow: SdlBackendCreateWindow failed");
+      return 0;
+    }
+    SdlBackendSetCursorVisible(BYTE1(config->field_24) != 0);// must agree with GetGameCursor (WM_SETCURSOR sets the shape)
+  }
   { /* Fix window size: use AdjustWindowRectEx for correct client area */
     RECT rc;
     DWORD dwStyle = (DWORD)GetWindowLongA(g_MainWindow, -16); /* GWL_STYLE */
@@ -409,12 +402,17 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
   DbgLogInit();
   DbgInstallExceptionHandler();
   DBG_ENTER("WinMain");
+  SDL_SetMainReady();                           // we keep the original WinMain (no SDL2main)
+  if ( !SdlBackendStartup() )
+  {
+    ShowErrorDialog("SDL initialization failed.");
+    return 1;
+  }
   DBG_LOG("hInstance=0x%08X nShowCmd=%d", (unsigned int)hInstance, nShowCmd);
   int v4; // esi
   char *v5; // eax
   DWORD Time; // ebx
   CHAR Filename[256]; // [esp+4h] [ebp-128h] BYREF
-  struct tagMSG Msg; // [esp+104h] [ebp-28h] BYREF
   char inputState[4]; // [esp+120h] [ebp-Ch]
   struct tagPOINT Point; // [esp+124h] [ebp-8h] BYREF
 
@@ -456,13 +454,8 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
       {
         while ( 1 )
         {
-          while ( PeekMessageA(&Msg, 0, 0, 0, 1u) )
-          {
-            if ( Msg.message == 18 )
-              goto LABEL_19;
-            TranslateMessage(&Msg);
-            DispatchMessageA(&Msg);
-          }
+          if ( SdlBackendPumpEvents() )         // SDL_PollEvent pumps + dispatches (was: PeekMessage/DispatchMessage loop); SDL_QUIT == WM_QUIT (message 18)
+            goto LABEL_19;
           if ( !g_VideoConfig.pErrorMessage )
             break;
           if ( g_VideoConfig.pErrorMessage == 1 )
@@ -472,7 +465,7 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
         }
         if ( !IsIconic(g_MainWindow) )
         {
-          Time = timeGetTime();
+          Time = SDL_GetTicks();                // was: timeGetTime()
           if ( g_VideoConfig.frameDelayMs + g_LastFrameTime < Time )
             break;
         }
@@ -505,13 +498,15 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
     CleanupHelpAndWindow();
 LABEL_19:
     CleanupGameResources();
-    return Msg.wParam;
+    SdlBackendShutdown();
+    return 0;
   }
   else
   {
     DisplayErrorMessage();
     CleanupHelpAndWindow();
     CleanupGameResources();
+    SdlBackendShutdown();
     return 0;
   }
 }

@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-set VCTOOLS=C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.50.35717
+set VCTOOLS=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207
 set WINSDK=C:\Program Files (x86)\Windows Kits\10
 set SDKVER=10.0.26100.0
 
@@ -11,18 +11,23 @@ set LIB=%VCTOOLS%\lib\x86;%WINSDK%\Lib\%SDKVER%\ucrt\x86;%WINSDK%\Lib\%SDKVER%\u
 
 pushd "%~dp0"
 
-echo === RELEASE BUILD ===
+set SDL2=..\third_party\SDL2
+set INCLUDE=%INCLUDE%;%SDL2%\include
+set LIB=%LIB%;%SDL2%\lib\x86
+
+echo === DEBUG BUILD (SDL2, VS2022) ===
 
 del /Q *.obj 2>nul
 
-cl.exe /c /TC /W3 /WX- /Od /DNDEBUG /DWIN32 /MT ^
+cl.exe /c /TC /W3 /WX- /Od /Zi /D_DEBUG /DWIN32 /MTd ^
   /wd4996 /wd4113 /wd4047 /wd4024 /wd4133 /wd4028 /wd4029 /wd4090 ^
   /wd4244 /wd4267 /wd4554 /wd4838 /wd4309 /wd4005 /wd4701 ^
+  /FdPILOT_RV.pdb ^
   globals.c animation.c render.c gameloop.c ^
   script.c resource.c saveload.c audio.c ^
   video.c text.c tilemap.c blitting.c ^
   graphics.c main.c fileio.c memory.c ^
-  input.c native_funcs.c
+  input.c native_funcs.c sdl_backend.c
 if errorlevel 1 goto :fail
 
 link.exe /OUT:PILOT_RV.EXE /SUBSYSTEM:WINDOWS /MACHINE:X86 /NOLOGO ^
@@ -30,12 +35,14 @@ link.exe /OUT:PILOT_RV.EXE /SUBSYSTEM:WINDOWS /MACHINE:X86 /NOLOGO ^
   /PDB:PILOT_RV.pdb /MAP:PILOT_RV.map ^
   kernel32.lib user32.lib gdi32.lib winmm.lib vfw32.lib ^
   comdlg32.lib advapi32.lib shell32.lib ole32.lib oldnames.lib ^
-  libcmt.lib libvcruntime.lib libucrt.lib ^
+  libcmtd.lib libvcruntimed.lib libucrtd.lib SDL2.lib ^
   *.obj
 if errorlevel 1 goto :fail
 
+copy /Y "%SDL2%\lib\x86\SDL2.dll" . >nul
+
 echo.
-echo SUCCESS: PILOT_RV.EXE (RELEASE)
+echo SUCCESS: PILOT_RV.EXE (DEBUG, SDL2, VS2022)
 goto :end
 
 :fail

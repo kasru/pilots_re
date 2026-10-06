@@ -5,16 +5,16 @@
 Byte-faithful C reconstruction of the engine from the 1996 game «Братья Пилоты», decompiled from the original `PILOTS.EXE` (IDA Hex-Rays). All game logic lives in bytecode scripts inside the original game's data file — the C code is just the interpreter/player.
 
 - All sources are flat in `SRC/` (no subdirs, no packages).
-- Docs are in Russian: `SRC/docs/README.md` → per-subsystem pages (`architecture.md`, `scripting.md`, …). Trust code over docs when they disagree.
+- Docs are in Russian: `SRC/docs/README.md` → per-subsystem pages (`architecture.md`, `scripting.md`, …). Trust code over docs when they disagree. They predate the SDL2 port — window/present/audio specifics live in `SRC/sdl_backend.c`.
+- SDL2 port: window, input, present and PCM sound effects go through SDL2 (`SRC/sdl_backend.c` subclasses SDL's wndproc so the game's `MainWndProc`/`VideoWndProc` still see raw Win32 messages); MIDI music and AVI video stay on WinMM/MCI.
 
 ## Build (the only verification — there are no tests, linter, or CI)
 
-- `SRC\build_debug.bat` and `SRC\build_release.bat`. Both `pushd` to their own dir, so they work from any CWD. Output: `SRC\PILOT_RV.EXE` (+ `.pdb`, `.map`).
-- `SRC\build_2022_release.bat` — same as `build_release.bat` but pinned to the VS 2022 toolset (MSVC `14.44.35207`, cl `19.44`); output is also `SRC\PILOT_RV.EXE`. It must stay that name: the engine opens its data file as `.\PILOTS.EXE` (CWD-relative), so a rebuilt exe named `PILOTS.EXE` would read *itself* as game data — and it must never be copied over the original game's `PILOTS.EXE` (that file holds the resources).
-- Toolchain paths are hardcoded at the top of each bat: VS 18 Community MSVC `14.50.35717`, Windows SDK `10.0.26100.0`, **32-bit x86 only**. Edit `VCTOOLS` / `WINSDK` / `SDKVER` there if your install differs — don't switch to `vcvarsall`/CMake.
-- Source files are listed explicitly in each bat. **Adding a `.c` file requires editing both bats.** `SRC\test_cast.c` is a scratch file deliberately left out of the build.
+- `SRC\build_sdl_debug.bat` and `SRC\build_sdl_release.bat`. Both `pushd` to their own dir, so they work from any CWD. Output: `SRC\PILOT_RV.EXE` (+ `.pdb`, `.map`), `SDL2.dll` copied next to it. It must stay that name: the engine opens its data file as `.\PILOTS.EXE` (CWD-relative), so a rebuilt exe named `PILOTS.EXE` would read *itself* as game data — and it must never be copied over the original game's `PILOTS.EXE` (that file holds the resources).
+- Toolchain paths are hardcoded at the top of each bat: VS 2022 Community MSVC `14.44.35207`, Windows SDK `10.0.26100.0`, **32-bit x86 only**. Edit `VCTOOLS` / `WINSDK` / `SDKVER` there if your install differs — don't switch to `vcvarsall`/CMake. SDL2 headers/libs come from `third_party\SDL2` (include/, lib/x86/) — edit `set SDL2=` if it moves.
+- Source files are listed explicitly in each bat. **Adding a `.c` file requires editing both bats.** `SRC\test_cast.c` and `SRC\test_wave.c` are scratch files deliberately left out of the build (`test_wave.c` is a standalone audio-harness with its own `main()`, built ad-hoc).
 - Compiles with `/W3` but many warnings are suppressed and `/WX-` — warnings never fail the build; only errors do.
-- No `.gitignore`: builds drop `*.obj`, `*.exe`, `*.pdb`, `*.map`, `*_debug.log` into `SRC/`. Don't commit them.
+- `.gitignore` covers build droppings (`*.obj`, `*.exe`, `*.pdb`, `*.map`, `*.ilk`, `*.dll`, `*_debug.log`) plus `*.SAV` — don't force-add them.
 
 ## Runtime gotchas
 

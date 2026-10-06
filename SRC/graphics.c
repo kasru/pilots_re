@@ -4,6 +4,8 @@
 
 /* ---- graphics module ---- */
 
+static int s_VideoTargetsDone;                  /* SDL renderer+texture created once per run */
+
 int GetCurrentScreenMode()
 {
   return g_pGraphicsFunc(0, 516, 0);
@@ -47,8 +49,6 @@ char InitDisplay()
 BOOL __stdcall InitializeVideoSystem(void *a1, struct VideoConfigEx *a2, struct VideoDataBuffer *a3)
 {
   DBG_ENTER("InitializeVideoSystem");
-  HMODULE ModuleHandleA; // eax
-  FARPROC ProcAddress; // eax
   int v5; // eax
   void *pLockedMem; // eax
 
@@ -61,26 +61,20 @@ BOOL __stdcall InitializeVideoSystem(void *a1, struct VideoConfigEx *a2, struct 
     CreateMainWindow(a2);
   if ( !g_Reserved )
   {
-    ModuleHandleA = GetModuleHandleA("GDI32.DLL");
-    if ( ModuleHandleA )
-    {
-      ProcAddress = GetProcAddress(ModuleHandleA, aCreatedibsecti);
-      if ( ProcAddress )
-      {
-        g_BitmapHandle = (HGDIOBJ)((int (__stdcall *)(HDC, BITMAPINFO *, int, int *, _DWORD, _DWORD))ProcAddress)(
-                                    g_VideoConfig.hDC,
-                                    &bmi,
-                                    1,
-                                    &g_Reserved,
-                                    0,
-                                    0);
-        if ( g_Reserved )
-        {
-          g_MemoryDeviceContext = CreateCompatibleDC(g_VideoConfig.hDC);
-          SelectObject(g_MemoryDeviceContext, g_BitmapHandle);
-        }
-      }
-    }
+    /* Plain bottom-up 8-bit backbuffer (replaces CreateDIBSection). Same row layout the DIB
+       had: stride rounded up to 4 bytes, rows stored last-line-first; only the present step
+       (SdlBackendPresentRect) flips rows, like the BitBlt source did. */
+    int bbStride = (bmi.bmiHeader.biWidth + 3) & ~3;
+    int bbHeight = bmi.bmiHeader.biHeight < 0 ? -bmi.bmiHeader.biHeight : bmi.bmiHeader.biHeight;
+    g_Reserved = (int)calloc(1, (size_t)bbStride * bbHeight);
+    DBG_LOG("InitVidSys: backbuffer %dx%d stride=%d -> 0x%X", bbStride, bbHeight, bbStride, g_Reserved);
+  }
+  if ( !s_VideoTargetsDone )
+  {
+    if ( SdlBackendCreateVideoTargets(g_VideoConfig.clientWidth, g_VideoConfig.clientHeight) )
+      s_VideoTargetsDone = 1;
+    else
+      DBG_LOG("InitVidSys: SdlBackendCreateVideoTargets failed");
   }
   v5 = g_Reserved;
   a3->buffer = (void *)g_Reserved;
@@ -110,54 +104,19 @@ char __stdcall SetFrameRate(int frameRate)
 BOOL __stdcall SetPalette(char a1, char a2, int cEntries, BYTE *a4)
 {
   PALETTEENTRY *palPalEntry; // esi
-  int i; // edi
-  int j; // ebx
-  int k; // ebx
-  HBRUSH StockObject; // eax
   int m; // edx
   BYTE *v10; // eax
-  PALETTEENTRY *v11; // esi
-  int n; // edx
-  BYTE peRed; // bl
   struct { WORD palVersion; WORD palNumEntries; PALETTEENTRY palPalEntry[256]; } plpal;
   PALETTEENTRY *v16_ptr; /* alias for &plpal.palPalEntry[246] */
-  HGDIOBJ h; // [esp+410h] [ebp-18h]
-  HGDIOBJ ho; // [esp+414h] [ebp-14h]
-  RECT rc; // [esp+418h] [ebp-10h] BYREF
 
   palPalEntry = plpal.palPalEntry;
   v16_ptr = &plpal.palPalEntry[246];
   if ( g_VideoConfig.clientWidth && g_VideoConfig.clientHeight )
   {
     if ( a2 )
-    {
-      ho = CreatePen(0, 1, *(_DWORD *)&aCreatedibsecti[4 * a2 + 15]);
-      h = SelectObject(g_VideoConfig.hDC, ho);
-      for ( i = 0; i < 8; ++i )
-      {
-        for ( j = i; j < g_VideoConfig.clientWidth; j += 8 )
-        {
-          MoveToEx(g_VideoConfig.hDC, j, 0, 0);
-          LineTo(g_VideoConfig.hDC, j, g_VideoConfig.clientHeight);
-        }
-        for ( k = i; k < g_VideoConfig.clientHeight; k += 8 )
-        {
-          MoveToEx(g_VideoConfig.hDC, 0, k, 0);
-          LineTo(g_VideoConfig.hDC, g_VideoConfig.clientWidth, k);
-        }
-      }
-      SelectObject(g_VideoConfig.hDC, h);
-      DeleteObject(ho);
-    }
+      SdlBackendDrawGrid(*(_DWORD *)&aCreatedibsecti[4 * a2 + 15]);// color table read kept; renderer grid instead of GDI pen lines
     else
-    {
-      rc.left = 0;
-      rc.top = 0;
-      rc.right = g_VideoConfig.clientWidth;
-      rc.bottom = g_VideoConfig.clientHeight;
-      StockObject = (HBRUSH)GetStockObject(4);
-      FillRect(g_VideoConfig.hDC, &rc, StockObject);
-    }
+      SdlBackendClearBlack();                   // original: FillRect(window, BLACK_BRUSH) - black the screen
   }
   plpal.palVersion = 768;
   plpal.palNumEntries = cEntries;
@@ -179,37 +138,20 @@ BOOL __stdcall SetPalette(char a1, char a2, int cEntries, BYTE *a4)
     GetSystemPaletteEntries(g_VideoConfig.hDC, 0, 0xAu, plpal.palPalEntry);
     GetSystemPaletteEntries(g_VideoConfig.hDC, 0xF6u, 0xAu, v16_ptr);
   }
+  SdlBackendUpdatePalette(plpal.palPalEntry, cEntries);// palette LUT for 8-bit present (replaces SetDIBColorTable)
   if ( g_VideoConfig.hPalette )
     DeleteObject((HGDIOBJ)g_VideoConfig.hPalette);
   g_VideoConfig.hPalette = (int)CreatePalette((LOGPALETTE *)&plpal);
-  if ( g_MemoryDeviceContext )
-  {
-    v11 = plpal.palPalEntry;
-    if ( cEntries > 0 )
-    {
-      for ( n = 0; n < cEntries; ++n )
-      {
-        peRed = v11->peRed;
-        v11->peRed = v11->peBlue;
-        v11->peBlue = peRed;
-        ++v11;
-      }
-    }
-    SetDIBColorTable(g_MemoryDeviceContext, 0, cEntries, (const RGBQUAD *)plpal.palPalEntry);
-  }
   if ( g_MainWindow )
     SendMessageA(g_MainWindow, 0x30Fu, 0, 0);
   return g_VideoConfig.hPalette != 0;
 }
 
 int __stdcall BlitRectToScreen(int bmp_height, int cy, int cx, int y, int x, void *lpBits)
-{                                               // Prefer BitBlt through compatible memory DC (DIB section path)
-  if ( g_MemoryDeviceContext )
-return BitBlt(g_VideoConfig.hDC, x, y, cx, cy, g_MemoryDeviceContext, x, y, 0xCC0020u);
-// BitBlt: src and dst coordinates are identical (1:1 copy)
-  else
-return StretchDIBits(g_VideoConfig.hDC, x, y, cx, cy, x, bmp_height - y - cy, cx, cy, lpBits, &bmi, 1u, 0xCC0020u);
-// StretchDIBits fallback: adjust srcY for bottom-up bitmap (bmp_height - y - cy)
+{                                               // Convert the rect through the palette LUT, upload and present
+  SdlBackendPresentRect(lpBits, bmp_height, g_BackbufferStride, x, y, cx, cy);
+// (replaces BitBlt from the DIB / StretchDIBits with srcY = bmp_height - y - cy; both were 1:1, no scaling)
+  return 1;
 }
 
 char __stdcall BlitScreenWithDissolve(
@@ -247,7 +189,7 @@ int *pPatternX;
           for ( i = *pPatternY; i < g_VideoConfig.clientHeight; i += 64 )
           {
             BlitRectToScreen(bmp_height, 16, 16, i, tileX, lpBits);// Blit one 16x16 tile to screen
-            GdiFlush();                         // Flush GDI to make each tile visible immediately (dissolve animation)
+            // GdiFlush removed: BlitRectToScreen presents immediately (dissolve animation)
           }
         }
         ++pPatternY;
@@ -267,35 +209,24 @@ BlitRectToScreen(bmp_height, rect_height, rect_width, rect_y, rect_x, lpBits);
 
 BOOL FlushGDI(void)
 {
-  return GdiFlush();
+  // GdiFlush removed: every BlitRectToScreen presents immediately, nothing to flush
+  return 1;
 }
 
 char __stdcall PumpWindowMessages(DWORD *timestamp)
 {
   char result; // al
-  struct tagMSG Msg; // [esp+0h] [ebp-1Ch] BYREF
 
   if ( !*timestamp )
     g_VideoConfig.eventCode = 14;
-  if ( PeekMessageA(&Msg, 0, 0, 0, 1u) )
+  if ( SdlBackendPumpEvents() )                 // SDL_PollEvent drains + dispatches; SDL_QUIT == WM_QUIT (18)
   {
-    while ( Msg.message != 18 )
-    {
-      TranslateMessage(&Msg);
-      DispatchMessageA(&Msg);
-      if ( !PeekMessageA(&Msg, 0, 0, 0, 1u) )
-        goto LABEL_7;
-    }
     g_VideoConfig.pErrorMessage = 1;
     return -125;
   }
-  else
-  {
-LABEL_7:
-    *timestamp = timeGetTime();
-    result = g_VideoConfig.eventCode;
-    g_VideoConfig.eventCode = 14;
-  }
+  *timestamp = SDL_GetTicks();                  // was: timeGetTime()
+  result = g_VideoConfig.eventCode;
+  g_VideoConfig.eventCode = 14;
   return result;
 }
 

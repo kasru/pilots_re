@@ -31,135 +31,165 @@ int __stdcall TriggerSoundSlot(int a1)
   return 1;
 }
 
+/* ---- SDL queue-audio state standing in for waveOut ----
+   The original protocol: 8 WAVEHDRs (in pwh), each owning a 2048-byte slice of the
+   g_hMainWindow mix buffer. A free header is marked WHDR_DONE (bit 0); WriteWaveBuffer
+   queues it, and the MM_WOM_DONE callback (MainWndProc case 0x3BD) called MixAudioBuffers
+   once per completed buffer. With SDL, SdlWavePump() in the message pumps plays that role:
+   it reports buffers done slightly before the device finishes them (the PCM was already
+   copied by SDL_QueueAudio, so the slice can be reused immediately) and calls
+   MixAudioBuffers once per completion - same one-refill-per-2048-bytes-played rate. */
+#define WAVE_NUM_HEADERS 8
+#define WAVE_BUF_BYTES 2048
+#define WAVE_EARLY_REFILL 1024
+
+static unsigned int s_WaveBytesQueued;          /* bytes handed to the device since last reset */
+static unsigned char s_WaveInflight[WAVE_NUM_HEADERS]; /* header indices awaiting completion, queue order */
+static int s_WaveIfCount;                       /* entries in s_WaveInflight */
+static int s_WaveIfPop;                         /* next completion pops here */
+static int s_WaveFirstQueueLogged;              /* one-shot diagnostics for the SDL wave path */
+static int s_WaveFirstPumpLogged;
+
+static void WaveResetQueueState()
+{
+  int i;
+
+  s_WaveBytesQueued = 0;
+  s_WaveIfCount = 0;
+  s_WaveIfPop = 0;
+  for ( i = 0; i < WAVE_NUM_HEADERS; ++i )
+    (&pwh)[i].dwFlags = 1;                         /* WHDR_DONE: header free (original InitWaveOut state) */
+}
+
 MMRESULT CleanupWaveOut()
 {
-  struct wavehdr_tag *v0; // ebx
-
-  v0 = &pwh;
-  do
-    waveOutUnprepareHeader(g_hWaveOut, v0++, 0x20u);
-  while ( v0 < (struct wavehdr_tag *)&g_hMidiOut );
-  return waveOutClose(g_hWaveOut);
+  SdlWave_Close();
+  WaveResetQueueState();
+  return 0;
 }
 
 int __stdcall InitWaveOut(DWORD_PTR *a1)
 {
-  DBG_ENTER("InitWaveOut");
-  MMRESULT v1; // edi
-  DWORD *p_dwFlags; // ebx
-  struct wavehdr_tag *v3; // ebp
-  DWORD_PTR *v4; // esi
-  MMRESULT v5; // eax
-  WAVEFORMATEX pwfx; // [esp+10h] [ebp-18h] BYREF
-  DWORD_PTR *v8; // [esp+24h] [ebp-4h]
+  int i;
 
-  pwfx.wFormatTag = 1;
-  pwfx.nChannels = 1;
-  pwfx.nAvgBytesPerSec = 11025;
-  pwfx.nSamplesPerSec = 11025;
-  pwfx.nBlockAlign = 1;
-  pwfx.wBitsPerSample = 8;
-  pwfx.cbSize = 0;
-  v1 = waveOutOpen(&g_hWaveOut, 0xFFFFFFFF, &pwfx, *a1, 0, 0x10000u);
-  if ( v1 )
-  {
-    sndPlaySoundA(0, 0);
-    v1 = waveOutOpen(&g_hWaveOut, 0xFFFFFFFF, &pwfx, *a1, 0, 0x10000u);
+  DBG_ENTER("InitWaveOut");
+  if ( !SdlWave_Open() )
+    return 0;
+  DBG_LOG("InitWaveOut: SDL wave device open (11025 Hz U8 mono)");
+  WaveResetQueueState();
+  for ( i = 0; i < WAVE_NUM_HEADERS; ++i )
+  {                                             // 8 x 2048-byte slices of the g_hMainWindow mix buffer
+    (&pwh)[i].lpData = (char *)a1 + WAVE_BUF_BYTES * i;
+    (&pwh)[i].dwBufferLength = WAVE_BUF_BYTES;
+    (&pwh)[i].dwBytesRecorded = 0;
+    (&pwh)[i].dwUser = 0;
+    (&pwh)[i].dwLoops = 0;
+    (&pwh)[i].reserved = 0;
   }
-  if ( !v1 )
-  {
-    if ( !waveOutGetID(g_hWaveOut, &g_WaveDeviceID) )
-    {
-      p_dwFlags = &pwh.dwFlags;
-      v3 = &pwh;
-      v4 = a1;
-      v8 = a1 + 4096;
-      do
-      {
-        *p_dwFlags = 1;
-        *(p_dwFlags - 4) = (DWORD)v4;
-        *(p_dwFlags - 3) = 2048;
-        v5 = waveOutPrepareHeader(g_hWaveOut, v3, 0x20u);
-        *(_BYTE *)p_dwFlags |= 1u;
-        if ( v5 )
-          break;
-        p_dwFlags += 8;
-        ++v3;
-        v4 += 512;
-      }
-      while ( v8 > v4 );
-      if ( !v5 )
-        return 1;
-    }
-    CleanupWaveOut();
-  }
-  return 0;
+  return 1;
 }
 
 unsigned int GetNextWaveBuffer()
 {
-  DWORD *p_dwFlags; // ecx
+  int i;
 
-  p_dwFlags = &pwh.dwFlags;
-  do
+  for ( i = 0; i < WAVE_NUM_HEADERS; ++i )
   {
-    if ( (*(_BYTE *)p_dwFlags & 1) != 0 )
-      return (unsigned int)((char *)p_dwFlags - (char *)&pwh.dwFlags) >> 5;
-    p_dwFlags += 8;
+    if ( ((&pwh)[i].dwFlags & 1) != 0 )            // WHDR_DONE: first free header
+      return i;
   }
-  while ( p_dwFlags < (DWORD *)&g_MidiTicks );
-  waveOutReset(g_hWaveOut);
+  SdlWave_Clear();                              // original fallback: waveOutReset (drops queued audio)
+  WaveResetQueueState();
   return 0;
 }
 
 BOOL WriteWaveBuffer()
 {
-  unsigned __int8 v0; // al
+  unsigned int idx = GetNextWaveBuffer();
 
-  v0 = GetNextWaveBuffer();
-  return waveOutWrite(g_hWaveOut, &pwh + v0, 0x20u) == 0;
+  if ( !SdlWave_Queue((&pwh)[idx].lpData, (&pwh)[idx].dwBufferLength) )
+    return 0;
+  if ( !s_WaveFirstQueueLogged )
+  {
+    s_WaveFirstQueueLogged = 1;
+    DBG_LOG("WriteWaveBuffer: first buffer queued to SDL");
+  }
+  (&pwh)[idx].dwFlags = 0x10;                      // WHDR_INQUEUE: not free until reported by SdlWavePump
+  s_WaveInflight[(s_WaveIfPop + s_WaveIfCount) & (WAVE_NUM_HEADERS - 1)] = (unsigned char)idx;
+  ++s_WaveIfCount;
+  s_WaveBytesQueued += (&pwh)[idx].dwBufferLength;
+  return 1;
 }
 
 BOOL ResetWave()
 {
-  return waveOutReset(g_hWaveOut) == 0;
+  SdlWave_Clear();                              // waveOutReset equivalent: drop queued audio
+  WaveResetQueueState();
+  return 1;
 }
 
 BOOL PauseWave()
 {
-  return waveOutPause(g_hWaveOut) == 0;
+  SdlWave_Pause(1);                             // waveOutPause equivalent
+  return 1;
 }
 
 BOOL ResumeWave()
 {
-  return waveOutRestart(g_hWaveOut) == 0;
+  SdlWave_Pause(0);                             // waveOutRestart equivalent
+  return 1;
 }
 
 int __stdcall GetWaveVolume(DWORD a1)
 {
-  int v1; // eax
-  DWORD pdwVolume; // [esp+0h] [ebp-4h] BYREF
-
-  pdwVolume = a1;
-  waveOutGetVolume((HWAVEOUT)g_WaveDeviceID, &pdwVolume);
-  if ( (unsigned __int16)pdwVolume <= HIWORD(pdwVolume) )
-    v1 = HIWORD(pdwVolume);
-  else
-    v1 = (unsigned __int16)pdwVolume;
-  return v1 >> 8;
+  return SdlWave_GetVolume();                   // original returned device volume >> 8 (full = 255)
 }
 
 int __stdcall SetWaveVolume(unsigned __int8 a1)
 {
-  int v1; // ebx
-  int v3; // [esp+4h] [ebp-4h]
-
-  v1 = a1 << 8;
-  LOBYTE(v1) = -1;
-  v3 = waveOutSetVolume((HWAVEOUT)g_WaveDeviceID, v1 | (v1 << 16)) == 0;
+  SdlWave_SetVolume(a1);
   if ( !a1 )
-    waveOutReset(g_hWaveOut);
-  return v3;
+    ResetWave();                                // original also waveOutReset on mute
+  return 1;
+}
+
+/* Called from the message pumps in place of MM_WOM_DONE: report every buffer the device has
+   (nearly) finished and mix the next one. */
+void SdlWavePump()
+{
+  unsigned int total;
+  unsigned int avail;
+  unsigned int consumed;
+  unsigned int limit;
+  unsigned int reported;
+  int guard = 0;
+
+  if ( !SdlWave_IsOpen() )
+    return;
+  total = s_WaveBytesQueued;
+  avail = SdlWave_Queued();
+  consumed = total - avail;                     // bytes eaten by the device
+  if ( consumed + WAVE_EARLY_REFILL > total )
+    consumed = total;
+  else
+    consumed += WAVE_EARLY_REFILL;
+  limit = consumed / WAVE_BUF_BYTES;            // buffers eligible for completion
+  reported = total / WAVE_BUF_BYTES - s_WaveIfCount; // queued - still in flight
+  while ( reported < limit && s_WaveIfCount > 0 && guard < 16 )
+  {
+    unsigned char idx = s_WaveInflight[s_WaveIfPop];
+    s_WaveIfPop = (s_WaveIfPop + 1) & (WAVE_NUM_HEADERS - 1);
+    --s_WaveIfCount;
+    (&pwh)[idx].dwFlags |= 1;                      // WHDR_DONE: buffer free for the next mix
+    ++reported;
+    MixAudioBuffers();                          // original MM_WOM_DONE handler: mix + queue one buffer
+    if ( !s_WaveFirstPumpLogged )
+    {
+      s_WaveFirstPumpLogged = 1;
+      DBG_LOG("SdlWavePump: first completion reported, refill works");
+    }
+    ++guard;
+  }
 }
 
 MMRESULT ResetMidi()

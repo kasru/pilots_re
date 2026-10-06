@@ -11,7 +11,11 @@ set LIB=%VCTOOLS%\lib\x86;%WINSDK%\Lib\%SDKVER%\ucrt\x86;%WINSDK%\Lib\%SDKVER%\u
 
 pushd "%~dp0"
 
-echo === RELEASE BUILD (VS2022) ===
+set SDL2=..\third_party\SDL2
+set INCLUDE=%INCLUDE%;%SDL2%\include
+set LIB=%LIB%;%SDL2%\lib\x86
+
+echo === RELEASE BUILD (SDL2, VS2022) ===
 
 del /Q *.obj 2>nul
 
@@ -22,7 +26,7 @@ cl.exe /c /TC /W3 /WX- /Od /DNDEBUG /DWIN32 /MT ^
   script.c resource.c saveload.c audio.c ^
   video.c text.c tilemap.c blitting.c ^
   graphics.c main.c fileio.c memory.c ^
-  input.c native_funcs.c
+  input.c native_funcs.c sdl_backend.c
 if errorlevel 1 goto :fail
 
 link.exe /OUT:PILOT_RV.EXE /SUBSYSTEM:WINDOWS /MACHINE:X86 /NOLOGO ^
@@ -30,12 +34,14 @@ link.exe /OUT:PILOT_RV.EXE /SUBSYSTEM:WINDOWS /MACHINE:X86 /NOLOGO ^
   /PDB:PILOT_RV.pdb /MAP:PILOT_RV.map ^
   kernel32.lib user32.lib gdi32.lib winmm.lib vfw32.lib ^
   comdlg32.lib advapi32.lib shell32.lib ole32.lib oldnames.lib ^
-  libcmt.lib libvcruntime.lib libucrt.lib ^
+  libcmt.lib libvcruntime.lib libucrt.lib SDL2.lib ^
   *.obj
 if errorlevel 1 goto :fail
 
+copy /Y "%SDL2%\lib\x86\SDL2.dll" . >nul
+
 echo.
-echo SUCCESS: PILOT_RV.EXE (RELEASE, VS2022)
+echo SUCCESS: PILOT_RV.EXE (RELEASE, SDL2, VS2022)
 goto :end
 
 :fail

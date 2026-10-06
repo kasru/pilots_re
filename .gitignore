@@ -4,7 +4,14 @@
 *.pdb
 *.map
 *.ilk
+*.dll
 *_debug.log
+
+# third_party SDKs are committed as-is (SDL2.dll must not be ignored)
+!third_party/**
 
 # original game data and saves - never commit
 *.SAV
+PILOTS.iso
+PILOTS0
+PILOTS0.*

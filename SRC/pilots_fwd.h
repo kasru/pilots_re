@@ -18,6 +18,11 @@
 #include <ctype.h>
 #include <vfw.h>
 
+/* SDL2 backend: window/input/present/timing + PCM audio (MIDI music and AVI video stay on
+   WinMM/MCI). SDL_MAIN_HANDLED before SDL.h: we keep the original WinMain, no SDL2main. */
+#define SDL_MAIN_HANDLED
+#include <SDL.h>
+
 #include "defs.h"
 #include "pilots_types.h"
 #include "debug_log.h"

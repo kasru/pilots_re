@@ -818,6 +818,7 @@ BOOL ProcessMessages()
       DispatchMessageA(&Msg);
     }
   }
+  SdlWavePump();                                // refill PCM while messages drain (was done by MM_WOM_DONE)
   return hasMessage;
 }
 
@@ -881,10 +882,17 @@ char __stdcall PlayIntroVideo(int windowHeight, int windowWidth, int windowY, in
       }
       g_VideoPlaying = 1;
       do
-      {
-        GetMessageA(&msg, 0, 0, 0);
-        TranslateMessage(&msg);
-        v9 = DispatchMessageA(&msg);
+      {                                             // Was a blocking GetMessage loop: with SDL there is no MM_WOM_DONE
+        SdlWavePump();                              // message to wake it, so poll + pump PCM + short sleep instead
+        if ( PeekMessageA(&msg, 0, 0, 0, 1u) )
+        {
+          TranslateMessage(&msg);
+          v9 = DispatchMessageA(&msg);
+        }
+        else
+        {
+          Sleep(5);
+        }
       }
       while ( g_VideoPlaying );
     }

@@ -345,4 +345,26 @@ _BYTE *__stdcall XorCryptData(int cryptOffset, int size, _BYTE *data);
 int __stdcall sub_407618(int a1, int a2);
 int __stdcall sub_408870(int a1, int a2, int a3);
 
+/* SDL2 backend (sdl_backend.c) - window/present/palette/pump + SDL wave device */
+int SdlBackendStartup(void);
+void SdlBackendShutdown(void);
+HWND SdlBackendCreateWindow(int x, int y, int clientW, int clientH, int resizable, LPCSTR title);
+void SdlBackendSetCursorVisible(int visible);
+int SdlBackendCreateVideoTargets(int clientW, int clientH);
+void SdlBackendPresentRect(const void *bits, int bmp_height, int stride, int x, int y, int w, int h);
+void SdlBackendClearBlack(void);
+void SdlBackendDrawGrid(unsigned int colorRef);
+void SdlBackendUpdatePalette(const PALETTEENTRY *entries, int count);
+int SdlBackendPumpEvents(void);
+int SdlWave_Open(void);
+void SdlWave_Close(void);
+int SdlWave_Queue(const void *data, unsigned int len);
+void SdlWave_Clear(void);
+void SdlWave_Pause(int pause);
+unsigned int SdlWave_Queued(void);
+int SdlWave_IsOpen(void);
+void SdlWave_SetVolume(int vol);
+int SdlWave_GetVolume(void);
+void SdlWavePump(void);                         /* audio.c: refill trigger replacing MM_WOM_DONE */
+
 #endif /* PILOTS_GLOBALS_H */
