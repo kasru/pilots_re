@@ -1,5 +1,6 @@
 #include "pilots_fwd.h"
 #include <SDL_syswm.h>
+#include "adlmidi.h"
 
 #pragma pack(push, 2)
 
@@ -8,9 +9,11 @@
    SetDIBColorTable) with an SDL texture + renderer, and subclasses SDL's window proc so the
    game's own MainWndProc/VideoWndProc keep receiving the raw Win32 messages (VK codes,
    WM_CHAR, WM_PAINT update rects) exactly as the original did.
-   Also wraps the SDL queue-audio device; audio.c keeps the original 8 x 2048 byte WAVEHDR
-   protocol on top of it (SdlWavePump stands in for the MM_WOM_DONE callback).
-   MIDI music (audio.c) and AVI playback (video.c) still use WinMM/MCI. */
+   Also wraps the SDL queue-audio devices; audio.c keeps the original 8 x 2048 byte WAVEHDR
+   protocol on top of the wave one (SdlWavePump stands in for the MM_WOM_DONE callback).
+   MIDI music renders through libADLMIDI (third_party/libADLMIDI, OPL3 emulation) into a
+   second queue-audio device - only the winmm 10 ms event timer stays from the midiOut path.
+   AVI playback (video.c) still uses MCI. */
 
 static SDL_Window *s_SdlWindow;
 static SDL_Renderer *s_Renderer;
@@ -131,6 +134,7 @@ void SdlBackendShutdown(void)
     s_Stage = 0;
     s_StagePixels = 0;
   }
+  SdlMidi_Close();                       /* normally already done by ShutdownMultimedia; idempotent */
   if ( s_WaveDev )
   {
     SDL_CloseAudioDevice(s_WaveDev);
@@ -484,6 +488,275 @@ void SdlWave_SetVolume(int vol)
 int SdlWave_GetVolume(void)
 {
   return s_WaveVolume;
+}
+
+/* ---- MIDI music: libADLMIDI (OPL3 emulation) replacing midiOut ----
+   audio.c keeps the game's own event-stream parser (ProcessMidiEvents) and its 10 ms winmm
+   timer; each timer tick pushes the parsed midiOutShortMsg-shaped word here via
+   SdlMidi_ShortMsg and pulls rendered PCM via SdlMidi_Pump into a second SDL queue-audio
+   device (44100 Hz S16 stereo). The synth state is touched from the winmm timer thread and
+   from the game thread (volume/start/stop/cleanup), so every entry point takes s_MidiCS.
+   The critical section is initialized once and never deleted: a timer callback may still be
+   in flight while the game tears multimedia down - the original had the same benign race
+   with a closed midiOut handle, but a deleted CS would be undefined behavior. */
+
+#define SDL_MIDI_RATE          44100
+#define SDL_MIDI_BANK          68  /* "WOPL (4op bank by James Alan Nguyen and Wohlstand)", a GM set;
+                                      0 = AIL "The Fat Man" (library default); see adl_getBankNames() */
+#define SDL_MIDI_CHUNK_SAMPLES 1024 /* adl_generate counts samples, one frame = two: 512 frames ~ 11.6 ms */
+#define SDL_MIDI_QUEUE_TARGET  (128 * 1024) /* ~0.7 s of PCM headroom over game-thread stalls */
+
+static struct ADL_MIDIPlayer *s_Synth;
+static SDL_AudioDeviceID s_MidiDev;      /* 44100 Hz / AUDIO_S16SYS / stereo queue-audio device */
+static CRITICAL_SECTION s_MidiCS;
+static int s_MidiCSReady;
+static int s_MidiVolume = 255;           /* 0..255, applied at queue time (like the wave volume) */
+static int s_MidiFeed;                   /* 1 between StartMidiPlayback and ResetMidi: render every tick */
+static short s_MidiChunk[SDL_MIDI_CHUNK_SAMPLES];
+static unsigned int s_MidiMsgCount;      /* diagnostics: messages seen since open/reset */
+static int s_MidiFirstMsgLogged;
+static int s_MidiFirstAudioLogged;
+
+static void MidiLock(void)
+{
+  if ( s_MidiCSReady )
+    EnterCriticalSection(&s_MidiCS);
+}
+
+static void MidiUnlock(void)
+{
+  if ( s_MidiCSReady )
+    LeaveCriticalSection(&s_MidiCS);
+}
+
+int SdlMidi_Open(void)
+{
+  SDL_AudioSpec want;
+  SDL_AudioSpec have;
+
+  if ( s_Synth )
+    return 1;
+  if ( !s_MidiCSReady )
+  {
+    InitializeCriticalSection(&s_MidiCS);
+    s_MidiCSReady = 1;
+  }
+  if ( !(SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO) )
+  {
+    if ( SDL_InitSubSystem(SDL_INIT_AUDIO) != 0 )
+    {
+      DBG_LOG("SdlMidi_Open: SDL_InitSubSystem(AUDIO) failed: %s", SDL_GetError());
+      return 0;
+    }
+  }
+  SDL_zero(want);
+  want.freq = SDL_MIDI_RATE;
+  want.format = AUDIO_S16SYS;
+  want.channels = 2;
+  want.samples = 1024;
+  want.callback = 0;                     /* push mode: SdlMidi_Pump renders into the queue */
+  s_MidiDev = SDL_OpenAudioDevice(0, 0, &want, &have, 0); /* no format changes allowed */
+  if ( !s_MidiDev )
+  {
+    DBG_LOG("SdlMidi_Open: SDL_OpenAudioDevice failed: %s", SDL_GetError());
+    return 0;
+  }
+  if ( have.freq != SDL_MIDI_RATE || have.format != AUDIO_S16SYS || have.channels != 2 )
+  {
+    DBG_LOG("SdlMidi_Open: device gave %d Hz / 0x%X / %dch, refusing", have.freq, have.format, have.channels);
+    SDL_CloseAudioDevice(s_MidiDev);
+    s_MidiDev = 0;
+    return 0;
+  }
+  s_Synth = adl_init(SDL_MIDI_RATE);
+  if ( !s_Synth )
+  {
+    DBG_LOG("SdlMidi_Open: adl_init failed: %s", adl_errorString());
+    SDL_CloseAudioDevice(s_MidiDev);
+    s_MidiDev = 0;
+    return 0;
+  }
+  if ( adl_switchEmulator(s_Synth, ADLMIDI_EMU_NUKED) < 0 )
+    DBG_LOG("SdlMidi_Open: Nuked emulator unavailable (%s), keeping %s",
+            adl_errorString(), adl_chipEmulatorName(s_Synth));
+  if ( adl_setBank(s_Synth, SDL_MIDI_BANK) < 0 )
+    DBG_LOG("SdlMidi_Open: bank %d unavailable (%s), keeping the default one",
+            SDL_MIDI_BANK, adl_errorString());
+  s_MidiVolume = 255;                    /* midiOut devices started at full volume */
+  s_MidiFeed = 0;
+  s_MidiMsgCount = 0;
+  s_MidiFirstMsgLogged = 0;
+  s_MidiFirstAudioLogged = 0;
+  SDL_PauseAudioDevice(s_MidiDev, 0);
+  DBG_LOG("SdlMidi_Open: libADLMIDI ready: emu=%s bank=%d rate=%d",
+          adl_chipEmulatorName(s_Synth), SDL_MIDI_BANK, SDL_MIDI_RATE);
+  return 1;
+}
+
+void SdlMidi_Close(void)
+{
+  MidiLock();
+  if ( s_Synth )
+  {
+    adl_close(s_Synth);
+    s_Synth = 0;
+  }
+  s_MidiFeed = 0;
+  if ( s_MidiDev )
+  {
+    SDL_CloseAudioDevice(s_MidiDev);
+    s_MidiDev = 0;
+  }
+  MidiUnlock();
+}
+
+/* Arm PCM feeding; called by StartMidiPlayback once its timer is running. */
+void SdlMidi_Start(void)
+{
+  MidiLock();
+  if ( s_Synth )
+    s_MidiFeed = 1;
+  MidiUnlock();
+}
+
+/* midiOutReset equivalent: cut all sounding notes, drop already-rendered PCM, and stop
+   feeding (the caller - ResetMidi - has already killed the timer). */
+void SdlMidi_Reset(void)
+{
+  MidiLock();
+  s_MidiFeed = 0;
+  if ( s_Synth )
+    adl_panic(s_Synth);
+  if ( s_MidiDev )
+    SDL_ClearQueuedAudio(s_MidiDev);
+  if ( s_MidiMsgCount )
+  {
+    DBG_LOG("SdlMidi_Reset: %u messages processed", s_MidiMsgCount);
+    s_MidiMsgCount = 0;
+  }
+  MidiUnlock();
+}
+
+/* The midiOutShortMsg-packed word from ProcessMidiEvents: status | data1<<8 | data2<<16. */
+void SdlMidi_ShortMsg(unsigned int packed)
+{
+  unsigned int status = packed & 0xFF;
+  unsigned int data1 = (packed >> 8) & 0xFF;
+  unsigned int data2 = (packed >> 16) & 0xFF;
+  unsigned int channel = status & 0x0F;
+
+  MidiLock();
+  if ( s_Synth )
+  {
+    ++s_MidiMsgCount;
+    if ( !s_MidiFirstMsgLogged )
+    {
+      s_MidiFirstMsgLogged = 1;
+      DBG_LOG("SdlMidi_ShortMsg: first message 0x%02X", status);
+    }
+    switch ( status & 0xF0 )
+    {
+      case 0x80:                         /* note off (the release velocity in data2 is dropped) */
+        adl_rt_noteOff(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1);
+        break;
+      case 0x90:                         /* note on; velocity 0 == note off, as in the original synth */
+        if ( data2 )
+          adl_rt_noteOn(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1, (ADL_UInt8)data2);
+        else
+          adl_rt_noteOff(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1);
+        break;
+      case 0xA0:                         /* polyphonic aftertouch */
+        adl_rt_noteAfterTouch(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1, (ADL_UInt8)data2);
+        break;
+      case 0xB0:                         /* control change */
+        adl_rt_controllerChange(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1, (ADL_UInt8)data2);
+        break;
+      case 0xC0:                         /* program change (2-byte message) */
+        adl_rt_patchChange(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1);
+        break;
+      case 0xD0:                         /* channel aftertouch (2-byte message) */
+        adl_rt_channelAfterTouch(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1);
+        break;
+      case 0xE0:                         /* pitch bend: data1 = LSB, data2 = MSB */
+        adl_rt_pitchBendML(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data2, (ADL_UInt8)data1);
+        break;
+      default:                           /* system messages never reach here (ProcessMidiEvents skips them) */
+        break;
+    }
+  }
+  MidiUnlock();
+}
+
+void SdlMidi_SetVolume(int vol)
+{
+  if ( vol < 0 )
+    vol = 0;
+  if ( vol > 255 )
+    vol = 255;
+  MidiLock();
+  s_MidiVolume = vol;
+  if ( !vol && s_Synth )
+  {
+    adl_panic(s_Synth);                  /* original also did midiOutReset when muted */
+    if ( s_MidiDev )
+      SDL_ClearQueuedAudio(s_MidiDev);   /* drop PCM rendered at the old volume */
+  }
+  MidiUnlock();
+}
+
+int SdlMidi_GetVolume(void)
+{
+  return s_MidiVolume;
+}
+
+/* Render PCM into the music queue. Called from MidiTimerCallback every 10 ms while the
+   stream is armed: that thread keeps feeding even when the game thread is busy loading,
+   and the queue depth absorbs the timer's jitter. The loop tops the queue up to the target
+   (self-regulating: full queue == skip, drained queue == refill at <=16 chunks per tick). */
+void SdlMidi_Pump(void)
+{
+  unsigned int queued;
+  int guard = 0;
+  int generated;
+
+  MidiLock();
+  if ( !s_Synth || !s_MidiDev || !s_MidiFeed )
+  {
+    MidiUnlock();
+    return;
+  }
+  queued = SDL_GetQueuedAudioSize(s_MidiDev);
+  while ( queued < SDL_MIDI_QUEUE_TARGET && guard < 16 )
+  {
+    int i;
+    generated = adl_generate(s_Synth, SDL_MIDI_CHUNK_SAMPLES, s_MidiChunk);
+    if ( generated <= 0 )
+      break;
+    if ( s_MidiVolume != 255 )
+    {
+      for ( i = 0; i < generated; ++i )
+        s_MidiChunk[i] = (short)(((int)s_MidiChunk[i] * s_MidiVolume) / 255);
+    }
+    if ( !s_MidiFirstAudioLogged )
+    {
+      int nonzero = 0;
+      for ( i = 0; i < generated; ++i )
+      {
+        if ( s_MidiChunk[i] != 0 )
+          ++nonzero;
+      }
+      if ( nonzero )
+      {
+        s_MidiFirstAudioLogged = 1;
+        DBG_LOG("SdlMidi_Pump: first audible PCM (%d of %d samples nonzero)", nonzero, generated);
+      }
+    }
+    if ( SDL_QueueAudio(s_MidiDev, s_MidiChunk, (unsigned int)generated * sizeof(short)) != 0 )
+      break;
+    queued += (unsigned int)generated * sizeof(short);
+    ++guard;
+  }
+  MidiUnlock();
 }
 
 #pragma pack(pop)

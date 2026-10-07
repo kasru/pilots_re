@@ -366,5 +366,13 @@ int SdlWave_IsOpen(void);
 void SdlWave_SetVolume(int vol);
 int SdlWave_GetVolume(void);
 void SdlWavePump(void);                         /* audio.c: refill trigger replacing MM_WOM_DONE */
+int SdlMidi_Open(void);                         /* libADLMIDI synth + music device (replaces midiOutOpen) */
+void SdlMidi_Close(void);                       /* was midiOutClose */
+void SdlMidi_Start(void);                       /* arm PCM feeding between StartMidiPlayback and ResetMidi */
+void SdlMidi_Reset(void);                       /* was midiOutReset: panic all notes + drop queued PCM */
+void SdlMidi_ShortMsg(unsigned int packed);     /* was midiOutShortMsg: packed word -> adl_rt_* calls */
+void SdlMidi_SetVolume(int vol);                /* 0..255, applied when PCM is queued (was midiOutSetVolume) */
+int SdlMidi_GetVolume(void);
+void SdlMidi_Pump(void);                        /* render a refill of PCM; called from MidiTimerCallback */
 
 #endif /* PILOTS_GLOBALS_H */

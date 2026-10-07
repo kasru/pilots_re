@@ -199,7 +199,8 @@ MMRESULT ResetMidi()
     timeKillEvent(g_MidiTimerID);
     g_MidiTimerID = 0;
   }
-  return midiOutReset(g_hMidiOut);
+  SdlMidi_Reset();                      // was midiOutReset(g_hMidiOut): panic + drop queued PCM
+  return 0;
 }
 
 int ReadMidiVarLen()
@@ -261,7 +262,7 @@ LABEL_21:
     {
 LABEL_19:
       if ( v7 )
-        midiOutShortMsg(g_hMidiOut, v2);
+        SdlMidi_ShortMsg(v2);           // was midiOutShortMsg(g_hMidiOut, v2) -> libADLMIDI rt event
       goto LABEL_21;
     }
     v4 = *(_BYTE *)g_MidiDataPtr++;
@@ -290,6 +291,7 @@ void __stdcall MidiTimerCallback(UINT uTimerID, UINT uMsg, DWORD_PTR dwUser, DWO
     ProcessMidiEvents();
     --g_MidiTicks;
   }
+  SdlMidi_Pump();                       // render PCM every tick while the stream is armed
 }
 
 MMRESULT CleanupMidiOut()
@@ -304,7 +306,7 @@ MMRESULT CleanupMidiOut()
   }
   if ( g_hMidiOut )
   {
-    result = midiOutClose(g_hMidiOut);
+    SdlMidi_Close();                    // was midiOutClose(g_hMidiOut)
     g_hMidiOut = 0;
   }
   return result;
@@ -317,11 +319,12 @@ int InitMidiOut()
   UINT wPeriodMax; // eax
   struct timecaps_tag ptc; // [esp+0h] [ebp-8h] BYREF
 
-  if ( !midiOutOpen(&g_hMidiOut, 0xFFFFFFFF, 0, 0, 0) )
+  if ( SdlMidi_Open() )                 // was midiOutOpen(&g_hMidiOut, 0xFFFFFFFF, 0, 0, 0)
   {
+    g_hMidiOut = 1;                     // "device open" flag (was the HMIDIOUT handle)
     g_TimerResolution = 0;
     g_MidiVolume = 1;
-    if ( !midiOutGetID(g_hMidiOut, &g_MidiDeviceID) && !timeGetDevCaps(&ptc, 8u) )
+    if ( !timeGetDevCaps(&ptc, 8u) )
     {
       wPeriodMin = ptc.wPeriodMin;
       if ( ptc.wPeriodMin <= 0xA )
@@ -362,6 +365,7 @@ int __stdcall StartMidiPlayback(int a1)
     ResetMidi();
     return 0;
   }
+  SdlMidi_Start();                      // the timer callback now renders PCM as well as events
   return result;
 }
 
@@ -373,30 +377,14 @@ char StopMidiPlayback()
 
 int __stdcall GetMidiVolume(DWORD a1)
 {
-  int v1; // eax
-  DWORD pdwVolume; // [esp+0h] [ebp-4h] BYREF
-
-  pdwVolume = a1;
-  midiOutGetVolume((HMIDIOUT)g_MidiDeviceID, &pdwVolume);
-  if ( (unsigned __int16)pdwVolume <= HIWORD(pdwVolume) )
-    v1 = HIWORD(pdwVolume);
-  else
-    v1 = (unsigned __int16)pdwVolume;
-  return v1 >> 8;
+  return SdlMidi_GetVolume();           // original read the device volume >> 8 (0..255, full by default)
 }
 
 int __stdcall SetMidiVolume(unsigned __int8 a1)
 {
-  int v1; // ebx
-  int v3; // [esp+4h] [ebp-4h]
-
   g_MidiVolume = a1;
-  v1 = a1 << 8;
-  LOBYTE(v1) = -1;
-  v3 = midiOutSetVolume((HMIDIOUT)g_MidiDeviceID, v1 | (v1 << 16)) == 0;
-  if ( !a1 )
-    midiOutReset(g_hMidiOut);
-  return v3;
+  SdlMidi_SetVolume(a1);                // was midiOutSetVolume + midiOutReset when muted
+  return 1;                             // original: midiOutSetVolume(...) == 0
 }
 
 char __cdecl MultimediaStub_NoArgs()
