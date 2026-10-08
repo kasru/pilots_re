@@ -51,6 +51,7 @@ set(GAME_SOURCES
   ${GAME_DIR}/native_funcs.c
   ${GAME_DIR}/sdl_backend.c
   ${GAME_DIR}/win32_shim.c
+  ${GAME_DIR}/mci_ffmpeg.c
 )
 
 add_executable(PILOT_RV ${GAME_SOURCES})

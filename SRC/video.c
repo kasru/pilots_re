@@ -621,6 +621,7 @@ char __stdcall SearchVideoFileOnDrives(char *Str, char *Destination, char *lpFil
       strcpy(Destination, v8);
       strcat(lpFileName, aAvi);
       strcat(Destination, aBmp);
+      DBG_LOG("SearchVideoFileOnDrives: try '%s'", lpFileName);
       if ( GetFileAttributesA(lpFileName) != -1 )
         return 1;
       v6 = 2;
@@ -646,6 +647,7 @@ BOOL __stdcall CheckVideoFileExists(char *Str, char *a2, char *lpFileName)
   strcat(v5, aAvi);
   v6 = strcpy(a2, Destination);
   strcat(v6, aBmp);
+  DBG_LOG("CheckVideoFileExists: try '%s'", lpFileName);
   return GetFileAttributesA(lpFileName) != -1;
 }
 

@@ -187,7 +187,7 @@ extern char *strupr(char *s);
 #define WM_PALETTECHANGED  0x0311
 #define WM_SETTEXT      0x000C
 #define MM_WOM_DONE     0x03BD
-#define MM_MCINOTIFY    0x03CB
+#define MM_MCINOTIFY    0x03B9  /* mmsyscom.h: MCI completion notify (video.c uses 0x3B9 literally) */
 
 #define HTCLIENT 1
 #define PM_REMOVE 1
@@ -379,8 +379,9 @@ typedef struct tWAVEFORMAT {
 #define WHDR_ENDLOOP 0x00000008
 #define WHDR_INQUEUE 0x00000010
 
-#define MCIERR_CANNOT_FIND_DRIVER 275
-#define MCIERR_MISSING_PARAMETER  312
+/* real mciapi.h values (MCIERR_BASE == 256) */
+#define MCIERR_FILE_NOT_FOUND     275  /* MCIERR_BASE + 19 */
+#define MCIERR_MISSING_PARAMETER  273  /* MCIERR_BASE + 17 */
 
 /* ---- wingdi.h ---- */
 #pragma pack(push, 2)
@@ -549,6 +550,14 @@ int     GlobalUnlock(HGLOBAL hMem);
 int  WinShim_PumpSDLToQueue(void);   /* drain SDL events -> synthesize+post WM_* (sdl_backend.c) */
 int  WinShim_QuitPosted(void);       /* PostQuitMessage seen? */
 HWND WinShimMainWindow(void);        /* the fake main-window handle SdlBackendCreateWindow returns */
+void ShimPathToUnix(const char *src, char *dst, size_t cap); /* '\\'->'/' path copy (win32_shim.c) */
+
+/* ---- MCI video playback (mci_ffmpeg.c) ---- */
+void WinShim_VideoPump(void);        /* decode+present+MM_MCINOTIFY; from PeekMessageA's SDL pump */
+void WinShim_MciNotifyMove(HWND hWnd, int X, int Y, int nWidth, int nHeight); /* MCI child rect */
+
+/* case-insensitive Win path -> existing Unix path (win32_shim.c) */
+void WinShim_ResolvePath(const char *win_path, char *out, size_t cap);
 
 #endif /* !_WIN32 */
 #endif /* PILOTS_WIN32_SHIM_H */

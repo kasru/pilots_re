@@ -16,7 +16,17 @@ static int g_NativeArgsConsumed = 0;
  * entries as __stdcall arguments on the x86 stack.
  * Uses __declspec(naked) to have full control over the stack.
  * After the call, measures how many bytes the callee cleaned via ret N
- * and stores the count (in DWORDs) in g_NativeArgsConsumed. */
+ * and stores the count (in DWORDs) in g_NativeArgsConsumed.
+ *
+ * NOTE (Linux/GCC): the raw `call` below must satisfy the i386 SysV ABI -
+ * pre-call ESP 16-byte aligned - because the callee (and EVERYTHING it
+ * calls, e.g. the video wait loop -> SDL with its movaps) is GCC code
+ * that statically assumes an aligned entry. Runtime vmTop shifts ESP by
+ * 4*N, so alignment would depend on script depth: pad by (X - 4N) & 15
+ * BEFORE pushing the args (pad ends up above the args, so the callee's
+ * view of the arguments and its `ret N` are unaffected; the wrapper
+ * restores ESP from ebx anyway). The MSVC body keeps its original form:
+ * MSVC maintains the alignment it needs itself. */
 #ifdef _WIN32
 __declspec(naked) int __cdecl CallNativeWithVMStack(
     int (*func)(), int *vmStack, int vmTop)
@@ -71,7 +81,12 @@ int __cdecl CallNativeWithVMStack(
   __asm__ __volatile__(
       "movl %2, %%edi\n\t"        /* edi = vmStack */
       "movl %3, %%esi\n\t"        /* esi = vmTop */
-      "movl %%esp, %%ebx\n\t"     /* ebx = ESP before the pushes */
+      "movl %%esp, %%ebx\n\t"     /* ebx = ESP before the pushes (restore target) */
+      "movl %%ebx, %%ecx\n\t"     /* P = (ESP - 4*vmTop) & 15: align pre-call ESP */
+      "leal (,%%esi,4), %%edx\n\t"/* edx = 4 * vmTop */
+      "subl %%edx, %%ecx\n\t"
+      "andl $15, %%ecx\n\t"
+      "subl %%ecx, %%esp\n\t"     /* pad ABOVE the pushed args (they stay glued to ret) */
       "xorl %%ecx, %%ecx\n\t"
       "1:\n\t"
       "cmpl %%esi, %%ecx\n\t"

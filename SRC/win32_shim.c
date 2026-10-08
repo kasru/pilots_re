@@ -12,9 +12,7 @@
  *    posts WM_* messages via PostMessageA(); PeekMessageA() drains the queue (pumping
  *    SDL when empty) and DispatchMessageA() calls the game's MainWndProc directly -
  *    the same call sequence the original had, just without a real message loop.
- *  - MCI is a stub for now: MCI_OPEN reports "no device" (device id 0), so video.c
- *    skips video playback gracefully (no dialogs, no hang). The ffmpeg-backed
- *    mciSendCommandA lands in the video phase of the port.
+ *  - MCI video playback lives in mci_ffmpeg.c (ffmpeg-backed mciSendCommandA).
  */
 #include "pilots_fwd.h"
 
@@ -33,6 +31,8 @@
    got renamed to WinShim_remove - redeclare glibc's remove for this TU. */
 extern int remove(const char *path);
 
+#include <dirent.h>   /* case-insensitive path walk below (Win9x semantics) */
+
 /* Side setjmp buffer: pilots_globals.h routes setjmp/longjmp here (the
    generated 64-byte g_JumpBuffer field is too small for glibc's jmp_buf). */
 jmp_buf g_ShimJumpBuf;
@@ -41,12 +41,122 @@ jmp_buf g_ShimJumpBuf;
 /* paths                                                                 */
 /* ===================================================================== */
 
-static void ShimPathToUnix(const char *src, char *dst, size_t cap)
+void ShimPathToUnix(const char *src, char *dst, size_t cap)
 {
   size_t i;
   for ( i = 0; i + 1 < cap && src[i]; ++i )
     dst[i] = (src[i] == '\\') ? '/' : src[i];
   dst[i] = '\0';
+}
+
+/* Win32 file lookup is case-insensitive (the original data comes from a Win9x
+   CD: the game asks for ".\movies\intro.AVI" whatever the real case is) while
+   a Linux FS is not. Build a case-resolved copy of the path component by
+   component; falls back to appending the raw component when nothing matches.
+   Returns the resolved path in out (not guaranteed to exist - callers stat it). */
+static int ShimResolveUnixCI(const char *win_path, char *out, size_t cap)
+{
+  char norm[MAX_PATH * 2];
+  char *seg;
+  size_t rlen = 0;
+
+  ShimPathToUnix(win_path, norm, sizeof norm);
+  out[0] = '\0';
+  seg = norm;
+  if ( *seg == '/' )
+  {
+    if ( cap < 2 )
+      return 0;
+    out[rlen++] = '/';
+    out[rlen] = '\0';
+    ++seg;
+  }
+  while ( *seg )
+  {
+    char *slash = strchr(seg, '/');
+    size_t seglen = slash ? (size_t)(slash - seg) : strlen(seg);
+    char saved = seg[seglen];
+    int matched = 0;
+    DIR *d;
+    struct dirent *e;
+
+    seg[seglen] = '\0';
+    d = opendir(rlen ? out : ".");
+    if ( d )
+    {
+      while ( (e = readdir(d)) != NULL )
+      {
+        if ( strcasecmp(e->d_name, seg) == 0 )
+        {
+          size_t el = strlen(e->d_name);
+          if ( rlen + el + 2 >= cap )
+            break;
+          memcpy(out + rlen, e->d_name, el);
+          rlen += el;
+          out[rlen] = '\0';
+          matched = 1;
+          break;
+        }
+      }
+      closedir(d);
+    }
+    if ( !matched )
+    {
+      if ( rlen + seglen + 2 >= cap )
+      {
+        seg[seglen] = saved;
+        return 0;
+      }
+      memcpy(out + rlen, seg, seglen);
+      rlen += seglen;
+      out[rlen] = '\0';
+    }
+    seg[seglen] = saved;
+    if ( !slash )
+      break;
+    if ( rlen + 2 >= cap )
+      return 0;
+    out[rlen++] = '/';
+    out[rlen] = '\0';
+    seg = slash + 1;
+  }
+  return 1;
+}
+
+/* Resolve a Win path to an existing Unix path (exact case first, then the
+   case-insensitive walk); plain '\'->'/' conversion when nothing exists (a
+   create-target). Exported for mci_ffmpeg.c (avformat wants a real path). */
+void WinShim_ResolvePath(const char *win_path, char *out, size_t cap)
+{
+  char ci[MAX_PATH * 2];
+  struct stat st;
+
+  ShimPathToUnix(win_path, out, cap);
+  if ( stat(out, &st) == 0 )
+    return;
+  if ( ShimResolveUnixCI(win_path, ci, sizeof ci) && stat(ci, &st) == 0 )
+  {
+    size_t i;
+    for ( i = 0; i + 1 < cap && ci[i]; ++i )
+      out[i] = ci[i];
+    out[i] = '\0';
+  }
+}
+
+/* open() with the same case-insensitive lookup; missing files keep the plain
+   path so create flags (O_CREAT/O_EXCL) behave like Win9x on the raw name. */
+static int ShimOpenWin(const char *win_path, int of, int mode)
+{
+  char up[MAX_PATH * 2];
+  char ci[MAX_PATH * 2];
+  struct stat st;
+
+  ShimPathToUnix(win_path, up, sizeof up);
+  if ( stat(up, &st) == 0 )
+    return open(up, of, mode);
+  if ( ShimResolveUnixCI(win_path, ci, sizeof ci) && stat(ci, &st) == 0 )
+    return open(ci, of, mode);
+  return open(up, of, mode);
 }
 
 /* in-place '/' -> '\' (GetModuleFileNameA result for debug_log path handling) */
@@ -224,7 +334,6 @@ char *strupr(char *s)
 
 int _open(const char *path, int flags, ...)
 {
-  char up[MAX_PATH * 2];
   int of = 0;
   int mode = 0666;
 
@@ -241,8 +350,7 @@ int _open(const char *path, int flags, ...)
   if ( flags & _O_EXCL )   of |= O_EXCL;
   if ( flags & _O_TRUNC )  of |= O_TRUNC;
   if ( flags & _O_APPEND ) of |= O_APPEND;
-  ShimPathToUnix(path, up, sizeof up);
-  return open(up, of, mode);
+  return ShimOpenWin(path, of, mode);      /* case-insensitive lookup like Win9x */
 }
 
 int _close(int fd)
@@ -372,7 +480,7 @@ DWORD GetFileAttributesA(LPCSTR lpFileName)
 
   if ( !lpFileName )
     return 0xFFFFFFFFu;
-  ShimPathToUnix(lpFileName, up, sizeof up);
+  WinShim_ResolvePath(lpFileName, up, sizeof up); /* case-insensitive like Win9x */
   if ( stat(up, &st) != 0 )
     return 0xFFFFFFFFu;
   return 0x80;                             /* FILE_ATTRIBUTE_NORMAL */
@@ -518,7 +626,6 @@ HANDLE CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode,
                    void *lpSecurityAttributes, DWORD dwCreationDisposition,
                    DWORD dwFlagsAndAttributes, HANDLE hTemplateFile)
 {
-  char up[MAX_PATH * 2];
   int of = 0;
   int fd;
   int i;
@@ -535,8 +642,7 @@ HANDLE CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode,
     of |= O_CREAT | O_TRUNC;
   else if ( dwCreationDisposition == CREATE_NEW )
     of |= O_CREAT | O_EXCL;
-  ShimPathToUnix(lpFileName, up, sizeof up);
-  fd = open(up, of, 0666);
+  fd = ShimOpenWin(lpFileName, of, 0666); /* case-insensitive lookup like Win9x */
   if ( fd < 0 )
     return INVALID_HANDLE_VALUE;
   for ( i = 0; i < SHIM_NUM_HANDLES; ++i )
@@ -907,7 +1013,8 @@ int EndPaint(HWND hWnd, const PAINTSTRUCT *lpPaint)
 
 int MoveWindow(HWND hWnd, int X, int Y, int nWidth, int nHeight, int bRepaint)
 {
-  (void)hWnd; (void)X; (void)Y; (void)nWidth; (void)nHeight; (void)bRepaint;
+  (void)bRepaint;
+  WinShim_MciNotifyMove(hWnd, X, Y, nWidth, nHeight); /* MCI child rect (mci_ffmpeg.c); others ignored */
   return 1;                                /* MCI child positioning: nothing to move */
 }
 
@@ -1116,7 +1223,7 @@ int GetDeviceCaps(HDC hdc, int nIndex)
 }
 
 /* ===================================================================== */
-/* winmm: timers + MCI stub                                              */
+/* winmm: timers (MCI lives in mci_ffmpeg.c)                             */
 /* ===================================================================== */
 
 DWORD timeGetTime(void)
@@ -1177,25 +1284,6 @@ MMRESULT timeKillEvent(MMRESULT uTimerID)
 {
   SDL_RemoveTimer((SDL_TimerID)uTimerID);
   return 0;
-}
-
-/* MCI: stub - MCI_OPEN reports "no device" (device id 0 at MCI_OPEN_PARMS
-   offset +4), so OpenMCIVideoDevice/PlayIntroVideo skip playback gracefully.
-   The ffmpeg-backed decoder replaces this in the video phase. */
-MMRESULT mciSendCommandA(MCIDEVICEID idDevice, UINT uMsg, DWORD dwFlags, DWORD_PTR dwParam)
-{
-  (void)idDevice; (void)dwFlags;
-  if ( uMsg == 0x803 && dwParam )          /* MCI_OPEN: wDeviceID at +4 */
-    *(DWORD *)((char *)(uintptr_t)dwParam + 4) = 0;
-  return 0;
-}
-
-int mciGetErrorStringA(MCIERROR mcierr, LPSTR lpBuffer, UINT uLength)
-{
-  (void)mcierr;
-  if ( lpBuffer && uLength )
-    lpBuffer[0] = '\0';
-  return 1;
 }
 
 /* ===================================================================== */

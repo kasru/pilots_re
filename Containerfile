@@ -7,6 +7,7 @@
 FROM debian:bookworm-slim
 
 # i386 foreign arch BEFORE apt-get update so libsdl2-dev:i386 & co resolve in one pass.
+# ffmpeg (amd64 CLI) is only for generating test .avi clips on the data side.
 RUN dpkg --add-architecture i386 \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -14,5 +15,6 @@ RUN dpkg --add-architecture i386 \
       make cmake pkg-config \
       libsdl2-dev:i386 \
       libavcodec-dev:i386 libavformat-dev:i386 libavutil-dev:i386 libswscale-dev:i386 \
+      ffmpeg \
       xvfb xauth \
  && rm -rf /var/lib/apt/lists/*

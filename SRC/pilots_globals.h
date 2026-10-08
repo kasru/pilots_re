@@ -369,6 +369,7 @@ HWND SdlBackendCreateWindow(int x, int y, int clientW, int clientH, int resizabl
 void SdlBackendSetCursorVisible(int visible);
 int SdlBackendCreateVideoTargets(int clientW, int clientH);
 void SdlBackendPresentRect(const void *bits, int bmp_height, int stride, int x, int y, int w, int h);
+void SdlBackendVideoFrame(const void *bgra, int srcw, int srch, int x, int y, int w, int h); /* MCI movie overlay (mci_ffmpeg.c) */
 void SdlBackendClearBlack(void);
 void SdlBackendDrawGrid(unsigned int colorRef);
 void SdlBackendUpdatePalette(const PALETTEENTRY *entries, int count);

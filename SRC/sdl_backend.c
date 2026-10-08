@@ -26,6 +26,9 @@ static SDL_Renderer *s_Renderer;
 static SDL_Texture *s_Texture;
 static int s_TexWidth;                          /* texture (backing store) size in pixels */
 static int s_TexHeight;
+static SDL_Texture *s_VideoTex;                 /* MCI movie overlay (SdlBackendVideoFrame) */
+static int s_VideoTexW;
+static int s_VideoTexH;
 #ifdef _WIN32
 static WNDPROC s_OrigWndProc;                   /* SDL's original window proc, before our subclass */
 #endif
@@ -321,6 +324,7 @@ int WinShim_PumpSDLToQueue(void)
 
   while ( SDL_PollEvent(&ev) )
     SdlDispatchSdlEvent(&ev);
+  WinShim_VideoPump();                         /* MCI movie: decode/present/notify (mci_ffmpeg.c) */
   return 0;
 }
 
@@ -357,6 +361,12 @@ int SdlBackendStartup(void)
 
 void SdlBackendShutdown(void)
 {
+  if ( s_VideoTex )
+  {
+    SDL_DestroyTexture(s_VideoTex);
+    s_VideoTex = 0;
+    s_VideoTexW = s_VideoTexH = 0;
+  }
   if ( s_Texture )
   {
     SDL_DestroyTexture(s_Texture);
@@ -482,7 +492,7 @@ int SdlBackendCreateVideoTargets(int clientW, int clientH)
 
 /* Show the current texture (1:1, top-left - mirrors the original BitBlt which never scaled).
    Outside the texture the renderer is cleared to black, like the window background. */
-static void SdlPresentCurrent(void)
+static void SdlDrawGameFrame(void)              /* clear + game texture; no present */
 {
   SDL_Rect dst;
 
@@ -495,6 +505,53 @@ static void SdlPresentCurrent(void)
   dst.w = s_TexWidth;
   dst.h = s_TexHeight;
   SDL_RenderCopy(s_Renderer, s_Texture, 0, &dst);
+}
+
+static void SdlPresentCurrent(void)
+{
+  if ( !s_Texture || !s_Renderer )
+    return;
+  SdlDrawGameFrame();
+  SDL_RenderPresent(s_Renderer);
+}
+
+/* One frame of MCI playback (mci_ffmpeg.c): the game frame the same way
+   SdlPresentCurrent shows it, with the movie stretched into the MCI child
+   window's client rect (x/y/w/h, w or h <= 0 = natural stream size), then
+   present. Re-presenting the game texture every call also repairs the screen
+   right after the game does its own present (WM_PAINT during playback). */
+void SdlBackendVideoFrame(const void *bgra, int srcw, int srch, int x, int y, int w, int h)
+{
+  SDL_Rect dst;
+
+  if ( !s_Renderer || !bgra || srcw <= 0 || srch <= 0 )
+    return;
+  if ( w <= 0 )
+    w = srcw;
+  if ( h <= 0 )
+    h = srch;
+  if ( !s_VideoTex || s_VideoTexW != srcw || s_VideoTexH != srch )
+  {
+    if ( s_VideoTex )
+      SDL_DestroyTexture(s_VideoTex);
+    s_VideoTex = SDL_CreateTexture(s_Renderer, SDL_PIXELFORMAT_ARGB8888,
+                                   SDL_TEXTUREACCESS_STREAMING, srcw, srch);
+    s_VideoTexW = srcw;
+    s_VideoTexH = srch;
+    if ( !s_VideoTex )
+    {
+      s_VideoTexW = s_VideoTexH = 0;
+      DBG_LOG("SdlBackendVideoFrame: SDL_CreateTexture failed: %s", SDL_GetError());
+      return;
+    }
+  }
+  SDL_UpdateTexture(s_VideoTex, NULL, bgra, srcw * 4);
+  SdlDrawGameFrame();
+  dst.x = x;
+  dst.y = y;
+  dst.w = w;
+  dst.h = h;
+  SDL_RenderCopy(s_Renderer, s_VideoTex, NULL, &dst);
   SDL_RenderPresent(s_Renderer);
 }
 
