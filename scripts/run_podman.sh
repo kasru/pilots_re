@@ -7,6 +7,13 @@
 # Usage:
 #   sh scripts/run_podman.sh           headless run (SDL dummy video/audio)
 #   sh scripts/run_podman.sh --xvfb    render on a virtual X display (xvfb)
+#   sh scripts/run_podman.sh --display real window on the session's X server
+#
+# --display forwards DISPLAY, /tmp/.X11-unix and the X cookie into the
+# container: start it from a graphical session (RDP/local desktop) and the
+# game window opens right there; `ssh -X` works too (loopback display, the
+# container then joins the host network). If the connection is refused for
+# lack of a cookie, run `xhost +local:` as the desktop user.
 #
 # Ctrl+C or SIGTERM asks the game to quit cleanly (SIGUSR1 test hook of the
 # port); a second Ctrl+C force-stops the container. The container's
@@ -31,6 +38,7 @@ Launch PILOT_RV inside the pilots-build podman container.
 
   sh scripts/run_podman.sh           headless run (SDL dummy video/audio)
   sh scripts/run_podman.sh --xvfb    render on a virtual X display (xvfb)
+  sh scripts/run_podman.sh --display real window on the session's X server
 
 Ctrl+C / SIGTERM = clean quit via the game's SIGUSR1 hook; a second
 Ctrl+C force-stops the container. Game log: build/PILOT_RV_debug.log.
@@ -41,7 +49,12 @@ die() { echo "run_podman: $*" >&2; exit 1; }
 
 for a in "$@"; do
   case "$a" in
-    --xvfb) MODE=xvfb ;;
+    --xvfb)
+      if [ "$MODE" = display ]; then die "--xvfb and --display are mutually exclusive"; fi
+      MODE=xvfb ;;
+    --display)
+      if [ "$MODE" = xvfb ]; then die "--xvfb and --display are mutually exclusive"; fi
+      MODE=display ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown option: $a" ;;
   esac
@@ -92,13 +105,46 @@ cleanup() {
 
 # --- start -----------------------------------------------------------------
 AUDIODRV=${SDL_AUDIODRIVER:-dummy}
+case "$MODE" in
+  xvfb|display) VIDEODRV=${SDL_VIDEODRIVER:-x11} ;;
+  *)            VIDEODRV=${SDL_VIDEODRIVER:-dummy} ;;
+esac
+
+# argv is built with set --: podman flags, then the image, then the game
+# command - optional flags stay free of word-splitting pitfalls.
+set -- run -d --name "$NAME" -v "$REPO:/w" -w /w/SRC
+
+if [ "$MODE" = display ]; then
+  [ -n "${DISPLAY:-}" ] || die "--display needs DISPLAY (graphical session or ssh -X)"
+  case "$DISPLAY" in
+    :*)
+      # unix socket display (:0, :77, ...) - forward the socket directory
+      XSOCK=$(readlink -f /tmp/.X11-unix 2>/dev/null || true)
+      [ -n "$XSOCK" ] && [ -d "$XSOCK" ] \
+        || die "no /tmp/.X11-unix on the host - is an X server running?"
+      set -- "$@" -v "$XSOCK:/tmp/.X11-unix:ro" ;;
+    localhost:*|127.0.0.1:*)
+      # ssh -X listens on the host loopback - the container needs host net
+      set -- "$@" --network host ;;
+  esac
+  # X cookie (XAUTHORITY, default ~/.Xauthority); without one the X server
+  # must allow local clients: xhost +local: as the desktop user.
+  XAUTHF=$(readlink -f "${XAUTHORITY:-$HOME/.Xauthority}" 2>/dev/null || true)
+  if [ -n "$XAUTHF" ] && [ -f "$XAUTHF" ]; then
+    set -- "$@" -e XAUTHORITY="$XAUTHF" -v "$XAUTHF:$XAUTHF:ro"
+  fi
+  set -- "$@" -e DISPLAY="$DISPLAY"
+  echo "run_podman: forwarding DISPLAY=$DISPLAY (the window opens on that X server)"
+fi
+
+set -- "$@" -e SDL_VIDEODRIVER="$VIDEODRV" -e SDL_AUDIODRIVER="$AUDIODRV" "$IMAGE"
+
 if [ "$MODE" = xvfb ]; then
-  VIDEODRV=${SDL_VIDEODRIVER:-x11}
   # Direct Xvfb + exec instead of the stock xvfb-run: that wrapper hangs in
   # this image (it gets stuck even with `echo hello` - its display-ready wait
   # never completes) while Xvfb itself starts fine. Wait for the socket, give
   # up loudly, then exec the game as PID1 so the SIGUSR1 quit keeps working.
-  set -- sh -c 'Xvfb :99 -screen 0 800x600x24 &
+  set -- "$@" sh -c 'Xvfb :99 -screen 0 800x600x24 &
     n=0
     while [ ! -S /tmp/.X11-unix/X99 ]; do
       n=$((n + 1))
@@ -110,16 +156,11 @@ if [ "$MODE" = xvfb ]; then
     done
     DISPLAY=:99 exec /w/build/PILOT_RV'
 else
-  VIDEODRV=${SDL_VIDEODRIVER:-dummy}
-  set -- /w/build/PILOT_RV
+  set -- "$@" /w/build/PILOT_RV
 fi
 
 podman rm -f "$NAME" >/dev/null 2>&1 || true
-podman run -d --name "$NAME" \
-  -v "$REPO:/w" -w /w/SRC \
-  -e SDL_VIDEODRIVER="$VIDEODRV" \
-  -e SDL_AUDIODRIVER="$AUDIODRV" \
-  "$IMAGE" "$@" >/dev/null || die "podman run failed"
+podman "$@" >/dev/null || die "podman run failed"
 
 trap 'on_quit' INT TERM
 trap 'cleanup' EXIT
