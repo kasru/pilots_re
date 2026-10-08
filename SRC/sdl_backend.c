@@ -37,6 +37,28 @@ static unsigned int s_PalRGB[256];              /* palette LUT: 8-bit index -> 0
 static unsigned int *s_Stage;                   /* staging buffer for rect conversion */
 static int s_StagePixels;
 
+/* Present coalescing. A dissolve sweeps ~1200 16x16 tiles and used to pay a full
+   clear+copy+RenderPresent for every one of them - on X11 (llvmpipe GL in the
+   container) that measured 5.7 s for a single scene transition. The
+   palette->texture upload is cheap (~46 us a tile) and always happens right
+   away; the present is deferred while less than PRESENT_MIN_INTERVAL_MS passed
+   since the last one, and every message pump flushes the tail
+   (SdlBackendPumpEvents entry+after dispatch, WinShim_PumpSDLToQueue entry).
+   The original animated the dissolve tile by tile (GdiFlush inside the loop,
+   commit ad1b246) - the checkerboard still steps here, just much faster:
+   measured 7 presents / 86 ms on X11 instead of 1200 / 5663 ms, and 4 / 2.5 ms
+   on the headless dummy driver instead of 1200 / 467 ms.
+   Windows keeps the original present-per-blit (#ifndef _WIN32 at the defer site). */
+#define PRESENT_MIN_INTERVAL_MS 1               /* burst presents no faster than ~1000/s */
+static Uint32 s_LastPresentTick;                /* SDL_GetTicks of the last real present */
+static int s_PresentPending;                    /* texture updated since, not yet shown */
+
+#ifdef _DEBUG
+static unsigned s_RectBlits;                    /* PILOTS_DEBUG_DISSOLVE statistics */
+static unsigned s_Presents;
+static unsigned int s_PresentUs;                /* time spent inside SdlPresentCurrent, us */
+#endif
+
 static SDL_AudioDeviceID s_WaveDev;             /* 11025 Hz / AUDIO_U8 / mono queue-audio device */
 static int s_WaveVolume = 255;                  /* 0..255, applied at queue time (u8 PCM centered at 128) */
 
@@ -109,6 +131,7 @@ static LRESULT CALLBACK SdlGameWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
 #else /* !_WIN32: synthesize Win32 messages from SDL events ---------------- */
 
 static void SdlPresentCurrent(void);            /* defined below; re-presented on expose */
+static void SdlFlushPresent(void);              /* flush a coalesced rect update (defined below) */
 
 /* SDL scancode -> Win32 virtual key. Letter/numpad VKs follow the physical (US) key
    position - the same MapVirtualKey-based values the original game matched against. */
@@ -332,6 +355,7 @@ int WinShim_PumpSDLToQueue(void)
 {
   SDL_Event ev;
 
+  SdlFlushPresent();                            /* show rect updates coalesced since the last pump */
   while ( SDL_PollEvent(&ev) )
     SdlDispatchSdlEvent(&ev);
 #ifdef _DEBUG
@@ -358,6 +382,34 @@ int WinShim_PumpSDLToQueue(void)
       mev.motion.x = w - 8;
       mev.motion.y = h - 8;
       SdlDispatchSdlEvent(&mev);
+    }
+  }
+  static int s_DissolveSimDone;                  /* fires once per run */
+  /* Dissolve benchmark: PILOTS_DEBUG_DISSOLVE=1 replays one real scene transition
+     (BlitScreenWithDissolve with the dissolve flag: 16 passes x 16x16 tiles on a
+     64px grid, i.e. ~1280 BlitRectToScreen -> SdlBackendPresentRect calls) and logs
+     how many of them reached the screen, how many actual presents fired and how
+     long the whole sweep took - the slow-transition diagnosis. */
+  if ( !s_DissolveSimDone && s_Texture && g_MainWindow
+       && s_SdlWindow && (SDL_GetWindowFlags(s_SdlWindow) & SDL_WINDOW_SHOWN)
+       && g_BackbufferPixels )
+  {
+    char *sim = getenv("PILOTS_DEBUG_DISSOLVE");
+    s_DissolveSimDone = 1;
+    if ( sim && *sim && *sim != '0' )
+    {
+      Uint64 t0, t1;
+      unsigned rects0 = s_RectBlits, pres0 = s_Presents, us0 = s_PresentUs;
+      DBG_LOG("WinShim_PumpSDLToQueue: PILOTS_DEBUG_DISSOLVE replays one scene transition");
+      t0 = SDL_GetPerformanceCounter();
+      BlitScreenWithDissolve(1, g_BackbufferHeight, g_BackbufferStride,
+                             g_VideoConfig.clientHeight, g_VideoConfig.clientWidth,
+                             0, 0, g_BackbufferPixels);
+      SdlFlushPresent();                        /* coalesced tail: show it, count and time it too */
+      t1 = SDL_GetPerformanceCounter();
+      DBG_LOG("PILOTS_DEBUG_DISSOLVE: %u rect blits, %u presents, %u us in present, total %u us",
+              s_RectBlits - rects0, s_Presents - pres0, s_PresentUs - us0,
+              (unsigned)((t1 - t0) * 1000000u / SDL_GetPerformanceFrequency()));
     }
   }
 #endif
@@ -505,7 +557,8 @@ int SdlBackendCreateVideoTargets(int clientW, int clientH)
     return 0;
   if ( !s_Renderer )
   {
-    /* No vsync: BlitRectToScreen presents after every blit (dissolve tiles must appear one by one) */
+    /* No vsync: the present cadence is ours - coalesced bursts on Linux
+       (PRESENT_MIN_INTERVAL_MS), one per blit on Windows */
     s_Renderer = SDL_CreateRenderer(s_SdlWindow, -1, 0);
     if ( !s_Renderer )
       s_Renderer = SDL_CreateRenderer(s_SdlWindow, -1, SDL_RENDERER_SOFTWARE);
@@ -520,6 +573,7 @@ int SdlBackendCreateVideoTargets(int clientW, int clientH)
   {
     SDL_DestroyTexture(s_Texture);
     s_Texture = 0;
+    s_PresentPending = 0;                       /* pending uploads died with the old texture */
   }
   s_Texture = SDL_CreateTexture(s_Renderer, SDL_PIXELFORMAT_ARGB8888,
                                 SDL_TEXTUREACCESS_STREAMING, clientW, clientH);
@@ -552,10 +606,30 @@ static void SdlDrawGameFrame(void)              /* clear + game texture; no pres
 
 static void SdlPresentCurrent(void)
 {
+#ifdef _DEBUG
+  Uint64 perf0 = SDL_GetPerformanceCounter();
+#endif
   if ( !s_Texture || !s_Renderer )
     return;
   SdlDrawGameFrame();
   SDL_RenderPresent(s_Renderer);
+  s_PresentPending = 0;                         /* the texture as it stands is on screen now */
+  s_LastPresentTick = SDL_GetTicks();
+#ifdef _DEBUG
+  ++s_Presents;
+  s_PresentUs += (unsigned)((SDL_GetPerformanceCounter() - perf0)
+                            * 1000000u / SDL_GetPerformanceFrequency());
+#endif
+}
+
+/* Show rect updates deferred by the burst coalescing in SdlBackendPresentRect (a
+   no-op when nothing is pending; on Windows nothing ever is - presents are
+   immediate there). Called from the message pumps so a half-drawn frame never
+   waits for the next blit. */
+static void SdlFlushPresent(void)
+{
+  if ( s_PresentPending )
+    SdlPresentCurrent();
 }
 
 /* One frame of MCI playback (mci_ffmpeg.c): the game frame the same way
@@ -596,10 +670,15 @@ void SdlBackendVideoFrame(const void *bgra, int srcw, int srch, int x, int y, in
   dst.h = h;
   SDL_RenderCopy(s_Renderer, s_VideoTex, NULL, &dst);
   SDL_RenderPresent(s_Renderer);
+  s_PresentPending = 0;                         /* the movie frame showed the game texture too */
+  s_LastPresentTick = SDL_GetTicks();
 }
 
 /* Convert an 8-bit bottom-up rect through the palette LUT, upload it and present.
-   Mirrors the original BitBlt/StretchDIBits(srcY = bmp_height - y - cy) row flip. */
+   Mirrors the original BitBlt/StretchDIBits(srcY = bmp_height - y - cy) row flip.
+   On non-Windows the upload always happens right away but the present is
+   coalesced (PRESENT_MIN_INTERVAL_MS, flushed at the message pumps) - see the
+   note by the define. */
 void SdlBackendPresentRect(const void *bits, int bmp_height, int stride, int x, int y, int w, int h)
 {
   const unsigned char *src = (const unsigned char *)bits;
@@ -630,6 +709,9 @@ void SdlBackendPresentRect(const void *bits, int bmp_height, int stride, int x, 
     h = s_TexHeight - y;
   if ( w <= 0 || h <= 0 )
     return;
+#ifdef _DEBUG
+  ++s_RectBlits;
+#endif
 
   if ( w * h > s_StagePixels )
   {
@@ -654,6 +736,13 @@ void SdlBackendPresentRect(const void *bits, int bmp_height, int stride, int x, 
   r.w = w;
   r.h = h;
   SDL_UpdateTexture(s_Texture, &r, s_Stage, w * 4);
+#ifndef _WIN32
+  /* burst coalescing: a present here costs ~4.7 ms on X11 vs 46 us of upload;
+     defer while more blits are about to follow, the pumps flush the tail */
+  s_PresentPending = 1;
+  if ( (SDL_GetTicks() - s_LastPresentTick) < PRESENT_MIN_INTERVAL_MS )
+    return;
+#endif
   SdlPresentCurrent();
 }
 
@@ -726,12 +815,14 @@ int SdlBackendPumpEvents(void)
   SDL_Event ev;
   int quit = 0;
 
+  SdlFlushPresent();                          /* pending burst present (no-op on Windows) */
   while ( SDL_PollEvent(&ev) )
   {
     if ( ev.type == SDL_QUIT )
       quit = 1;
   }
   SdlWavePump();
+  SdlFlushPresent();                          /* also after WM_PAINT dispatched this round */
   return quit;
 #else
   /* Drain the win32_shim queue: PeekMessageA pumps SDL events into it when empty
@@ -739,6 +830,8 @@ int SdlBackendPumpEvents(void)
      goes through the game's own MainWndProc like a real DispatchMessage loop. */
   MSG m;
   int quit = 0;
+
+  SdlFlushPresent();                          /* show rect updates coalesced since the last pump */
 
   if ( s_Usr1Quit )                               /* SIGUSR1 test hook: graceful quit */
     return 1;
@@ -754,6 +847,7 @@ int SdlBackendPumpEvents(void)
     DispatchMessageA(&m);
   }
   SdlWavePump();
+  SdlFlushPresent();                          /* also after WM_PAINT dispatched this round */
   return quit || WinShim_QuitPosted();
 #endif
 }
