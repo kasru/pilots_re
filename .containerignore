@@ -1,0 +1,15 @@
+# Keep the podman build context small and free of data (PILOTS.EXE is 48 MB).
+.git
+build
+SRC/*.obj
+SRC/*.exe
+SRC/*.pdb
+SRC/*.map
+SRC/*.ilk
+SRC/*.dll
+SRC/*_debug.log
+PILOTS.EXE
+PILOTS.iso
+PILOTS0
+PILOTS0.*
+*.SAV

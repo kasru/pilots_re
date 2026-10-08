@@ -3,6 +3,23 @@
 
 #pragma once
 
+#ifndef _WIN32
+/*
+ * setjmp/longjmp routing: g_JumpBuffer (g_Globals.g_jmpbuf) is the generated
+ * MSVC jmp_buf field - 64 bytes, byte-for-byte from the original EXE - while
+ * glibc's jmp_buf is 156 bytes (it saves the signal mask as well), so using
+ * it directly would overflow into neighbouring globals. There is exactly one
+ * setjmp site (gameloop.c, via the defs.h _setjmp3 macro) and one longjmp
+ * site, so both are routed to a side buffer of the correct size. The setjmp
+ * macro still expands inside the game function's own frame - which is what
+ * setjmp requires - it just names the side buffer instead of the field.
+ */
+extern jmp_buf g_ShimJumpBuf;
+#undef setjmp
+#define setjmp(env)     _setjmp(g_ShimJumpBuf)
+#define longjmp(env, v) longjmp(g_ShimJumpBuf, v)   /* not self-referential: macros are blue-painted */
+#endif
+
 /* Extern global variable declarations (defined in globals.c) */
 
 extern char g_SaveMagic1[8];
@@ -374,5 +391,11 @@ void SdlMidi_ShortMsg(unsigned int packed);     /* was midiOutShortMsg: packed w
 void SdlMidi_SetVolume(int vol);                /* 0..255, applied when PCM is queued (was midiOutSetVolume) */
 int SdlMidi_GetVolume(void);
 void SdlMidi_Pump(void);                        /* render a refill of PCM; called from MidiTimerCallback */
+
+/* metrics/window queries for win32_shim.c (portable SDL code - defined on all platforms) */
+void SdlBackendGetClientSize(int *w, int *h);
+int  SdlBackendIsMinimized(void);
+void SdlBackendShowWindow(int show);
+DWORD SdlBackendGetWinStyle(void);
 
 #endif /* PILOTS_GLOBALS_H */

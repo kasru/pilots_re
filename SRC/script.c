@@ -17,6 +17,7 @@ static int g_NativeArgsConsumed = 0;
  * Uses __declspec(naked) to have full control over the stack.
  * After the call, measures how many bytes the callee cleaned via ret N
  * and stores the count (in DWORDs) in g_NativeArgsConsumed. */
+#ifdef _WIN32
 __declspec(naked) int __cdecl CallNativeWithVMStack(
     int (*func)(), int *vmStack, int vmTop)
 {
@@ -55,6 +56,46 @@ __declspec(naked) int __cdecl CallNativeWithVMStack(
     ret
   }
 }
+#else /* !_WIN32: same stack dance, GCC extended-asm form --------------------
+  Natives are __stdcall -> GCC i386 attribute((stdcall)), so the callee still
+  cleans N dwords via `ret N` and the measurement below yields the same
+  g_NativeArgsConsumed as the original. Operands are memory constraints so
+  the register allocation is explicit: edi/esi = loop operands, ebx = ESP
+  before the pushes (the `lea esp,[ebp-12]` equivalent), edi is reused as the
+  pre-call ESP after the loop, eax carries func/return value. */
+int __cdecl CallNativeWithVMStack(
+    int (*func)(), int *vmStack, int vmTop)
+{
+  int result;      /* native's return value (was: eax left untouched by the MSVC path) */
+  int consumed;    /* dwords the callee cleaned via ret N */
+  __asm__ __volatile__(
+      "movl %2, %%edi\n\t"        /* edi = vmStack */
+      "movl %3, %%esi\n\t"        /* esi = vmTop */
+      "movl %%esp, %%ebx\n\t"     /* ebx = ESP before the pushes */
+      "xorl %%ecx, %%ecx\n\t"
+      "1:\n\t"
+      "cmpl %%esi, %%ecx\n\t"
+      "jge 2f\n\t"
+      "pushl (%%edi,%%ecx,4)\n\t" /* push vmStack[ecx] (index 0 = deepest) */
+      "incl %%ecx\n\t"
+      "jmp 1b\n\t"
+      "2:\n\t"
+      "movl %%esp, %%edi\n\t"     /* edi = ESP just before the call */
+      "movl %4, %%eax\n\t"        /* eax = func */
+      "call *%%eax\n\t"
+      "movl %%eax, %1\n\t"        /* result = native's return value */
+      "movl %%esp, %%ecx\n\t"     /* ecx = ESP after the call */
+      "subl %%edi, %%ecx\n\t"     /* cleaned bytes (callee's ret N) */
+      "shrl $2, %%ecx\n\t"        /* cleaned dwords */
+      "movl %%ecx, %0\n\t"        /* consumed */
+      "movl %%ebx, %%esp\n\t"     /* restore ESP, dropping any leftovers */
+      : "=m" (consumed), "=m" (result)
+      : "m" (vmStack), "m" (vmTop), "m" (func)
+      : "eax", "ecx", "edx", "esi", "edi", "ebx", "cc", "memory");
+  g_NativeArgsConsumed = consumed;
+  return result;
+}
+#endif
 
 int __stdcall EvaluateScriptBytecode(unsigned __int64 accumulator, BYTE *bytecode)
 {

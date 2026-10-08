@@ -1,14 +1,20 @@
 #include "pilots_fwd.h"
+#ifdef _WIN32
 #include <SDL_syswm.h>
+#endif
 #include "adlmidi.h"
 
 #pragma pack(push, 2)
 
 /* ---- SDL2 backend ----
    Replaces the original GDI presentation path (CreateDIBSection + BitBlt/StretchDIBits +
-   SetDIBColorTable) with an SDL texture + renderer, and subclasses SDL's window proc so the
-   game's own MainWndProc/VideoWndProc keep receiving the raw Win32 messages (VK codes,
-   WM_CHAR, WM_PAINT update rects) exactly as the original did.
+   SetDIBColorTable) with an SDL texture + renderer. Two platform halves for message
+   delivery to the game's MainWndProc/VideoWndProc:
+     - Windows: subclasses SDL's window proc so the game keeps receiving the raw Win32
+       messages (VK codes, WM_CHAR, WM_PAINT update rects) exactly as the original did;
+     - Linux:   there is no Win32 queue - SdlDispatchSdlEvent translates SDL events into
+       WM_* messages and posts them through win32_shim's PostMessageA; PeekMessageA/
+       DispatchMessageA (the game's own loops + SdlBackendPumpEvents) drain that queue.
    Also wraps the SDL queue-audio devices; audio.c keeps the original 8 x 2048 byte WAVEHDR
    protocol on top of the wave one (SdlWavePump stands in for the MM_WOM_DONE callback).
    MIDI music renders through libADLMIDI (third_party/libADLMIDI, OPL3 emulation) into a
@@ -20,7 +26,9 @@ static SDL_Renderer *s_Renderer;
 static SDL_Texture *s_Texture;
 static int s_TexWidth;                          /* texture (backing store) size in pixels */
 static int s_TexHeight;
+#ifdef _WIN32
 static WNDPROC s_OrigWndProc;                   /* SDL's original window proc, before our subclass */
+#endif
 
 static unsigned int s_PalRGB[256];              /* palette LUT: 8-bit index -> 0xAARRGGBB */
 static unsigned int *s_Stage;                   /* staging buffer for rect conversion */
@@ -29,6 +37,7 @@ static int s_StagePixels;
 static SDL_AudioDeviceID s_WaveDev;             /* 11025 Hz / AUDIO_U8 / mono queue-audio device */
 static int s_WaveVolume = 255;                  /* 0..255, applied at queue time (u8 PCM centered at 128) */
 
+#ifdef _WIN32
 /* Window proc subclass: game messages first, SDL for everything else.
    The message sets of MainWndProc and VideoWndProc (MainWndProc self-delegates to
    VideoWndProc while a movie plays) are handled by the game only; everything else goes to
@@ -94,8 +103,246 @@ static LRESULT CALLBACK SdlGameWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
   }
 }
 
+#else /* !_WIN32: synthesize Win32 messages from SDL events ---------------- */
+
+static void SdlPresentCurrent(void);            /* defined below; re-presented on expose */
+
+/* SDL scancode -> Win32 virtual key. Letter/numpad VKs follow the physical (US) key
+   position - the same MapVirtualKey-based values the original game matched against. */
+static unsigned int SdlScancodeToVK(SDL_Scancode sc)
+{
+  if ( sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z )
+    return (unsigned int)('A' + (sc - SDL_SCANCODE_A));
+  if ( sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_9 )
+    return (unsigned int)('1' + (sc - SDL_SCANCODE_1));
+  if ( sc == SDL_SCANCODE_0 )
+    return '0';
+  if ( sc >= SDL_SCANCODE_F1 && sc <= SDL_SCANCODE_F24 )
+    return (unsigned int)(VK_F1 + (sc - SDL_SCANCODE_F1));
+  if ( sc >= SDL_SCANCODE_KP_1 && sc <= SDL_SCANCODE_KP_9 )
+    return (unsigned int)(0x61 + (sc - SDL_SCANCODE_KP_1));   /* VK_NUMPAD1..VK_NUMPAD9 */
+  switch ( sc )
+  {
+    case SDL_SCANCODE_KP_0:      return 0x60;   /* VK_NUMPAD0 */
+    case SDL_SCANCODE_KP_MULTIPLY: return 0x6A;
+    case SDL_SCANCODE_KP_PLUS:   return 0x6B;
+    case SDL_SCANCODE_KP_MINUS:  return 0x6D;
+    case SDL_SCANCODE_KP_DECIMAL: return 0x6E;
+    case SDL_SCANCODE_KP_DIVIDE: return 0x6F;
+    case SDL_SCANCODE_RETURN:    return VK_RETURN;
+    case SDL_SCANCODE_ESCAPE:    return VK_ESCAPE;
+    case SDL_SCANCODE_BACKSPACE: return VK_BACK;
+    case SDL_SCANCODE_TAB:       return VK_TAB;
+    case SDL_SCANCODE_SPACE:     return VK_SPACE;
+    case SDL_SCANCODE_PAGEUP:    return VK_PRIOR;
+    case SDL_SCANCODE_PAGEDOWN:  return VK_NEXT;
+    case SDL_SCANCODE_END:       return VK_END;
+    case SDL_SCANCODE_HOME:      return VK_HOME;
+    case SDL_SCANCODE_LEFT:      return VK_LEFT;
+    case SDL_SCANCODE_UP:        return VK_UP;
+    case SDL_SCANCODE_RIGHT:     return VK_RIGHT;
+    case SDL_SCANCODE_DOWN:      return VK_DOWN;
+    case SDL_SCANCODE_PRINTSCREEN: return VK_SNAPSHOT;
+    case SDL_SCANCODE_INSERT:    return VK_INSERT;
+    case SDL_SCANCODE_DELETE:    return VK_DELETE;
+    case SDL_SCANCODE_LSHIFT:
+    case SDL_SCANCODE_RSHIFT:    return VK_SHIFT;
+    case SDL_SCANCODE_LCTRL:
+    case SDL_SCANCODE_RCTRL:     return VK_CONTROL;
+    case SDL_SCANCODE_LALT:
+    case SDL_SCANCODE_RALT:      return VK_MENU;
+    case SDL_SCANCODE_PAUSE:     return VK_PAUSE;
+    case SDL_SCANCODE_CAPSLOCK:  return VK_CAPITAL;
+    case SDL_SCANCODE_NUMLOCKCLEAR: return VK_NUMLOCK;
+    case SDL_SCANCODE_SCROLLLOCK: return VK_SCROLL;
+    case SDL_SCANCODE_MINUS:     return 0xBD;   /* VK_OEM_MINUS */
+    case SDL_SCANCODE_EQUALS:    return 0xBB;   /* VK_OEM_PLUS */
+    case SDL_SCANCODE_LEFTBRACKET:  return 0xDB;
+    case SDL_SCANCODE_RIGHTBRACKET: return 0xDD;
+    case SDL_SCANCODE_SEMICOLON: return 0xBA;
+    case SDL_SCANCODE_APOSTROPHE: return 0xDE;
+    case SDL_SCANCODE_GRAVE:     return 0xC0;
+    case SDL_SCANCODE_BACKSLASH: return 0xDC;
+    case SDL_SCANCODE_COMMA:     return 0xBC;
+    case SDL_SCANCODE_PERIOD:    return 0xBE;
+    case SDL_SCANCODE_SLASH:     return 0xBF;
+    default:                     return 0;
+  }
+}
+
+/* SDL_TEXTINPUT is UTF-8; the ANSI window of the original delivered cp1251 bytes in
+   WM_CHAR (Russian layout: U+0410..U+044F -> 0xC0..0xFF, Ё/ё -> 0xA8/0xB8) */
+static char SdlTextToCp1251(const char *s)
+{
+  unsigned int cp = (unsigned char)s[0];
+
+  if ( cp >= 0x80 )
+  {
+    if ( (cp & 0xE0u) == 0xC0u && (s[1] & 0xC0u) == 0x80u )
+      cp = ((cp & 0x1Fu) << 6) | ((unsigned char)s[1] & 0x3Fu);
+    else
+      return '?';
+  }
+  if ( cp < 0x80 )
+    return (char)cp;
+  if ( cp == 0x0401 )
+    return (char)0xA8;
+  if ( cp == 0x0451 )
+    return (char)0xB8;
+  if ( cp >= 0x0410 && cp <= 0x044F )
+    return (char)(0xC0 + (cp - 0x0410));
+  return '?';
+}
+
+/* client coordinates packed the Win32 way: LOWORD = x, HIWORD = y */
+static LPARAM SdlPackPoint(int x, int y)
+{
+  return (LPARAM)(((unsigned int)(y & 0xFFFF) << 16) | (unsigned int)(x & 0xFFFF));
+}
+
+static void SdlPostChar(HWND hwnd, char ch)
+{
+  PostMessageA(hwnd, WM_CHAR, (WPARAM)(unsigned char)ch, 0);
+}
+
+static void SdlDispatchSdlEvent(const SDL_Event *ev)
+{
+  HWND hwnd = g_MainWindow;               /* 0 before CreateMainWindow: input events drop */
+
+  switch ( ev->type )
+  {
+    case SDL_QUIT:                        /* signal / last window gone: the normal close path */
+      if ( hwnd )
+        PostMessageA(hwnd, WM_CLOSE, 0, 0);
+      break;
+
+    case SDL_KEYDOWN:
+    case SDL_KEYUP:
+      {
+        unsigned int vk;
+        if ( !hwnd )
+          break;
+        vk = SdlScancodeToVK(ev->key.keysym.scancode);
+        if ( !vk )
+          break;
+        PostMessageA(hwnd, ev->type == SDL_KEYDOWN ? WM_KEYDOWN : WM_KEYUP, vk, 0);
+        /* Keys that never produce SDL_TEXTINPUT: emit the WM_CHAR that TranslateMessage
+           would have generated on Windows. Autorepeat keydowns repeat the char too. */
+        if ( ev->type == SDL_KEYDOWN )
+          switch ( vk )
+          {
+            case VK_RETURN: SdlPostChar(hwnd, '\r'); break;
+            case VK_ESCAPE: SdlPostChar(hwnd, 27);   break;
+            case VK_TAB:    SdlPostChar(hwnd, '\t'); break;
+            case VK_BACK:   SdlPostChar(hwnd, 8);    break;
+            default: break;
+          }
+        break;
+      }
+
+    case SDL_TEXTINPUT:
+      if ( hwnd )
+        SdlPostChar(hwnd, SdlTextToCp1251(ev->text.text));
+      break;
+
+    case SDL_MOUSEMOTION:
+      if ( !hwnd )
+        break;
+      PostMessageA(hwnd, WM_SETCURSOR, (WPARAM)hwnd, HTCLIENT); /* LOWORD(lParam) == HTCLIENT */
+      PostMessageA(hwnd, WM_MOUSEMOVE, 0, SdlPackPoint(ev->motion.x, ev->motion.y));
+      break;
+
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP:
+      {
+        UINT msg;
+        if ( !hwnd )
+          break;
+        if ( ev->button.button == SDL_BUTTON_LEFT )
+          msg = (ev->type == SDL_MOUSEBUTTONDOWN) ? WM_LBUTTONDOWN : WM_LBUTTONUP;
+        else if ( ev->button.button == SDL_BUTTON_RIGHT )
+          msg = (ev->type == SDL_MOUSEBUTTONDOWN) ? WM_RBUTTONDOWN : WM_RBUTTONUP;
+        else
+          break;                          /* middle button: unhandled by the game, skip */
+        PostMessageA(hwnd, WM_SETCURSOR, (WPARAM)hwnd, HTCLIENT);
+        PostMessageA(hwnd, msg, 0, SdlPackPoint(ev->button.x, ev->button.y));
+        break;
+      }
+
+    case SDL_WINDOWEVENT:
+      if ( !hwnd )
+        break;
+      switch ( ev->window.event )
+      {
+        case SDL_WINDOWEVENT_RESIZED:
+        case SDL_WINDOWEVENT_SIZE_CHANGED:
+          {
+            int w = ev->window.data1, h = ev->window.data2;
+            PostMessageA(hwnd, WM_WINDOWPOSCHANGED, 0, 0);
+            PostMessageA(hwnd, WM_SIZE, 0, SdlPackPoint(w, h));
+            InvalidateRect(hwnd, 0, 0);
+            break;
+          }
+        case SDL_WINDOWEVENT_EXPOSED:
+          SdlPresentCurrent();            /* SDL keeps no backbuffer: re-present now, ... */
+          InvalidateRect(hwnd, 0, 0);     /* ...let the game mark its dirty regions too */
+          break;
+        case SDL_WINDOWEVENT_MINIMIZED:   /* Win32 SIZE_MINIMIZED sends client 0,0 */
+          PostMessageA(hwnd, WM_SIZE, 0, 0);
+          break;
+        case SDL_WINDOWEVENT_RESTORED:
+          {
+            int w = 0, h = 0;
+            SdlBackendGetClientSize(&w, &h);
+            PostMessageA(hwnd, WM_SIZE, 0, SdlPackPoint(w, h));
+            InvalidateRect(hwnd, 0, 0);
+            break;
+          }
+        case SDL_WINDOWEVENT_ENTER:
+          PostMessageA(hwnd, WM_SETCURSOR, (WPARAM)hwnd, HTCLIENT);
+          break;
+        case SDL_WINDOWEVENT_CLOSE:
+          PostMessageA(hwnd, WM_CLOSE, 0, 0);
+          break;
+        default:
+          break;
+      }
+      break;
+
+    default:
+      break;
+  }
+}
+
+/* SDL event drain -> the win32_shim message queue (called from PeekMessageA when empty) */
+int WinShim_PumpSDLToQueue(void)
+{
+  SDL_Event ev;
+
+  while ( SDL_PollEvent(&ev) )
+    SdlDispatchSdlEvent(&ev);
+  return 0;
+}
+
+/* Headless test hook: SIGUSR1 makes SdlBackendPumpEvents report "quit", so the game
+   leaves its main loop through the normal WinMain LABEL_19 cleanup path - lets the
+   full shutdown sequence be exercised without a window manager (diag_hang.sh pokes
+   it from outside the container). */
+static volatile sig_atomic_t s_Usr1Quit;
+static void SdlSigUsr1Handler(int sig)
+{
+  (void)sig;
+  s_Usr1Quit = 1;
+}
+
+#endif /* _WIN32 */
+
 int SdlBackendStartup(void)
 {
+#ifndef _WIN32
+  s_Usr1Quit = 0;
+  signal(SIGUSR1, SdlSigUsr1Handler);
+#endif
   if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0 )
   {
     DBG_LOG("SdlBackendStartup: SDL_Init failed: %s", SDL_GetError());
@@ -127,7 +374,9 @@ void SdlBackendShutdown(void)
     SDL_DestroyWindow(s_SdlWindow);
     s_SdlWindow = 0;
   }
+#ifdef _WIN32
   s_OrigWndProc = 0;
+#endif
   if ( s_Stage )
   {
     free(s_Stage);
@@ -150,7 +399,6 @@ void SdlBackendShutdown(void)
 HWND SdlBackendCreateWindow(int x, int y, int clientW, int clientH, int resizable, LPCSTR title)
 {
   Uint32 flags = SDL_WINDOW_HIDDEN;
-  SDL_SysWMinfo wmi;
   HWND hwnd;
 
   if ( !s_SdlWindow )
@@ -168,14 +416,24 @@ HWND SdlBackendCreateWindow(int x, int y, int clientW, int clientH, int resizabl
       return 0;
     }
   }
-  SDL_VERSION(&wmi.version);
-  if ( !SDL_GetWindowWMInfo(s_SdlWindow, &wmi) || wmi.subsystem != SDL_SYSWM_WINDOWS )
+#ifdef _WIN32
   {
-    DBG_LOG("SdlBackendCreateWindow: SDL_GetWindowWMInfo failed: %s", SDL_GetError());
-    return 0;
+    SDL_SysWMinfo wmi;
+    SDL_VERSION(&wmi.version);
+    if ( !SDL_GetWindowWMInfo(s_SdlWindow, &wmi) || wmi.subsystem != SDL_SYSWM_WINDOWS )
+    {
+      DBG_LOG("SdlBackendCreateWindow: SDL_GetWindowWMInfo failed: %s", SDL_GetError());
+      return 0;
+    }
+    hwnd = wmi.info.win.window;
+    s_OrigWndProc = (WNDPROC)SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)SdlGameWndProc);
   }
-  hwnd = wmi.info.win.window;
-  s_OrigWndProc = (WNDPROC)SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)SdlGameWndProc);
+#else
+  /* No native HWND: the game gets win32_shim's fake handle; SdlDispatchSdlEvent posts
+     WM_* messages at g_MainWindow and DispatchMessageA routes them to MainWndProc. */
+  hwnd = WinShimMainWindow();
+  SDL_StartTextInput();                    /* SDL_TEXTINPUT -> WM_CHAR (Unicode ANSI parity) */
+#endif
   if ( resizable )                              /* SDL's WM_GETMINMAXINFO handler preserves this */
     SDL_SetWindowMinimumSize(s_SdlWindow, clientW, clientH);
   return hwnd;
@@ -357,11 +615,14 @@ void SdlBackendUpdatePalette(const PALETTEENTRY *entries, int count)
         | (unsigned int)entries[i].peBlue;
 }
 
-/* Message pump for the game loops: SDL_PollEvent pumps the Win32 queue (SDL internally does
-   PeekMessage/TranslateMessage/DispatchMessage, so our wndproc subclass sees every message).
-   Returns 1 when SDL_QUIT was received (original: WM_QUIT, Msg.message == 18). */
+/* Message pump for the game loops. Returns 1 when it is time to leave the loop
+   (original: WM_QUIT, Msg.message == 18). */
 int SdlBackendPumpEvents(void)
 {
+#ifdef _WIN32
+  /* SDL_PollEvent pumps the Win32 queue (SDL internally does PeekMessage/
+     TranslateMessage/DispatchMessage, so our wndproc subclass sees every message);
+     SDL_QUIT == WM_QUIT here. */
   SDL_Event ev;
   int quit = 0;
 
@@ -372,6 +633,67 @@ int SdlBackendPumpEvents(void)
   }
   SdlWavePump();
   return quit;
+#else
+  /* Drain the win32_shim queue: PeekMessageA pumps SDL events into it when empty
+     (WinShim_PumpSDLToQueue -> SdlDispatchSdlEvent -> PostMessageA), each message
+     goes through the game's own MainWndProc like a real DispatchMessage loop. */
+  MSG m;
+  int quit = 0;
+
+  if ( s_Usr1Quit )                               /* SIGUSR1 test hook: graceful quit */
+    return 1;
+
+  while ( PeekMessageA(&m, 0, 0, 0, PM_REMOVE) )
+  {
+    if ( m.message == WM_QUIT )
+    {
+      quit = 1;
+      break;
+    }
+    TranslateMessage(&m);
+    DispatchMessageA(&m);
+  }
+  SdlWavePump();
+  return quit || WinShim_QuitPosted();
+#endif
+}
+
+/* ---- small helpers for win32_shim.c (GetDC metrics, ShowWindow, IsIconic, styles) ---- */
+
+void SdlBackendGetClientSize(int *w, int *h)
+{
+  int W = 0, H = 0;
+  if ( s_SdlWindow )
+    SDL_GetWindowSize(s_SdlWindow, &W, &H);
+  if ( w ) *w = W;
+  if ( h ) *h = H;
+}
+
+int SdlBackendIsMinimized(void)
+{
+  return s_SdlWindow && (SDL_GetWindowFlags(s_SdlWindow) & SDL_WINDOW_MINIMIZED) != 0;
+}
+
+void SdlBackendShowWindow(int show)
+{
+  if ( !s_SdlWindow )
+    return;
+  if ( show )
+  {
+    SDL_ShowWindow(s_SdlWindow);
+    SDL_RaiseWindow(s_SdlWindow);
+  }
+  else
+    SDL_HideWindow(s_SdlWindow);
+}
+
+/* The styles CreateMainWindow computed but the SDL window never received natively;
+   AdjustWindowRectEx (win32_shim) derives border/titlebar metrics from these. */
+DWORD SdlBackendGetWinStyle(void)
+{
+  if ( s_SdlWindow && (SDL_GetWindowFlags(s_SdlWindow) & SDL_WINDOW_RESIZABLE) )
+    return 0x02CF0000u;                    /* WS_CLIPCHILDREN|WS_CAPTION|WS_THICKFRAME|... */
+  return 0x020A0000u;                      /* original fixed-window style from main.c */
 }
 
 /* ---- SDL wave device (replaces waveOutOpen) ---- */

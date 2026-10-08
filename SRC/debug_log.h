@@ -5,8 +5,10 @@
 
 #include <windows.h>
 #include <stdio.h>
+#ifdef _WIN32
 #include <intrin.h>
 #include <crtdbg.h>
+#endif
 #include <stdlib.h>
 
 #ifdef _DEBUG
@@ -24,6 +26,7 @@
 extern HANDLE g_hDebugLogFile;
 extern CRITICAL_SECTION g_DebugLogCS;
 
+#ifdef _WIN32
 /*
  * Custom invalid parameter handler for MSVC debug CRT.
  * The original Watcom runtime simply returned -1/errno on invalid handles
@@ -41,18 +44,24 @@ static void __cdecl DbgInvalidParameterHandler(
     /* Silently ignore — the CRT function will return an error value */
     (void)expression; (void)function; (void)file; (void)line; (void)pReserved;
 }
+#endif /* _WIN32 */
 
 static void DbgLogInit(void)
 {
     char logPath[MAX_PATH];
 
+#ifdef _WIN32
     /* Suppress MSVC debug CRT assertion popups for invalid I/O handles.
      * Original Watcom CRT returned -1 on invalid handles; MSVC debug CRT
      * fires assertions. This makes _read/_write/_close/_lseek behave like
      * Watcom: return -1 and set errno. */
     _set_invalid_parameter_handler(DbgInvalidParameterHandler);
     _CrtSetReportMode(_CRT_ASSERT, 0);  /* Disable assert popups */
+#endif
 
+    /* Path of the running image: real GetModuleFileNameA on Windows, /proc/self/exe
+       (formatted as a Win path) via win32_shim on Linux; CreateFileA below converts
+       '\' -> '/' there, so the resulting log sits next to the executable. */
     GetModuleFileNameA(NULL, logPath, MAX_PATH);
     /* Replace .exe with _debug.log */
     {
@@ -104,13 +113,15 @@ static void DbgPrintf(const char *fmt, ...)
 #define DBG_ENTER(func) DbgPrintf("[PILOTS] ENTER: %s\n", func)
 #define DBG_EXIT(func)  DbgPrintf("[PILOTS] EXIT:  %s\n", func)
 
-/* Log a message */
-#define DBG_LOG(msg, ...) DbgPrintf("[PILOTS] " msg "\n", __VA_ARGS__)
+/* Log a message.  ##__VA_ARGS__: swallows the comma for the no-arg form - MSVC's
+   preprocessor did this implicitly, GCC needs the ## (both accept it). */
+#define DBG_LOG(msg, ...) DbgPrintf("[PILOTS] " msg "\n", ##__VA_ARGS__)
 #define DBG_MSG(msg) DbgPrintf("[PILOTS] " msg "\n")
 
 /* Log an error */
-#define DBG_ERR(msg, ...) DbgPrintf("[PILOTS] ERROR: " msg "\n", __VA_ARGS__)
+#define DBG_ERR(msg, ...) DbgPrintf("[PILOTS] ERROR: " msg "\n", ##__VA_ARGS__)
 
+#ifdef _WIN32
 /* ===== SEH Exception Handler ===== */
 
 static const char* ExceptionCodeToString(DWORD code)
@@ -198,6 +209,40 @@ static void DbgInstallExceptionHandler(void)
     SetUnhandledExceptionFilter(DebugExceptionFilter);
     DBG_MSG("Unhandled exception filter installed");
 }
+
+#else /* !_WIN32: POSIX signal handlers + backtrace instead of SEH */
+
+#include <signal.h>
+#include <execinfo.h>
+#include <unistd.h>
+
+/* Async-signal-safe-ish crash dump: raw write() + backtrace_symbols_fd only
+   (DbgPrintf uses the log-file CS and could deadlock inside a handler). */
+static void DbgSignalHandler(int sig)
+{
+    void *frames[32];
+    int n;
+    ssize_t wr;
+    static const char hdr[] = "\n[PILOTS] *** FATAL SIGNAL - stack trace ***\n";
+
+    wr = write(2, hdr, sizeof hdr - 1);
+    (void)wr;
+    n = backtrace(frames, 32);
+    backtrace_symbols_fd(frames, n, 2);
+    _exit(128 + sig);
+}
+
+static void DbgInstallExceptionHandler(void)
+{
+    signal(SIGSEGV, DbgSignalHandler);
+    signal(SIGBUS, DbgSignalHandler);
+    signal(SIGFPE, DbgSignalHandler);
+    signal(SIGILL, DbgSignalHandler);
+    signal(SIGABRT, DbgSignalHandler);
+    DBG_MSG("POSIX signal handlers installed (backtrace on crash)");
+}
+
+#endif /* _WIN32 */
 
 #else /* Release build - all macros become no-ops */
 

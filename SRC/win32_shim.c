@@ -1,0 +1,1212 @@
+/*
+ * win32_shim.c - Linux implementation of the Win32/mmsystem/CRT surface declared in
+ * win32_shim.h. On Windows this translation unit is empty (#ifndef _WIN32) and the
+ * real SDK provides everything; the .bat builds still list the file for symmetry.
+ *
+ * Design notes:
+ *  - paths: the game builds "\"-separated paths everywhere (g_ExecutablePath is
+ *    literally ".\\PILOTS.EXE"); _open()/CreateFileA()/GetFileAttributesA() translate
+ *    '\' -> '/', everything else keeps Win semantics so GetFullPathNameA's strrchr('\\')
+ *    logic in fileio.c/video.c keeps working byte-for-byte.
+ *  - messages: there is no Win32 queue here. sdl_backend.c translates SDL events and
+ *    posts WM_* messages via PostMessageA(); PeekMessageA() drains the queue (pumping
+ *    SDL when empty) and DispatchMessageA() calls the game's MainWndProc directly -
+ *    the same call sequence the original had, just without a real message loop.
+ *  - MCI is a stub for now: MCI_OPEN reports "no device" (device id 0), so video.c
+ *    skips video playback gracefully (no dialogs, no hang). The ffmpeg-backed
+ *    mciSendCommandA lands in the video phase of the port.
+ */
+#include "pilots_fwd.h"
+
+#ifndef _WIN32
+
+#include <unistd.h>
+#include <fcntl.h>
+#include <stdarg.h>
+#include <sys/stat.h>
+#include <errno.h>
+
+#ifdef remove
+#undef remove          /* use the real glibc remove() inside WinShim_remove */
+#endif
+/* <stdio.h> was included while the remove macro was active, so its declaration
+   got renamed to WinShim_remove - redeclare glibc's remove for this TU. */
+extern int remove(const char *path);
+
+/* Side setjmp buffer: pilots_globals.h routes setjmp/longjmp here (the
+   generated 64-byte g_JumpBuffer field is too small for glibc's jmp_buf). */
+jmp_buf g_ShimJumpBuf;
+
+/* ===================================================================== */
+/* paths                                                                 */
+/* ===================================================================== */
+
+static void ShimPathToUnix(const char *src, char *dst, size_t cap)
+{
+  size_t i;
+  for ( i = 0; i + 1 < cap && src[i]; ++i )
+    dst[i] = (src[i] == '\\') ? '/' : src[i];
+  dst[i] = '\0';
+}
+
+/* in-place '/' -> '\' (GetModuleFileNameA result for debug_log path handling) */
+static void ShimPathToWin(char *s)
+{
+  for ( ; *s; ++s)
+    if ( *s == '/' )
+      *s = '\\';
+}
+
+DWORD GetFullPathNameA(LPCSTR lpFileName, DWORD nBufferLength, LPSTR lpBuffer, LPSTR *lpFilePart)
+{
+  char unixPath[MAX_PATH * 2];
+  char absPath[MAX_PATH * 2];
+  char norm[MAX_PATH * 2];
+  char *o;
+  const char *p;
+  size_t len;
+
+  if ( !lpFileName || !lpBuffer || !nBufferLength )
+    return 0;
+  ShimPathToUnix(lpFileName, unixPath, sizeof unixPath);
+  if ( unixPath[0] != '/' )
+  {
+    char cwd[MAX_PATH];
+    if ( !getcwd(cwd, sizeof cwd) )
+      return 0;
+    snprintf(absPath, sizeof absPath, "%s/%s", cwd, unixPath);
+  }
+  else
+  {
+    snprintf(absPath, sizeof absPath, "%s", unixPath);
+  }
+
+  /* normalize: drop "." components, resolve ".." */
+  p = absPath;
+  o = norm;
+  if ( *p == '/' )
+  {
+    *o++ = '/';
+    while ( *p == '/' )
+      ++p;
+  }
+  while ( *p )
+  {
+    const char *seg = p;
+    size_t segLen;
+    while ( *p && *p != '/' )
+      ++p;
+    segLen = (size_t)(p - seg);
+    while ( *p == '/' )
+      ++p;
+    if ( segLen == 1 && seg[0] == '.' )
+      continue;
+    if ( segLen == 2 && seg[0] == '.' && seg[1] == '.' )
+    {
+      /* pop the last component (stay at root for leading '/') */
+      if ( o > norm + (norm[0] == '/' ? 1 : 0) )
+      {
+        --o;
+        while ( o > norm && o[-1] != '/' )
+          --o;
+        if ( o > norm && o[-1] == '/' && norm[0] != '/' )
+          --o;
+      }
+      continue;
+    }
+    if ( o > norm && o[-1] != '/' )
+      *o++ = '/';
+    if ( o + segLen >= norm + sizeof norm )
+      return 0;
+    memcpy(o, seg, segLen);
+    o += segLen;
+  }
+  *o = '\0';
+  if ( !norm[0] )
+  {
+    norm[0] = '/';
+    norm[1] = '\0';
+  }
+
+  ShimPathToWin(norm);
+  len = strlen(norm);
+  if ( len + 1 > nBufferLength )
+    return (DWORD)(len + 1);         /* Windows: required size incl. NUL, nothing written */
+  memcpy(lpBuffer, norm, len + 1);
+  if ( lpFilePart )
+  {
+    char *slash = strrchr(lpBuffer, '\\');
+    *lpFilePart = slash ? slash + 1 : lpBuffer;
+  }
+  return (DWORD)len;
+}
+
+DWORD GetTempPathA(DWORD nBufferLength, LPSTR lpBuffer)
+{
+  const char *tmp = getenv("TMPDIR");
+  char buf[MAX_PATH];
+  size_t len;
+
+  if ( !tmp || !tmp[0] )
+    tmp = "/tmp";
+  /* no trailing slash: BuildAlternateSavePath formats "%s\\%s" itself */
+  snprintf(buf, sizeof buf, "%s", tmp);
+  len = strlen(buf);
+  if ( !lpBuffer || nBufferLength == 0 )
+    return (DWORD)len;
+  if ( len + 1 > nBufferLength )
+    return (DWORD)(len + 1);
+  memcpy(lpBuffer, buf, len + 1);
+  return (DWORD)len;
+}
+
+DWORD GetModuleFileNameA(HINSTANCE hModule, LPSTR lpFilename, DWORD nSize)
+{
+  char exePath[MAX_PATH];
+  ssize_t n;
+  size_t len;
+
+  (void)hModule;
+  if ( !lpFilename || !nSize )
+    return 0;
+  n = readlink("/proc/self/exe", exePath, sizeof exePath - 1);
+  if ( n <= 0 )
+  {
+    /* extremely unlikely; keep something sane so DbgLogInit still works */
+    snprintf(lpFilename, nSize, "PILOT_RV.EXE");
+    return (DWORD)strlen(lpFilename);
+  }
+  exePath[n] = '\0';
+  ShimPathToWin(exePath);
+  /* Windows module paths always carry ".EXE" and the game relies on it:
+     CreateHelpFilePath does *strrchr(path, '.') = 0 unconditionally (main.c:37)
+     and DbgLogInit strips the extension before appending "_debug.log". The
+     Linux binary has no extension, so append a virtual one. */
+  len = strlen(exePath);
+  if ( len + 4 < sizeof exePath )
+  {
+    memcpy(exePath + len, ".EXE", 5);
+    len += 4;
+  }
+  if ( len >= nSize )
+  {
+    memcpy(lpFilename, exePath, nSize - 1);
+    lpFilename[nSize - 1] = '\0';
+    return nSize;
+  }
+  memcpy(lpFilename, exePath, len + 1);
+  return (DWORD)len;
+}
+
+DWORD GetVersion(void)
+{
+  /* Positive value with low byte >= 4: audio.c takes the InitDirectDraw_Win95 (SDL)
+     branch and video.c's isWin3x stays 0. Was: real Windows GetVersion(). */
+  return 0x0000040Au;
+}
+
+void Sleep(DWORD ms)
+{
+  SDL_Delay(ms);
+}
+
+/* ===================================================================== */
+/* CRT bits the game uses directly                                       */
+/* ===================================================================== */
+
+char *strupr(char *s)
+{
+  char *p;
+  for ( p = s; p && *p; ++p )
+    *p = (char)toupper((unsigned char)*p);
+  return s;
+}
+
+int _open(const char *path, int flags, ...)
+{
+  char up[MAX_PATH * 2];
+  int of = 0;
+  int mode = 0666;
+
+  if ( flags & _O_CREAT )
+  {
+    va_list ap;
+    va_start(ap, flags);
+    mode = va_arg(ap, int) & 0777;
+    va_end(ap);
+  }
+  /* MSVC _O_* low bits match POSIX O_RDONLY/O_WRONLY/O_RDWR */
+  of = flags & 3;
+  if ( flags & _O_CREAT )  of |= O_CREAT;
+  if ( flags & _O_EXCL )   of |= O_EXCL;
+  if ( flags & _O_TRUNC )  of |= O_TRUNC;
+  if ( flags & _O_APPEND ) of |= O_APPEND;
+  ShimPathToUnix(path, up, sizeof up);
+  return open(up, of, mode);
+}
+
+int _close(int fd)
+{
+  return close(fd);
+}
+
+int _read(int fd, void *buf, unsigned int count)
+{
+  return (int)read(fd, buf, count);
+}
+
+int _write(int fd, const void *buf, unsigned int count)
+{
+  return (int)write(fd, buf, count);
+}
+
+long _lseek(int fd, long ofs, int whence)
+{
+  return (long)lseek(fd, ofs, whence);
+}
+
+int _chsize(int fd, long size)
+{
+  return ftruncate(fd, size);
+}
+
+int WinShim_remove(const char *path)
+{
+  char up[MAX_PATH * 2];
+  ShimPathToUnix(path, up, sizeof up);
+  return remove(up);
+}
+
+/* msvcrt-compatible itoa: digits reversed into a temp, '-' only for radix 10,
+   non-10 radices treat value as unsigned (so -1 @16 -> "ffffffff"). */
+char *itoa(int value, char *buffer, int radix)
+{
+  static const char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+  char tmp[34];                 /* 32 bits + sign + NUL */
+  unsigned int u;
+  int i = 0, j = 0, neg = 0;
+
+  if ( radix < 2 || radix > 36 )
+  {
+    buffer[0] = '\0';
+    return buffer;
+  }
+  if ( value < 0 && radix == 10 )
+  {
+    neg = 1;
+    u = (unsigned int)(-(value + 1)) + 1u;  /* INT_MIN safe */
+  }
+  else
+  {
+    u = (unsigned int)value;
+  }
+  do
+  {
+    tmp[i++] = digits[u % (unsigned)radix];
+    u /= (unsigned)radix;
+  } while ( u );
+  if ( neg )
+    tmp[i++] = '-';
+  while ( i > 0 )
+    buffer[j++] = tmp[--i];
+  buffer[j] = '\0';
+  return buffer;
+}
+
+int wsprintfA(LPSTR out, LPCSTR fmt, ...)
+{
+  va_list ap;
+  int n;
+
+  /* Windows wsprintfA is a 1024-char printf; same overflow profile as the original */
+  va_start(ap, fmt);
+  n = vsnprintf(out, 1024, fmt, ap);
+  va_end(ap);
+  return n < 0 ? 0 : n;
+}
+
+int wvsprintfA(LPSTR out, LPCSTR fmt, va_list ap)
+{
+  int n = vsnprintf(out, 1024, fmt, ap);
+  return n < 0 ? 0 : n;
+}
+
+int lstrlenA(LPCSTR s)
+{
+  return s ? (int)strlen(s) : 0;
+}
+
+int WideCharToMultiByte(UINT codePage, DWORD flags, const WCHAR *src, int srcLen,
+                        char *dst, int dstLen, const char *defaultChar, int *usedDefault)
+{
+  unsigned int u;
+  char c;
+
+  (void)codePage; (void)flags; (void)defaultChar;
+  if ( usedDefault )
+    *usedDefault = 0;
+  if ( !src || srcLen < 1 || !dst || dstLen < 1 )
+    return 0;
+  u = src[0];
+  c = '?';
+  if ( u < 0x80 )
+    c = (char)u;
+  else if ( u == 0x0401 )                 /* Ё */
+    c = (char)0xA8;
+  else if ( u == 0x0451 )                 /* ё */
+    c = (char)0xB8;
+  else if ( u >= 0x0410 && u <= 0x044F )  /* А..я -> cp1251 0xC0..0xFF */
+    c = (char)(0xC0 + (u - 0x0410));
+  dst[0] = c;
+  return 1;
+}
+
+/* ===================================================================== */
+/* file attrs / drives (video.c AVI search)                              */
+/* ===================================================================== */
+
+DWORD GetFileAttributesA(LPCSTR lpFileName)
+{
+  char up[MAX_PATH * 2];
+  struct stat st;
+
+  if ( !lpFileName )
+    return 0xFFFFFFFFu;
+  ShimPathToUnix(lpFileName, up, sizeof up);
+  if ( stat(up, &st) != 0 )
+    return 0xFFFFFFFFu;
+  return 0x80;                             /* FILE_ATTRIBUTE_NORMAL */
+}
+
+DWORD GetLogicalDrives(void)
+{
+  return 0;                                /* no drive letters; the loop in
+                                              SearchVideoFileOnDrives exits cleanly */
+}
+
+UINT GetDriveTypeA(LPCSTR lpRootPathName)
+{
+  (void)lpRootPathName;
+  return 3;                                /* DRIVE_FIXED */
+}
+
+/* ===================================================================== */
+/* process / library stubs                                               */
+/* ===================================================================== */
+
+int CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, void *procAttrs,
+                   void *threadAttrs, int bInheritHandles, DWORD dwCreationFlags,
+                   void *env, LPCSTR lpCurrentDirectory, LPSTARTUPINFOA lpStartupInfo,
+                   LPPROCESS_INFORMATION lpProcessInformation)
+{
+  (void)lpApplicationName; (void)procAttrs; (void)threadAttrs;
+  (void)bInheritHandles; (void)dwCreationFlags; (void)env;
+  (void)lpCurrentDirectory; (void)lpStartupInfo; (void)lpProcessInformation;
+  DBG_LOG("CreateProcessA: stubbed (cmd='%s')", lpCommandLine ? lpCommandLine : "");
+  return 0;                                /* launch fails; game shows its own error path */
+}
+
+DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds)
+{
+  (void)hHandle; (void)dwMilliseconds;
+  return 0;
+}
+
+HMODULE LoadLibraryA(LPCSTR lpLibFileName)
+{
+  (void)lpLibFileName;
+  return 0;                                /* GMW.DLL path is dead (GetVersion forces SDL) */
+}
+
+void *GetProcAddress(HMODULE hModule, LPCSTR lpProcName)
+{
+  (void)hModule; (void)lpProcName;
+  return 0;
+}
+
+int FreeLibrary(HMODULE hModule)
+{
+  (void)hModule;
+  return 0;
+}
+
+/* ===================================================================== */
+/* memory                                                                */
+/* ===================================================================== */
+
+HGLOBAL GlobalAlloc(UINT uFlags, size_t dwBytes)
+{
+  (void)uFlags;
+  return (HGLOBAL)malloc(dwBytes ? dwBytes : 1);
+}
+
+HGLOBAL GlobalFree(HGLOBAL hMem)
+{
+  free(hMem);
+  return 0;
+}
+
+HGLOBAL GlobalLock(HGLOBAL hMem)
+{
+  return hMem;                             /* malloc block: handle == pointer */
+}
+
+int GlobalUnlock(HGLOBAL hMem)
+{
+  (void)hMem;
+  return 1;
+}
+
+/* ===================================================================== */
+/* critical sections: recursive pthread mutex (Win CRITICAL_SECTION is    */
+/* recursive too)                                                        */
+/* ===================================================================== */
+
+static void ShimInitCS(LPCRITICAL_SECTION cs)
+{
+  pthread_mutexattr_t attr;
+  pthread_mutexattr_init(&attr);
+  pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+  pthread_mutex_init(&cs->mutex, &attr);
+  pthread_mutexattr_destroy(&attr);
+  cs->inited = 1;
+}
+
+void InitializeCriticalSection(LPCRITICAL_SECTION cs)
+{
+  ShimInitCS(cs);
+}
+
+void EnterCriticalSection(LPCRITICAL_SECTION cs)
+{
+  if ( !cs->inited )
+    ShimInitCS(cs);
+  pthread_mutex_lock(&cs->mutex);
+}
+
+void LeaveCriticalSection(LPCRITICAL_SECTION cs)
+{
+  if ( cs->inited )
+    pthread_mutex_unlock(&cs->mutex);
+}
+
+void DeleteCriticalSection(LPCRITICAL_SECTION cs)
+{
+  if ( cs->inited )
+  {
+    pthread_mutex_destroy(&cs->mutex);
+    cs->inited = 0;
+  }
+}
+
+/* ===================================================================== */
+/* CreateFileA family - only the debug log uses file handles             */
+/* ===================================================================== */
+
+#define SHIM_NUM_HANDLES 32
+static int s_HandleFds[SHIM_NUM_HANDLES];  /* 0 = free; handle value = index + 1 */
+
+static int ShimHandleToFd(HANDLE h)
+{
+  intptr_t idx = (intptr_t)h - 1;
+  if ( idx < 0 || idx >= SHIM_NUM_HANDLES || !s_HandleFds[idx] )
+    return -1;
+  return s_HandleFds[idx];
+}
+
+HANDLE CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode,
+                   void *lpSecurityAttributes, DWORD dwCreationDisposition,
+                   DWORD dwFlagsAndAttributes, HANDLE hTemplateFile)
+{
+  char up[MAX_PATH * 2];
+  int of = 0;
+  int fd;
+  int i;
+
+  (void)dwShareMode; (void)lpSecurityAttributes; (void)dwFlagsAndAttributes;
+  (void)hTemplateFile;
+  if ( !lpFileName )
+    return INVALID_HANDLE_VALUE;
+  if ( dwDesiredAccess & GENERIC_WRITE )
+    of = (dwDesiredAccess & GENERIC_READ) ? O_RDWR : O_WRONLY;
+  else
+    of = O_RDONLY;
+  if ( dwCreationDisposition == CREATE_ALWAYS )
+    of |= O_CREAT | O_TRUNC;
+  else if ( dwCreationDisposition == CREATE_NEW )
+    of |= O_CREAT | O_EXCL;
+  ShimPathToUnix(lpFileName, up, sizeof up);
+  fd = open(up, of, 0666);
+  if ( fd < 0 )
+    return INVALID_HANDLE_VALUE;
+  for ( i = 0; i < SHIM_NUM_HANDLES; ++i )
+    if ( !s_HandleFds[i] )
+    {
+      s_HandleFds[i] = fd;
+      return (HANDLE)(intptr_t)(i + 1);
+    }
+  close(fd);
+  return INVALID_HANDLE_VALUE;
+}
+
+int WriteFile(HANDLE hFile, const void *lpBuffer, DWORD nNumberOfBytesToWrite,
+              LPDWORD lpNumberOfBytesWritten, void *lpOverlapped)
+{
+  int fd = ShimHandleToFd(hFile);
+  ssize_t n;
+
+  (void)lpOverlapped;
+  if ( fd < 0 )
+    return 0;
+  n = write(fd, lpBuffer, nNumberOfBytesToWrite);
+  if ( lpNumberOfBytesWritten )
+    *lpNumberOfBytesWritten = (DWORD)(n < 0 ? 0 : n);
+  return n >= 0;
+}
+
+int ReadFile(HANDLE hFile, void *lpBuffer, DWORD nNumberOfBytesToRead,
+             LPDWORD lpNumberOfBytesRead, void *lpOverlapped)
+{
+  int fd = ShimHandleToFd(hFile);
+  ssize_t n;
+
+  (void)lpOverlapped;
+  if ( fd < 0 )
+    return 0;
+  n = read(fd, lpBuffer, nNumberOfBytesToRead);
+  if ( lpNumberOfBytesRead )
+    *lpNumberOfBytesRead = (DWORD)(n < 0 ? 0 : n);
+  return n >= 0;
+}
+
+int FlushFileBuffers(HANDLE hFile)
+{
+  /* no fsync(): DbgPrintf flushes after every line; write() is already
+     visible to readers. A real fsync per log line would stall the game. */
+  return ShimHandleToFd(hFile) >= 0;
+}
+
+int CloseHandle(HANDLE hObject)
+{
+  int fd = ShimHandleToFd(hObject);
+  intptr_t idx = (intptr_t)hObject - 1;
+
+  if ( fd < 0 )
+    return 0;
+  close(fd);
+  if ( idx >= 0 && idx < SHIM_NUM_HANDLES )
+    s_HandleFds[idx] = 0;
+  return 1;
+}
+
+void OutputDebugStringA(LPCSTR lpOutputString)
+{
+  if ( lpOutputString )
+  {
+    fputs(lpOutputString, stderr);
+    fflush(stderr);
+  }
+}
+
+/* ===================================================================== */
+/* user32: message box / metrics / window management                     */
+/* ===================================================================== */
+
+int MessageBoxA(HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType)
+{
+  (void)hWnd; (void)uType;
+  fprintf(stderr, "[MessageBox] %s: %s\n", lpCaption ? lpCaption : "", lpText ? lpText : "");
+  fflush(stderr);
+  DBG_LOG("MessageBox: [%s] %s", lpCaption ? lpCaption : "", lpText ? lpText : "");
+  return 1;                                /* IDOK */
+}
+
+int MessageBeep(UINT uType)
+{
+  (void)uType;
+  return 1;
+}
+
+int GetSystemMetrics(int nIndex)
+{
+  switch ( nIndex )
+  {
+    case 0:                                 /* SM_CXSCREEN */
+    case 1:                                 /* SM_CYSCREEN */
+      {
+        SDL_DisplayMode dm;
+        if ( SDL_GetDesktopDisplayMode(0, &dm) == 0 )
+          return nIndex == 0 ? dm.w : dm.h;
+        return nIndex == 0 ? 1024 : 768;   /* dummy driver fallback */
+      }
+    case 4:  return 19;                     /* SM_CYCAPTION */
+    case 5:  return 4;                      /* SM_CXBORDER */
+    case 6:  return 4;                      /* SM_CYBORDER */
+    case 32: return 4;                      /* SM_CXSIZEFRAME */
+    case 33: return 4;                      /* SM_CYSIZEFRAME */
+    default: return 0;
+  }
+}
+
+/* ---- the posted-message queue ---- */
+
+#define SHIM_MSG_CAPACITY 256
+static MSG s_MsgQueue[SHIM_MSG_CAPACITY];
+static int s_MsgHead;
+static int s_MsgCount;
+static int s_QuitPosted;
+static int s_QuitDelivered;
+static int s_PaintPending;
+static int s_InDispatch;
+static int s_InPump;
+
+int PostMessageA(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+  MSG *m;
+  int x, y;
+
+  if ( s_MsgCount >= SHIM_MSG_CAPACITY )
+  {
+    DBG_MSG("PostMessageA: queue full, dropping message");
+    return 0;
+  }
+  m = &s_MsgQueue[(s_MsgHead + s_MsgCount) % SHIM_MSG_CAPACITY];
+  m->hwnd = hWnd;
+  m->message = message;
+  m->wParam = wParam;
+  m->lParam = lParam;
+  m->time = SDL_GetTicks();
+  SDL_GetMouseState(&x, &y);
+  m->pt.x = x;
+  m->pt.y = y;
+  ++s_MsgCount;
+  return 1;
+}
+
+void PostQuitMessage(int nExitCode)
+{
+  (void)nExitCode;
+  s_QuitPosted = 1;
+}
+
+int WinShim_QuitPosted(void)
+{
+  return s_QuitPosted;
+}
+
+HWND WinShimMainWindow(void)
+{
+  return (HWND)(intptr_t)0x00123400;
+}
+
+static void ShimFillMsg(LPMSG lpMsg, HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+  int x, y;
+  lpMsg->hwnd = hWnd;
+  lpMsg->message = message;
+  lpMsg->wParam = wParam;
+  lpMsg->lParam = lParam;
+  lpMsg->time = SDL_GetTicks();
+  SDL_GetMouseState(&x, &y);
+  lpMsg->pt.x = x;
+  lpMsg->pt.y = y;
+}
+
+int PeekMessageA(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax, UINT wRemoveMsg)
+{
+  if ( !lpMsg )
+    return 0;
+
+  if ( !s_MsgCount
+    && !s_InDispatch && !s_InPump          /* pump SDL once per drain, never re-enter */
+    && (wMsgFilterMin == 0 && wMsgFilterMax == 0) )
+  {
+    s_InPump = 1;
+    WinShim_PumpSDLToQueue();
+    s_InPump = 0;
+  }
+
+  if ( s_MsgCount )
+  {
+    MSG *m = &s_MsgQueue[s_MsgHead];
+    if ( hWnd && m->hwnd && m->hwnd != hWnd )
+      return 0;                            /* game always passes hWnd == 0; be safe */
+    *lpMsg = *m;
+    if ( wRemoveMsg & PM_REMOVE )
+    {
+      s_MsgHead = (s_MsgHead + 1) % SHIM_MSG_CAPACITY;
+      --s_MsgCount;
+    }
+    return 1;
+  }
+
+  /* WM_QUIT has priority over synthesized paint (same as Win32) */
+  if ( s_QuitPosted && !s_QuitDelivered )
+  {
+    s_QuitDelivered = 1;
+    ShimFillMsg(lpMsg, 0, WM_QUIT, 0, 0);
+    return 1;
+  }
+
+  /* InvalidateRect()/expose: one WM_PAINT per invalidation, like Windows */
+  if ( s_PaintPending && g_MainWindow )
+  {
+    s_PaintPending = 0;
+    ShimFillMsg(lpMsg, g_MainWindow, WM_PAINT, 0, 0);
+    return 1;
+  }
+
+  (void)wMsgFilterMin; (void)wMsgFilterMax;
+  return 0;
+}
+
+int GetMessageA(LPMSG lpMsg, HWND hWnd, uint32_t min, uint32_t max)
+{
+  /* not used by the game (all loops are PeekMessage-based) */
+  (void)lpMsg; (void)hWnd; (void)min; (void)max;
+  return 0;
+}
+
+int TranslateMessage(const MSG *lpMsg)
+{
+  (void)lpMsg;
+  return 0;                                /* WM_CHAR is synthesized by sdl_backend from
+                                              SDL_TEXTINPUT, exactly where Windows would
+                                              have produced it in TranslateMessage */
+}
+
+LRESULT DispatchMessageA(const MSG *lpMsg)
+{
+  LRESULT r;
+  int saved;
+
+  if ( !lpMsg || !lpMsg->hwnd || lpMsg->message == WM_QUIT )
+    return 0;
+  saved = s_InDispatch;
+  s_InDispatch = 1;
+  r = MainWndProc(lpMsg->hwnd, lpMsg->message, lpMsg->wParam, lpMsg->lParam);
+  s_InDispatch = saved;
+  return r;
+}
+
+LRESULT SendMessageA(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+  if ( !hWnd )
+    return 0;                              /* e.g. SendMessageA to the not-created MCI child */
+  if ( hWnd == g_MainWindow )
+    return DispatchMessageA(&(MSG){ hWnd, message, wParam, lParam, 0, { 0, 0 } });
+  return DefWindowProcA(hWnd, message, wParam, lParam);
+}
+
+LRESULT DefWindowProcA(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+  (void)hWnd; (void)message; (void)wParam; (void)lParam;
+  return 0;
+}
+
+int DestroyWindow(HWND hWnd)
+{
+  if ( !hWnd )
+    return 0;
+  if ( hWnd == g_MainWindow )
+  {
+    /* Win32: DestroyWindow sends WM_DESTROY synchronously; MainWndProc then
+       PostQuitMessage(0). The MCI child window has no game wndproc - skip. */
+    MSG m;
+    ShimFillMsg(&m, hWnd, WM_DESTROY, 0, 0);
+    DispatchMessageA(&m);
+  }
+  return 1;
+}
+
+int ShowWindow(HWND hWnd, int nCmdShow)
+{
+  if ( hWnd )
+    SdlBackendShowWindow(nCmdShow != 0 /* SW_HIDE == 0 */);
+  return 1;
+}
+
+int UpdateWindow(HWND hWnd)
+{
+  if ( hWnd && g_MainWindow == hWnd && s_PaintPending )
+  {
+    MSG m;
+    s_PaintPending = 0;
+    ShimFillMsg(&m, hWnd, WM_PAINT, 0, 0);
+    return (int)DispatchMessageA(&m);
+  }
+  return 1;
+}
+
+int InvalidateRect(HWND hWnd, const RECT *lpRect, int bErase)
+{
+  (void)hWnd; (void)lpRect; (void)bErase;
+  s_PaintPending = 1;                      /* full-client approximation of the update region */
+  return 1;
+}
+
+int GetUpdateRect(HWND hWnd, LPRECT lpRect, int bErase)
+{
+  int w = 0, h = 0;
+
+  (void)bErase;
+  if ( !lpRect )
+    return 0;
+  if ( hWnd )
+    SdlBackendGetClientSize(&w, &h);
+  if ( w > 0 && h > 0 )
+  {
+    lpRect->left = 0;
+    lpRect->top = 0;
+    lpRect->right = w;
+    lpRect->bottom = h;
+    return 1;
+  }
+  lpRect->left = lpRect->top = lpRect->right = lpRect->bottom = 0;
+  return 0;
+}
+
+/* fake screen DC: game only passes it through to palette calls and GetDeviceCaps */
+#define SHIM_FAKE_DC ((HDC)(intptr_t)0x00001000)
+
+HDC GetDC(HWND hWnd)
+{
+  (void)hWnd;
+  return SHIM_FAKE_DC;
+}
+
+int ReleaseDC(HWND hWnd, HDC hDC)
+{
+  (void)hWnd; (void)hDC;
+  return 1;
+}
+
+HDC BeginPaint(HWND hWnd, LPPAINTSTRUCT lpPaint)
+{
+  int w = 0, h = 0;
+
+  if ( lpPaint )
+  {
+    memset(lpPaint, 0, sizeof(PAINTSTRUCT));
+    lpPaint->hdc = SHIM_FAKE_DC;
+    if ( hWnd )
+      SdlBackendGetClientSize(&w, &h);
+    lpPaint->rcPaint.left = 0;
+    lpPaint->rcPaint.top = 0;
+    lpPaint->rcPaint.right = w;
+    lpPaint->rcPaint.bottom = h;
+  }
+  return SHIM_FAKE_DC;
+}
+
+int EndPaint(HWND hWnd, const PAINTSTRUCT *lpPaint)
+{
+  (void)hWnd; (void)lpPaint;
+  return 1;
+}
+
+int MoveWindow(HWND hWnd, int X, int Y, int nWidth, int nHeight, int bRepaint)
+{
+  (void)hWnd; (void)X; (void)Y; (void)nWidth; (void)nHeight; (void)bRepaint;
+  return 1;                                /* MCI child positioning: nothing to move */
+}
+
+int SetWindowPos(HWND hWnd, HWND hWndInsertAfter, int X, int Y, int cx, int cy, UINT uFlags)
+{
+  (void)hWnd; (void)hWndInsertAfter; (void)X; (void)Y; (void)cx; (void)cy; (void)uFlags;
+  /* The SDL window already has the game's client size (CreateMainWindow passes
+     clientW/clientH); the original call resized the outer frame. No-op keeps
+     the client untouched - metrics only were consumed from AdjustWindowRectEx. */
+  return 1;
+}
+
+LONG GetWindowLongA(HWND hWnd, int nIndex)
+{
+  (void)hWnd;
+  if ( nIndex == GWL_STYLE )               /* -16 */
+    return (LONG)SdlBackendGetWinStyle();
+  if ( nIndex == GWL_EXSTYLE )             /* -20 */
+    return 0;
+  return 0;
+}
+
+int AdjustWindowRectEx(LPRECT lpRect, DWORD dwStyle, int bMenu, DWORD dwExStyle)
+{
+  enum { FRAME = 4, CAPTION = 19 };
+  LONG caption = (dwStyle & 0x00C00000u) ? CAPTION : 0;  /* WS_CAPTION = WS_BORDER|WS_DLGFRAME */
+
+  (void)bMenu; (void)dwExStyle;
+  if ( !lpRect )
+    return 0;
+  lpRect->left -= FRAME;
+  lpRect->right += FRAME;
+  lpRect->top -= FRAME + caption;
+  lpRect->bottom += FRAME;
+  return 1;
+}
+
+int IsIconic(HWND hWnd)
+{
+  (void)hWnd;
+  return SdlBackendIsMinimized();
+}
+
+HCURSOR LoadCursorA(HINSTANCE hInstance, LPCSTR lpCursorName)
+{
+  (void)hInstance;
+  return (HCURSOR)lpCursorName;            /* the game only round-trips the handle */
+}
+
+HCURSOR SetCursor(HCURSOR hCursor)
+{
+  (void)hCursor;
+  return 0;                                /* SDL cursor visibility is owned by the config
+                                              flag (SdlBackendSetCursorVisible) */
+}
+
+int GetCursorPos(LPPOINT lpPoint)
+{
+  int x, y;
+  if ( !lpPoint )
+    return 0;
+  SDL_GetMouseState(&x, &y);               /* window coords == client coords here */
+  lpPoint->x = x;
+  lpPoint->y = y;
+  return 1;
+}
+
+int SetCursorPos(int X, int Y)
+{
+  (void)X; (void)Y;
+  return 1;                                /* only call site warps the cursor onto itself */
+}
+
+int ScreenToClient(HWND hWnd, LPPOINT lpPoint)
+{
+  (void)hWnd; (void)lpPoint;
+  return 1;                                /* GetCursorPos already returned client coords */
+}
+
+int ClientToScreen(HWND hWnd, LPPOINT lpPoint)
+{
+  (void)hWnd; (void)lpPoint;
+  return 1;
+}
+
+SHORT GetAsyncKeyState(int nVirtKey)
+{
+  SDL_Keymod m = SDL_GetModState();
+  switch ( nVirtKey )
+  {
+    case VK_SHIFT:   return (m & KMOD_SHIFT) ? (SHORT)0x8001 : 0;
+    case VK_CONTROL: return (m & KMOD_CTRL)  ? (SHORT)0x8001 : 0;
+    case VK_MENU:    return (m & KMOD_ALT)   ? (SHORT)0x8001 : 0;
+    default:         return 0;
+  }
+}
+
+SHORT GetKeyState(int nVirtKey)
+{
+  return GetAsyncKeyState(nVirtKey);
+}
+
+int WinHelpA(HWND hWnd, LPCSTR lpHelpFile, UINT uCommand, ULONG_PTR dwData)
+{
+  (void)hWnd; (void)uCommand; (void)dwData;
+  DBG_LOG("WinHelpA: ignored (help file '%s')", lpHelpFile ? lpHelpFile : "");
+  return 0;                                /* .hlp ships with nothing here: report failure,
+                                              never open a viewer */
+}
+
+/* ===================================================================== */
+/* gdi32                                                                 */
+/* ===================================================================== */
+
+HPALETTE CreatePalette(LPLOGPALETTE pgpal)
+{
+  size_t bytes;
+  void *mem;
+
+  if ( !pgpal )
+    return 0;
+  bytes = sizeof(WORD) * 2 + (size_t)pgpal->palNumEntries * sizeof(PALETTEENTRY);
+  mem = malloc(bytes);
+  if ( !mem )
+    return 0;
+  memcpy(mem, pgpal, bytes);
+  return (HPALETTE)mem;
+}
+
+int DeleteObject(HGDIOBJ hObject)
+{
+  if ( !hObject )
+    return 0;
+  free(hObject);                           /* only heap-backed handles are ever passed */
+  return 1;
+}
+
+int DeleteDC(HDC hdc)
+{
+  (void)hdc;
+  return 1;
+}
+
+HPALETTE SelectPalette(HDC hdc, HPALETTE hpal, int fForceBackground)
+{
+  (void)hdc; (void)fForceBackground;
+  return (HPALETTE)0;                      /* "previously selected" */
+}
+
+UINT RealizePalette(HDC hdc)
+{
+  (void)hdc;
+  return 1;                                /* nonzero = colors changed (video.c wants that) */
+}
+
+/* Win system palette, reserved slots 0-9 / 246-255 (8bpp sessions, Win9x).
+   TODO(visual): compare against the Windows build - only video-background
+   palettes (SetPalette a1 != 0) hit these entries. */
+static const PALETTEENTRY s_SysPalFirst[10] =
+{
+  {   0,   0,   0, 0 }, { 128,   0,   0, 0 }, {   0, 128,   0, 0 },
+  { 128, 128,   0, 0 }, {   0,   0, 128, 0 }, { 128,   0, 128, 0 },
+  {   0, 128, 128, 0 }, { 192, 192, 192, 0 }, { 128, 128, 128, 0 },
+  { 192, 220, 192, 0 }
+};
+static const PALETTEENTRY s_SysPalLast[10] =
+{
+  { 255, 255, 255, 0 }, { 192, 192, 192, 0 }, { 128, 128, 128, 0 },
+  {  64,  64,  64, 0 }, { 255,   0,   0, 0 }, {   0, 255,   0, 0 },
+  {   0,   0, 255, 0 }, { 255, 255,   0, 0 }, { 255,   0, 255, 0 },
+  {   0, 255, 255, 0 }
+};
+
+UINT GetSystemPaletteEntries(HDC hdc, UINT nStartIndex, UINT nEntries, PALETTEENTRY *lpEntries)
+{
+  UINT i;
+
+  (void)hdc;
+  if ( !lpEntries )
+    return 0;
+  for ( i = 0; i < nEntries; ++i )
+  {
+    UINT idx = nStartIndex + i;
+    if ( idx < 10 )
+      lpEntries[i] = s_SysPalFirst[idx];
+    else if ( idx >= 246 && idx < 256 )
+      lpEntries[i] = s_SysPalLast[idx - 246];
+    else
+      memset(&lpEntries[i], 0, sizeof(PALETTEENTRY));
+  }
+  return nEntries;
+}
+
+int GetDeviceCaps(HDC hdc, int nIndex)
+{
+  (void)hdc;
+  switch ( nIndex )
+  {
+    case 0:   return 0x0300;               /* VERSION */
+    case 12:  return 8;                    /* BITSPIXEL: the game is 8-bit palettized */
+    case 14:  return 1;                    /* PLANES */
+    case 24:  return 256;                  /* NUMCOLORS */
+    case 38:  return 0x100;                /* RASTERCAPS: RC_PALETTE, like 8bpp Win9x */
+    default:  return 0;
+  }
+}
+
+/* ===================================================================== */
+/* winmm: timers + MCI stub                                              */
+/* ===================================================================== */
+
+DWORD timeGetTime(void)
+{
+  return (DWORD)SDL_GetTicks();
+}
+
+MMRESULT timeGetDevCaps(LPTIMECAPS lpTimeCaps, UINT uSize)
+{
+  if ( !lpTimeCaps || uSize < sizeof(TIMECAPS) )
+    return 99;                             /* TIMERR_NOCANDO */
+  lpTimeCaps->wPeriodMin = 1;
+  lpTimeCaps->wPeriodMax = 15;
+  return 0;                                /* TIMERR_NOERROR: InitMidiOut derives
+                                              g_TimerResolution = 10 from this pair */
+}
+
+MMRESULT timeBeginPeriod(UINT uPeriod)
+{
+  (void)uPeriod;
+  return 0;
+}
+
+MMRESULT timeEndPeriod(UINT uPeriod)
+{
+  (void)uPeriod;
+  return 0;
+}
+
+static MMRESULT s_TimerId;
+static LPTIMECALLBACK s_TimerCallback;
+
+static Uint32 ShimTimerProc(Uint32 interval, void *param)
+{
+  (void)param;
+  if ( s_TimerCallback )
+    s_TimerCallback((UINT)s_TimerId, 0, 0, 0, 0);
+  return interval;                         /* periodic */
+}
+
+MMRESULT timeSetEvent(UINT uDelay, UINT uResolution, LPTIMECALLBACK lpTimeProc,
+                      DWORD_PTR dwUser, UINT uType)
+{
+  (void)uResolution; (void)dwUser; (void)uType;
+  if ( !lpTimeProc )
+    return 0;
+  if ( !(SDL_WasInit(SDL_INIT_TIMER) & SDL_INIT_TIMER) )
+  {
+    if ( SDL_InitSubSystem(SDL_INIT_TIMER) != 0 )
+      return 0;
+  }
+  s_TimerCallback = lpTimeProc;
+  s_TimerId = (MMRESULT)SDL_AddTimer(uDelay ? uDelay : 10, ShimTimerProc, 0);
+  return s_TimerId;
+}
+
+MMRESULT timeKillEvent(MMRESULT uTimerID)
+{
+  SDL_RemoveTimer((SDL_TimerID)uTimerID);
+  return 0;
+}
+
+/* MCI: stub - MCI_OPEN reports "no device" (device id 0 at MCI_OPEN_PARMS
+   offset +4), so OpenMCIVideoDevice/PlayIntroVideo skip playback gracefully.
+   The ffmpeg-backed decoder replaces this in the video phase. */
+MMRESULT mciSendCommandA(MCIDEVICEID idDevice, UINT uMsg, DWORD dwFlags, DWORD_PTR dwParam)
+{
+  (void)idDevice; (void)dwFlags;
+  if ( uMsg == 0x803 && dwParam )          /* MCI_OPEN: wDeviceID at +4 */
+    *(DWORD *)((char *)(uintptr_t)dwParam + 4) = 0;
+  return 0;
+}
+
+int mciGetErrorStringA(MCIERROR mcierr, LPSTR lpBuffer, UINT uLength)
+{
+  (void)mcierr;
+  if ( lpBuffer && uLength )
+    lpBuffer[0] = '\0';
+  return 1;
+}
+
+/* ===================================================================== */
+/* entry point: WinMain lives in main.c, untouched                       */
+/* ===================================================================== */
+
+int main(int argc, char **argv)
+{
+  (void)argc;
+  (void)argv;
+  return WinMain(0, 0, "", 1);
+}
+
+#endif /* !_WIN32 */

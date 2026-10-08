@@ -1,4 +1,4 @@
-# build outputs (dropped into SRC/ by the build bats)
+# build outputs (dropped into SRC/ by the build bats, or build/ by CMake on Linux)
 *.obj
 *.exe
 *.pdb
@@ -6,6 +6,7 @@
 *.ilk
 *.dll
 *_debug.log
+build/
 
 # third_party SDKs are committed as-is (SDL2.dll must not be ignored)
 !third_party/**
