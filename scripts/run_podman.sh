@@ -8,12 +8,20 @@
 #   sh scripts/run_podman.sh           headless run (SDL dummy video/audio)
 #   sh scripts/run_podman.sh --xvfb    render on a virtual X display (xvfb)
 #   sh scripts/run_podman.sh --display real window on the session's X server
+#   sh scripts/run_podman.sh --pulse   host PulseAudio sound (with any of the above)
 #
 # --display forwards DISPLAY, /tmp/.X11-unix and the X cookie into the
 # container: start it from a graphical session (RDP/local desktop) and the
 # game window opens right there; `ssh -X` works too (loopback display, the
 # container then joins the host network). If the connection is refused for
 # lack of a cookie, run `xhost +local:` as the desktop user.
+#
+# --pulse forwards the host PulseAudio socket at its own path (PULSE_SERVER /
+# XDG_RUNTIME_DIR detection - the same trick as podrunner.sh's --pulseaudio),
+# the client cookie and /etc/machine-id; SDL then opens the "pulseaudio"
+# driver instead of the silent dummy one. Rootless podman keeps the host uid,
+# so the daemon accepts the connection as the same user. Dies with a clear
+# message when the host has no Pulse server.
 #
 # Ctrl+C or SIGTERM asks the game to quit cleanly (SIGUSR1 test hook of the
 # port); a second Ctrl+C force-stops the container. The container's
@@ -29,6 +37,7 @@ REPO=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 IMAGE=${PILOTS_IMAGE:-pilots-build}
 NAME=plr-run
 MODE=run
+PULSE=0
 QUIT_SENT=0
 LOGS_PID=
 
@@ -39,6 +48,7 @@ Launch PILOT_RV inside the pilots-build podman container.
   sh scripts/run_podman.sh           headless run (SDL dummy video/audio)
   sh scripts/run_podman.sh --xvfb    render on a virtual X display (xvfb)
   sh scripts/run_podman.sh --display real window on the session's X server
+  sh scripts/run_podman.sh --pulse   host PulseAudio sound (with any of the above)
 
 Ctrl+C / SIGTERM = clean quit via the game's SIGUSR1 hook; a second
 Ctrl+C force-stops the container. Game log: build/PILOT_RV_debug.log.
@@ -55,6 +65,7 @@ for a in "$@"; do
     --display)
       if [ "$MODE" = xvfb ]; then die "--xvfb and --display are mutually exclusive"; fi
       MODE=display ;;
+    --pulse) PULSE=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown option: $a" ;;
   esac
@@ -105,6 +116,9 @@ cleanup() {
 
 # --- start -----------------------------------------------------------------
 AUDIODRV=${SDL_AUDIODRIVER:-dummy}
+if [ "$PULSE" = 1 ] && [ -z "${SDL_AUDIODRIVER:-}" ]; then
+  AUDIODRV=pulseaudio               # SDL's driver name for the PulseAudio backend
+fi
 case "$MODE" in
   xvfb|display) VIDEODRV=${SDL_VIDEODRIVER:-x11} ;;
   *)            VIDEODRV=${SDL_VIDEODRIVER:-dummy} ;;
@@ -135,6 +149,37 @@ if [ "$MODE" = display ]; then
   fi
   set -- "$@" -e DISPLAY="$DISPLAY"
   echo "run_podman: forwarding DISPLAY=$DISPLAY (the window opens on that X server)"
+fi
+
+if [ "$PULSE" = 1 ]; then
+  # Host PulseAudio socket mounted at the same path in the container (the
+  # podrunner.sh --pulseaudio approach). Rootless podman keeps the host uid, so
+  # the daemon accepts the connection as the same user; the cookie and
+  # /etc/machine-id are mounted belt-and-braces. Socket location: PULSE_SERVER
+  # if set (unix: or a plain path), else the session's XDG_RUNTIME_DIR.
+  PSOCK=
+  case "${PULSE_SERVER:-}" in
+    unix:*) PSOCK=${PULSE_SERVER#unix:} ;;
+    /*)     PSOCK=$PULSE_SERVER ;;
+  esac
+  if [ -z "$PSOCK" ]; then
+    CAND=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pulse/native
+    [ -S "$CAND" ] && PSOCK=$CAND
+  fi
+  [ -n "$PSOCK" ] && [ -S "$PSOCK" ] \
+    || die "no PulseAudio socket - is pulseaudio (or pipewire-pulse) running on the host?"
+  PD=$(dirname "$PSOCK")
+  set -- "$@" -v "$PD:$PD" \
+           -e PULSE_SERVER="unix:$PSOCK" \
+           -e XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  COOKIE=${XDG_CONFIG_HOME:-$HOME/.config}/pulse/cookie
+  if [ -f "$COOKIE" ]; then
+    set -- "$@" -v "$COOKIE:/root/.config/pulse/cookie:ro"
+  fi
+  if [ -f /etc/machine-id ]; then
+    set -- "$@" -v /etc/machine-id:/etc/machine-id:ro
+  fi
+  echo "run_podman: forwarding PulseAudio $PSOCK (SDL driver: $AUDIODRV)"
 fi
 
 set -- "$@" -e SDL_VIDEODRIVER="$VIDEODRV" -e SDL_AUDIODRIVER="$AUDIODRV" "$IMAGE"
