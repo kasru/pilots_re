@@ -953,13 +953,20 @@ int InvalidateRect(HWND hWnd, const RECT *lpRect, int bErase)
 
 int GetUpdateRect(HWND hWnd, LPRECT lpRect, int bErase)
 {
+  /* The update region is the GAME's client rect, not the SDL window's: the original
+     window's size was pinned, while a foreign WM may have enlarged ours (fullscreen)
+     - an oversized region fed AddDirtyRegion/RenderDirtyRegions beyond the fixed
+     backbuffer. Logical size: g_VideoConfig never takes foreign dims (SdlHandleResize). */
   int w = 0, h = 0;
 
   (void)bErase;
   if ( !lpRect )
     return 0;
   if ( hWnd )
-    SdlBackendGetClientSize(&w, &h);
+  {
+    w = g_VideoConfig.clientWidth;
+    h = g_VideoConfig.clientHeight;
+  }
   if ( w > 0 && h > 0 )
   {
     lpRect->left = 0;
@@ -989,18 +996,17 @@ int ReleaseDC(HWND hWnd, HDC hDC)
 
 HDC BeginPaint(HWND hWnd, LPPAINTSTRUCT lpPaint)
 {
-  int w = 0, h = 0;
-
   if ( lpPaint )
   {
     memset(lpPaint, 0, sizeof(PAINTSTRUCT));
     lpPaint->hdc = SHIM_FAKE_DC;
     if ( hWnd )
-      SdlBackendGetClientSize(&w, &h);
+    {                                         /* logical game client rect, as in GetUpdateRect */
+      lpPaint->rcPaint.right = g_VideoConfig.clientWidth;
+      lpPaint->rcPaint.bottom = g_VideoConfig.clientHeight;
+    }
     lpPaint->rcPaint.left = 0;
     lpPaint->rcPaint.top = 0;
-    lpPaint->rcPaint.right = w;
-    lpPaint->rcPaint.bottom = h;
   }
   return SHIM_FAKE_DC;
 }

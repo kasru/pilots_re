@@ -208,6 +208,25 @@ static void SdlPostChar(HWND hwnd, char ch)
   PostMessageA(hwnd, WM_CHAR, (WPARAM)(unsigned char)ch, 0);
 }
 
+/* One resize as the game sees it. The original window never changed size:
+   WM_GETMINMAXINFO (MainWndProc/VideoWndProc case 0x24) pinned max track size and
+   max size to the initial client rect, so every WM_SIZE carried exactly that size.
+   The SDL window may still be resized behind our back (size hints are only hints -
+   fullscreen ignores them), and a foreign size forwarded into
+   g_VideoConfig.clientWidth/Height corrupts g_MouseX/g_MouseY - the RenderDirtyRegions
+   clip bound; with a clip past the fixed backbuffer the cursor repaint
+   (CopyRectToBackbuffer) walks off the buffer (SIGSEGV on maximize, before the
+   sizes were decoupled). So the game only ever sees its own logical client size;
+   the repaint (WM_WINDOWPOSCHANGED + InvalidateRect) still follows the real window. */
+static void SdlHandleResize(HWND hwnd, int w, int h)
+{
+  DBG_LOG("SdlHandleResize: window %dx%d, game keeps %dx%d", w, h,
+          g_VideoConfig.clientWidth, g_VideoConfig.clientHeight);
+  PostMessageA(hwnd, WM_WINDOWPOSCHANGED, 0, 0);
+  PostMessageA(hwnd, WM_SIZE, 0, SdlPackPoint(g_VideoConfig.clientWidth, g_VideoConfig.clientHeight));
+  InvalidateRect(hwnd, 0, 0);
+}
+
 static void SdlDispatchSdlEvent(const SDL_Event *ev)
 {
   HWND hwnd = g_MainWindow;               /* 0 before CreateMainWindow: input events drop */
@@ -279,13 +298,8 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
       {
         case SDL_WINDOWEVENT_RESIZED:
         case SDL_WINDOWEVENT_SIZE_CHANGED:
-          {
-            int w = ev->window.data1, h = ev->window.data2;
-            PostMessageA(hwnd, WM_WINDOWPOSCHANGED, 0, 0);
-            PostMessageA(hwnd, WM_SIZE, 0, SdlPackPoint(w, h));
-            InvalidateRect(hwnd, 0, 0);
-            break;
-          }
+          SdlHandleResize(hwnd, ev->window.data1, ev->window.data2);
+          break;
         case SDL_WINDOWEVENT_EXPOSED:
           SdlPresentCurrent();            /* SDL keeps no backbuffer: re-present now, ... */
           InvalidateRect(hwnd, 0, 0);     /* ...let the game mark its dirty regions too */
@@ -293,14 +307,10 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
         case SDL_WINDOWEVENT_MINIMIZED:   /* Win32 SIZE_MINIMIZED sends client 0,0 */
           PostMessageA(hwnd, WM_SIZE, 0, 0);
           break;
-        case SDL_WINDOWEVENT_RESTORED:
-          {
-            int w = 0, h = 0;
-            SdlBackendGetClientSize(&w, &h);
-            PostMessageA(hwnd, WM_SIZE, 0, SdlPackPoint(w, h));
-            InvalidateRect(hwnd, 0, 0);
-            break;
-          }
+        case SDL_WINDOWEVENT_RESTORED:         /* like SdlHandleResize: the game gets its logical size back, not the physical one */
+          PostMessageA(hwnd, WM_SIZE, 0, SdlPackPoint(g_VideoConfig.clientWidth, g_VideoConfig.clientHeight));
+          InvalidateRect(hwnd, 0, 0);
+          break;
         case SDL_WINDOWEVENT_ENTER:
           PostMessageA(hwnd, WM_SETCURSOR, (WPARAM)hwnd, HTCLIENT);
           break;
@@ -324,6 +334,33 @@ int WinShim_PumpSDLToQueue(void)
 
   while ( SDL_PollEvent(&ev) )
     SdlDispatchSdlEvent(&ev);
+#ifdef _DEBUG
+  static int s_ResizeSimDone;                  /* fires once per run */
+  /* Headless resize simulation (containers have no window manager to maximize the
+     window with): PILOTS_DEBUG_RESIZE=1 reproduces a WM maximize once the game
+     texture exists and the window is up - physical SDL resize, the WM_SIZE path,
+     and a cursor sitting over the enlarged window (the coordinate overflow that
+     took the real maximize down). Fires once per run. */
+  if ( !s_ResizeSimDone && s_Texture && g_MainWindow
+       && s_SdlWindow && (SDL_GetWindowFlags(s_SdlWindow) & SDL_WINDOW_SHOWN) )
+  {
+    char *sim = getenv("PILOTS_DEBUG_RESIZE");
+    s_ResizeSimDone = 1;
+    if ( sim && *sim && *sim != '0' )
+    {
+      int w = g_VideoConfig.clientWidth * 2, h = g_VideoConfig.clientHeight * 2;
+      SDL_Event mev;
+      DBG_LOG("WinShim_PumpSDLToQueue: PILOTS_DEBUG_RESIZE simulates maximize to %dx%d", w, h);
+      SDL_SetWindowSize(s_SdlWindow, w, h);        /* physical window, as the WM would */
+      SdlHandleResize(g_MainWindow, w, h);         /* WM_SIZE path (events add a duplicate when the driver reports it) */
+      memset(&mev, 0, sizeof mev);                 /* cursor over the enlarged window, as SDL would deliver it */
+      mev.type = SDL_MOUSEMOTION;
+      mev.motion.x = w - 8;
+      mev.motion.y = h - 8;
+      SdlDispatchSdlEvent(&mev);
+    }
+  }
+#endif
   WinShim_VideoPump();                         /* MCI movie: decode/present/notify (mci_ffmpeg.c) */
   return 0;
 }
@@ -444,6 +481,12 @@ HWND SdlBackendCreateWindow(int x, int y, int clientW, int clientH, int resizabl
   hwnd = WinShimMainWindow();
   SDL_StartTextInput();                    /* SDL_TEXTINPUT -> WM_CHAR (Unicode ANSI parity) */
 #endif
+  /* The original pinned the window with WM_GETMINMAXINFO (MainWndProc case 0x24:
+     max track/max size = border + initial client) - it never grew or maximized.
+     Mirror that with an SDL max-size hint so the WM cannot resize it either; even
+     a WM that ignores the hint (fullscreen) cannot hurt - SdlHandleResize keeps the
+     foreign size away from the game. */
+  SDL_SetWindowMaximumSize(s_SdlWindow, clientW, clientH);
   if ( resizable )                              /* SDL's WM_GETMINMAXINFO handler preserves this */
     SDL_SetWindowMinimumSize(s_SdlWindow, clientW, clientH);
   return hwnd;
