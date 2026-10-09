@@ -112,7 +112,7 @@ int __stdcall TracePathAlongWave(unsigned __int8 wave_value)
   int curX; // esi
   int curY; // edi
   int prevX; // ebp
-  int bufIdx; // ebx
+  INT_PTR bufIdx; // ebx
   int distX; // edx
   int distY; // eax
   int dir1; // edx
@@ -421,7 +421,7 @@ int __stdcall BuildWalkMapDirectByType(unsigned __int8 a1)
   v2 = 0;
   do
   {
-    v3 = (_BYTE *)(g_TileMapBuffer + 2 * (v2 << g_TileMapShift));
+    v3 = (_BYTE *)(INT_PTR)(g_TileMapBuffer + 2 * (v2 << g_TileMapShift));
     v4 = 0;
     do
     {
@@ -452,7 +452,7 @@ int __stdcall BuildWalkMapObstaclesByType(unsigned __int8 a1)
   v2 = 0;
   do
   {
-    v3 = (_BYTE *)(g_TileMapBuffer + 2 * (v2 << g_TileMapShift));
+    v3 = (_BYTE *)(INT_PTR)(g_TileMapBuffer + 2 * (v2 << g_TileMapShift));
     v4 = 0;
     do
     {
@@ -487,7 +487,7 @@ int BuildWalkMapAllPassable()
   v1 = 0;
   do
   {
-    v2 = (_BYTE *)(g_TileMapBuffer + 2 * (v1 << g_TileMapShift));
+    v2 = (_BYTE *)(INT_PTR)(g_TileMapBuffer + 2 * (v1 << g_TileMapShift));
     v3 = 0;
     do
     {
@@ -519,7 +519,7 @@ int __stdcall BuildWalkMapByTileType(unsigned __int8 a1)
   v2 = 0;
   do
   {
-    v3 = (_BYTE *)(g_TileMapBuffer + 2 * (v2 << g_TileMapShift));
+    v3 = (_BYTE *)(INT_PTR)(g_TileMapBuffer + 2 * (v2 << g_TileMapShift));
     v4 = 0;
     do
     {
@@ -577,7 +577,7 @@ int __stdcall BuildWalkMapDirect(unsigned __int8 *bitmask)
   v5 = 0;
   do
   {
-    v1 = (_BYTE *)(g_TileMapBuffer + 2 * (v5 << g_TileMapShift));
+    v1 = (_BYTE *)(INT_PTR)(g_TileMapBuffer + 2 * (v5 << g_TileMapShift));
     v2 = 0;
     do
     {
@@ -606,7 +606,7 @@ int __stdcall BuildWalkMapWithObstacles(unsigned __int8 *bitmask)
   v7 = 0;
   do
   {
-    v1 = (unsigned __int8 *)(g_TileMapBuffer + 2 * (v7 << g_TileMapShift));
+    v1 = (unsigned __int8 *)(INT_PTR)(g_TileMapBuffer + 2 * (v7 << g_TileMapShift));
     v2 = 0;
     do
     {
@@ -637,7 +637,7 @@ int __stdcall BuildWalkMapInverted(unsigned __int8 *bitmask)
   v5 = 0;
   do
   {
-    v1 = (_BYTE *)(g_TileMapBuffer + 2 * (v5 << g_TileMapShift));
+    v1 = (_BYTE *)(INT_PTR)(g_TileMapBuffer + 2 * (v5 << g_TileMapShift));
     v2 = 0;
     do
     {
@@ -675,9 +675,9 @@ int __stdcall PathfindWithBitmask(unsigned __int8 pathfind_mode, unsigned __int8
     if ( search_type != 14 )
     {                                           // pathfind_mode 0xFF: build walk map with direct passability check (0=blocked, 2=walkable)
       if ( pathfind_mode == 0xFF )
-        return BuildWalkMapDirect((int)bitmaskData);
+        return BuildWalkMapDirect(bitmaskData);
       else
-        return BuildWalkMapWithObstacles((int)g_AnimationSlotArray[anim_index].frameBitmask);// Other pathfind_mode: build walk map with obstacle marking (0=special, 2=walkable, 3=obstacle)
+        return BuildWalkMapWithObstacles((unsigned __int8 *)g_AnimationSlotArray[anim_index].frameBitmask);// Other pathfind_mode: build walk map with obstacle marking (0=special, 2=walkable, 3=obstacle)
     }
     if ( ((1 << (*((_BYTE*)&video_recursion_counter + 3) & 7)) & bitmaskData[(int)*((_BYTE*)&video_recursion_counter + 3) >> 3]) == 0 )// search_type 14: check if current tile (*(&video_recursion_counter+3)) is walkable in bitmask
       return 0;
@@ -686,7 +686,7 @@ int __stdcall PathfindWithBitmask(unsigned __int8 pathfind_mode, unsigned __int8
     return ComputeDirectDirection();            // pathfind_mode 0xFF: compute direction directly from dx/dy without wave fill
   if ( pathfind_mode == 254 )
     return BuildWalkMapAllPassable();           // pathfind_mode 0xFE: build all-passable map (only tile 0xFE is blocked)
-  return BuildWalkMapInverted((int)g_AnimationSlotArray[anim_index].frameBitmask);// Specific anim index: build inverted walk map from bitmask (3=passable, 0=blocked, start=2)
+  return BuildWalkMapInverted((unsigned __int8 *)g_AnimationSlotArray[anim_index].frameBitmask);// Specific anim index: build inverted walk map from bitmask (3=passable, 0=blocked, start=2)
 }
 
 #pragma pack(pop)

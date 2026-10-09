@@ -78,7 +78,7 @@ char __stdcall WriteCustomSaveData(int *data_desc)
 
 void *__stdcall ClearCustomSaveRegions(_DWORD *data_desc)
 {                                               // Null descriptor: nothing to clear
-size_t *entryPtr;
+_DWORD *entryPtr;
 // ebx
 void *ret;
 // eax
@@ -114,7 +114,7 @@ BOOL __stdcall WriteDword(unsigned int value)
   return WriteToFile(4u, &value);
 }
 
-int __stdcall FixupObjectPointers(int base_adjust, int object_count, char *object_data)
+int __stdcall FixupObjectPointers(INT_PTR base_adjust, int object_count, char *object_data)
 {
   int result; // eax
   int i; // ecx
@@ -135,7 +135,7 @@ char __stdcall SaveGameState(int save_slot)
   DBG_ENTER("SaveGameState");
   _DWORD DstBuf[2]; // [esp+4h] [ebp-8h] BYREF
 
-  if ( !(unsigned __int8)OpenSaveFile(save_slot, (int)&unk_4162A0, g_DataFilePath) )
+  if ( !(unsigned __int8)OpenSaveFile(save_slot, (INT_PTR)&unk_4162A0, g_DataFilePath) )
   { DBG_LOG("SaveGameState: OpenSaveFile FAILED"); return 0; }
   DBG_LOG("SaveGameState: g_FirstRun=%d", g_FirstRun);
   while ( g_FirstRun )
@@ -156,7 +156,7 @@ char __stdcall SaveGameState(int save_slot)
     TruncateFile();
     CloseSaveFile();
     ValidateGameData(save_slot);
-    if ( !(unsigned __int8)OpenSaveFile(save_slot, (int)&unk_4162A0, g_DataFilePath) )
+    if ( !(unsigned __int8)OpenSaveFile(save_slot, (INT_PTR)&unk_4162A0, g_DataFilePath) )
     { DBG_LOG("SaveGameState: re-open FAILED"); return 0; }
   }
   DBG_LOG("SaveGameState: seeking to offset=%d", offset);
@@ -171,7 +171,7 @@ LABEL_11:
 
 char __stdcall ValidateGameData(int a1)
 {
-  if ( !(unsigned __int8)OpenSaveFile(a1, (int)&unk_4162A0, g_DataFilePath) )
+  if ( !(unsigned __int8)OpenSaveFile(a1, (INT_PTR)&unk_4162A0, g_DataFilePath) )
     return 0;
   if ( g_FirstRun )
   {
@@ -190,7 +190,7 @@ char __stdcall ValidateGameData(int a1)
 
 int __stdcall CheckSaveFileExists(int a1)
 {
-  return DeleteSaveFile(a1, (int)&g_SaveMagic2, g_DataFilePath);
+  return DeleteSaveFile(a1, (INT_PTR)&g_SaveMagic2, g_DataFilePath);
 }
 
 int __stdcall LoadGameFromFile(int save_slot)
@@ -229,7 +229,7 @@ int read_buf;
 char *pixel_data_base;
 // [esp+28h] [ebp-4h]
 
-  if ( !(unsigned __int8)OpenSaveFile(save_slot, (int)&g_SaveMagic2, g_DataFilePath) )
+  if ( !(unsigned __int8)OpenSaveFile(save_slot, (INT_PTR)&g_SaveMagic2, g_DataFilePath) )
     return 0;
   if ( ReadFromFile(8u, magic_header) && magic_header[0] == 1028871741 && magic_header[1] == -2147483626 )// Validate 8-byte magic: '=VS=' (0x3D53563D) + version 0x80000016
   {
@@ -281,7 +281,7 @@ snapshot_idx = 0;
         {
           sprite_data_size = HIBYTE(g_SpriteSlotArray[(unsigned __int8)obj_data_ptr[1]].baseData);
           sprite_alloc = (void *)AllocFromMemoryPool(sprite_data_size);
-          *((_DWORD *)obj_data_ptr + 3) = sprite_alloc;
+          *((_DWORD *)obj_data_ptr + 3) = (INT_PTR)sprite_alloc;
           ReadFromFile(sprite_data_size, sprite_alloc);
         }
       }
@@ -320,7 +320,7 @@ char __stdcall SaveSnapshotsToFile(int a1)
   char *Buf; // [esp+10h] [ebp-8h]
   int v10; // [esp+14h] [ebp-4h]
 
-  if ( !(unsigned __int8)OpenSaveFile(a1, (int)&g_SaveMagic2, g_DataFilePath) )
+  if ( !(unsigned __int8)OpenSaveFile(a1, (INT_PTR)&g_SaveMagic2, g_DataFilePath) )
     return 0;
   g_GameStateFlag = 0;
   CaptureScreenSnapshot(g_CurrentSnapshotIndex);
@@ -353,7 +353,7 @@ char __stdcall SaveSnapshotsToFile(int a1)
         do
         {
           if ( (*v4 & 2) != 0 && (*v4 & 8) != 0 )
-            WriteToFile(HIBYTE(g_SpriteSlotArray[(unsigned __int8)v4[1]].baseData), *((void **)v4 + 3));
+            WriteToFile(HIBYTE(g_SpriteSlotArray[(unsigned __int8)v4[1]].baseData), (void *)(INT_PTR)*((_DWORD *)v4 + 3));
           v4 += 16;
         }
         while ( v6-- );

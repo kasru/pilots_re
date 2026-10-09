@@ -5,6 +5,7 @@ rem Compiles the given SRC files with MSVC x64, same flags/suppressions as the
 rem migration probe (pointer-mismatch warnings stay VISIBLE: they are the
 rem signal). Prints raw cl output to stdout; exit code = cl exit code.
 setlocal
+if "%~1"=="" (echo Usage: check_x64_file.bat file.c [file.c ...]& exit /b 4)
 set VCV=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat
 if not exist "%VCV%" (echo NO_VCVARS& exit /b 2)
 call "%VCV%" x64 >nul 2>&1

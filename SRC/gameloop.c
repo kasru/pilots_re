@@ -8,19 +8,19 @@ int __stdcall ExecuteScriptWithContext(
         char direction,
         unsigned __int8 tile_y,
         unsigned __int8 tile_x,
-        int object_data,
+        INT_PTR object_data,
         int resource_id,
-        int game_flags1,
-        int game_flags2,
+        INT_PTR game_flags1,
+        INT_PTR game_flags2,
         BYTE *script_ptr)
 {
   unsigned __int64 v8; // rax
-  int saved_object_data; // ebx
+  INT_PTR saved_object_data; // ebx
   int saved_tile_x; // esi
   int saved_tile_y; // edi
   int result; // eax
-  int saved_game_flags2; // [esp+Ch] [ebp-18h]
-  int saved_game_flags1; // [esp+10h] [ebp-14h]
+  INT_PTR saved_game_flags2; // [esp+Ch] [ebp-18h]
+  INT_PTR saved_game_flags1; // [esp+10h] [ebp-14h]
   int saved_resource_id; // [esp+14h] [ebp-10h]
   int saved_prev_tile_x; // [esp+18h] [ebp-Ch]
   int saved_prev_tile_y; // [esp+1Ch] [ebp-8h]
@@ -72,7 +72,7 @@ char __stdcall InitGraphicsMode(int updateDirtyRegions, int fontIndex)
 
   if ( !g_DisableCursor )
   {
-    if ( updateDirtyRegions && *(_DWORD *)&g_CursorObject.spriteDataPtr )
+    if ( updateDirtyRegions && g_CursorObject.spriteDataPtr )
       AddObjectToDirtyRegions(&g_CursorObject);
     g_CurrentFontIndex = fontIndex;
     v2 = &g_FontSlotArray[fontIndex];
@@ -85,7 +85,7 @@ char __stdcall InitGraphicsMode(int updateDirtyRegions, int fontIndex)
       fontData = v2->fontData;
     else
       fontData = *(void **)v2->fontData;
-    *(_DWORD *)&g_CursorObject.spriteDataPtr = fontData;
+    g_CursorObject.spriteDataPtr = fontData;
   }
   return 1;
 }
@@ -132,19 +132,19 @@ int InitRenderingEngine()
 __declspec(noreturn) void LongjmpRestart()
 {
   DBG_ENTER("LongjmpRestart");
-  longjmp(g_JumpBuffer, 1);
+  longjmp((_JBTYPE *)g_JumpBuffer, 1);   // jmp_buf is _JBTYPE[]; g_JumpBuffer is the generated char[64] field
 }
 
 int __stdcall ProcessAbsoluteTileCoords(int a1)
 {
-  g_TileProcessor(&a1);
+  g_TileProcessor((INT_PTR)&a1);         // handler param is INT_PTR: &a1 is an address
   CreateTileObject(SHIBYTE(a1), SBYTE2(a1), a1);
   return 0;
 }
 
 BOOL __stdcall ProcessRelativeTileCoords(int a1)
 {
-  g_TileProcessor(&a1);
+  g_TileProcessor((INT_PTR)&a1);         // handler param is INT_PTR: &a1 is an address
   CreateTileObject(
     (g_ScreenHeight + g_CurrentTileY_Wrapped + SHIBYTE(a1)) % g_ScreenHeight,
     (g_ScreenWidth + g_CurrentTileX_Wrapped + SBYTE2(a1)) % g_ScreenWidth,
@@ -196,7 +196,7 @@ BOOL __stdcall ProcessGameFrame(
         int mouseY,
         int mouseX)
 {
-  if ( _setjmp3(g_JumpBuffer, 0) || !g_ErrorFlag )
+  if ( _setjmp3((_JBTYPE *)g_JumpBuffer, 0) || !g_ErrorFlag )
   {
     eventCode = 14;
     inputFlag = 14;
@@ -320,7 +320,7 @@ char __stdcall GameOpcodeDispatcher(
 {
   int v6; // eax
   ScreenSnapshot *snapshot; // eax
-  int tileMapPtr; // eax
+  INT_PTR tileMapPtr; // eax - carries g_TileMapBuffer address
   int tileCount; // ebx
   _WORD *tilePtr; // ecx
   _DWORD *subObjData; // ebx
@@ -333,9 +333,9 @@ char __stdcall GameOpcodeDispatcher(
   v6 = opcodeType;
   if ( opcodeType == OPCODE_SET_FRAMERATE )
   {
-    g_GameLoopDataPtr = (GameLoopData *)opcodeData;// OPCODE_SET_FRAMERATE: Store game loop data ptr and apply default frame rate
+    g_GameLoopDataPtr = (GameLoopData *)(INT_PTR)opcodeData;// OPCODE_SET_FRAMERATE: Store game loop data ptr and apply default frame rate
     LOBYTE(v6) = g_DefaultFrameRate;
-    *(_BYTE *)(opcodeData + 1) = g_DefaultFrameRate;
+    *(_BYTE *)(INT_PTR)(opcodeData + 1) = g_DefaultFrameRate;
     SetFrameRate(v6);
   }
   else if ( opcodeType != OPCODE_UPDATE_FRAME && opcodeType != OPCODE_UNKNOWN_19 )
@@ -348,7 +348,7 @@ char __stdcall GameOpcodeDispatcher(
         snapshot->sceneDataPtr = (void *)g_CurrentScenePtr;
         snapshot->decompressedData = 0;
         snapshot->objectCount = 0;
-        if ( g_ActiveSnapshotIndex == -1 && *(int *)opcodeData < 0 )// If no snapshot active yet and opcodeData flags are negative (default flag), set this slot as active
+        if ( g_ActiveSnapshotIndex == -1 && *(int *)(INT_PTR)opcodeData < 0 )// If no snapshot active yet and opcodeData flags are negative (default flag), set this slot as active
           g_ActiveSnapshotIndex = slotIdx;
         break;
       case OPCODE_CAPTURE_SNAPSHOT:
@@ -365,7 +365,7 @@ char __stdcall GameOpcodeDispatcher(
           }
           while ( tileCount );
           g_RenderingInProgress = 1;
-          RenderSprite(1, (int *)opcodeData);
+          RenderSprite(1, (int *)(INT_PTR)opcodeData);
           g_RenderingInProgress = 0;
           CaptureScreenSnapshot(slotIdx);
         }
@@ -374,16 +374,16 @@ char __stdcall GameOpcodeDispatcher(
         InitSlotFromTemplate(&g_SpriteSlotArray[slotIdx]);// OPCODE_INIT_SPRITE_SLOT: Copy template data into sprite slot
         break;
       case OPCODE_SET_SPRITE_DATA_PTR:
-        g_SpriteSlotArray[slotIdx].dataPtr = (void *)(dataOffset + opcodeData);// OPCODE_SET_SPRITE_DATA_PTR: Set sprite data pointer (base + offset)
+        g_SpriteSlotArray[slotIdx].dataPtr = (void *)(INT_PTR)(dataOffset + opcodeData);// OPCODE_SET_SPRITE_DATA_PTR: Set sprite data pointer (base + offset)
         break;
       case OPCODE_SET_SPRITE_SCRIPT_PTR:
-        g_SpriteSlotArray[slotIdx].scriptPtr = (void *)(dataOffset + opcodeData);// OPCODE_SET_SPRITE_SCRIPT_PTR: Set sprite script pointer (base + offset)
+        g_SpriteSlotArray[slotIdx].scriptPtr = (void *)(INT_PTR)(dataOffset + opcodeData);// OPCODE_SET_SPRITE_SCRIPT_PTR: Set sprite script pointer (base + offset)
         break;
       case OPCODE_SET_SPRITE_SUBOBJECT_ARRAY:
-        g_SpriteSlotArray[slotIdx].subObjectArray = (void **)opcodeData;// OPCODE_SET_SPRITE_SUBOBJECT_ARRAY: Set pointer to sub-object pointer array
+        g_SpriteSlotArray[slotIdx].subObjectArray = (void **)(INT_PTR)opcodeData;// OPCODE_SET_SPRITE_SUBOBJECT_ARRAY: Set pointer to sub-object pointer array
         break;
       case OPCODE_SET_SUBOBJECT_PTR:
-        g_SpriteSlotArray[slotIdx].subObjectArray[subIdx] = (void *)opcodeData;// OPCODE_SET_SUBOBJECT_PTR: Set individual sub-object pointer
+        g_SpriteSlotArray[slotIdx].subObjectArray[subIdx] = (void *)(INT_PTR)opcodeData;// OPCODE_SET_SUBOBJECT_PTR: Set individual sub-object pointer
         break;
       case OPCODE_SET_SUBOBJECT_DATA_PTR:
         *((_DWORD *)g_SpriteSlotArray[slotIdx].subObjectArray[subIdx] + 1) = dataOffset + opcodeData;// OPCODE_SET_SUBOBJECT_DATA_PTR: Set data ptr inside sub-object (field at offset +4)
@@ -405,13 +405,13 @@ char __stdcall GameOpcodeDispatcher(
         subObjData[scriptOffset] = dataOffset + opcodeData;// Finally set the script pointer at the computed offset
         break;
       case OPCODE_SET_ANIMATION_FRAME_BITMASK:
-        g_AnimationSlotArray[slotIdx].frameBitmask = (void *)opcodeData;// OPCODE_SET_ANIMATION_FRAME_BITMASK: Set bitmask for animation frame matching
+        g_AnimationSlotArray[slotIdx].frameBitmask = (void *)(INT_PTR)opcodeData;// OPCODE_SET_ANIMATION_FRAME_BITMASK: Set bitmask for animation frame matching
         break;
       case OPCODE_SET_ANIMATION_FRAME_SELECTION:
-        g_AnimationSlotArray[slotIdx].frameSelectionData = (void *)opcodeData;// OPCODE_SET_ANIMATION_FRAME_SELECTION: Set frame selection lookup table
+        g_AnimationSlotArray[slotIdx].frameSelectionData = (void *)(INT_PTR)opcodeData;// OPCODE_SET_ANIMATION_FRAME_SELECTION: Set frame selection lookup table
         break;
       case OPCODE_SET_ANIMATION_FRAME_MODIFICATION:
-        g_AnimationSlotArray[slotIdx].frameModificationData = (void *)opcodeData;// OPCODE_SET_ANIMATION_FRAME_MODIFICATION: Set frame modification data for tile match
+        g_AnimationSlotArray[slotIdx].frameModificationData = (void *)(INT_PTR)opcodeData;// OPCODE_SET_ANIMATION_FRAME_MODIFICATION: Set frame modification data for tile match
         break;
       case OPCODE_INIT_FONT_SLOT:
         InitSlotFromTemplate(&g_FontSlotArray[slotIdx]);// OPCODE_INIT_FONT_SLOT: Initialize font from template + extract render flags
@@ -419,14 +419,14 @@ char __stdcall GameOpcodeDispatcher(
         DBG_LOG("OPCODE_INIT_FONT_SLOT: slot=%d fontData=%p flags=%d type=%d", slotIdx, g_FontSlotArray[slotIdx].fontData, g_FontSlotArray[slotIdx].flags, g_FontSlotArray[slotIdx].type);
         break;
       case OPCODE_SET_FONT_DATA:
-        g_FontSlotArray[slotIdx].fontData = (void *)opcodeData;// OPCODE_SET_FONT_DATA: Set font data pointer directly
+        g_FontSlotArray[slotIdx].fontData = (void *)(INT_PTR)opcodeData;// OPCODE_SET_FONT_DATA: Set font data pointer directly
         DBG_LOG("OPCODE_SET_FONT_DATA: slot=%d fontData=%p", slotIdx, g_FontSlotArray[slotIdx].fontData);
         break;
       case OPCODE_SET_FONT_DATA_OR_ARRAY:
         fontSlot = &g_FontSlotArray[slotIdx];   // OPCODE_SET_FONT_DATA_OR_ARRAY: Set font data or sub-font array entry depending on font type
-        DBG_LOG("OPCODE_SET_FONT_DATA_OR_ARRAY: slot=%d opcodeData=%p fontSlot=%p fontData_before=%p flags=%d type=%d", slotIdx, (void*)opcodeData, fontSlot, fontSlot->fontData, fontSlot->flags, fontSlot->type);
+        DBG_LOG("OPCODE_SET_FONT_DATA_OR_ARRAY: slot=%d opcodeData=%p fontSlot=%p fontData_before=%p flags=%d type=%d", slotIdx, (void*)(INT_PTR)opcodeData, fontSlot, fontSlot->fontData, fontSlot->flags, fontSlot->type);
         if ( fontSlot->flags || fontSlot->type <= 1u )
-          fontSlot->fontData = (void *)opcodeData;
+          fontSlot->fontData = (void *)(INT_PTR)opcodeData;
         else
           *((_DWORD *)fontSlot->fontData + subIdx) = opcodeData;
         DBG_LOG("OPCODE_SET_FONT_DATA_OR_ARRAY: fontData_after=%p", fontSlot->fontData);
@@ -434,34 +434,34 @@ char __stdcall GameOpcodeDispatcher(
       case OPCODE_SET_FONT_GLYPH_DATA:
         fontSlot2 = &g_FontSlotArray[slotIdx];  // OPCODE_SET_FONT_GLYPH_DATA: Set glyph sprite data for specific character index
         glyphArray = fontSlot2->fontData;
-        DBG_LOG("OPCODE_SET_FONT_GLYPH_DATA: slot=%d fontSlot=%p fontData=%p arrayIdx=%d opcodeData=%p g_TemplateDataBuffer=%p", slotIdx, fontSlot2, fontSlot2->fontData, arrayIdx, (void*)opcodeData, (void*)(int)g_TemplateDataBuffer);
+        DBG_LOG("OPCODE_SET_FONT_GLYPH_DATA: slot=%d fontSlot=%p fontData=%p arrayIdx=%d opcodeData=%p g_TemplateDataBuffer=%p", slotIdx, fontSlot2, fontSlot2->fontData, arrayIdx, (void*)(INT_PTR)opcodeData, (void*)(INT_PTR)g_TemplateDataBuffer);
         if ( !fontSlot2->flags && fontSlot2->type > 1u )// If font type > 1 and no flags: fontData is array of sub-font pointers, index by subIdx
-          glyphArray = (_DWORD *)glyphArray[subIdx];
+          glyphArray = (_DWORD *)(INT_PTR)glyphArray[subIdx];
         glyphArray[2 * arrayIdx] = opcodeData;
         break;
       case OPCODE_INIT_SOUND_SLOT:
         InitSlotFromTemplate(&g_SoundSlotArray[slotIdx]);// OPCODE_INIT_SOUND_SLOT: Initialize sound slot from template
         break;
       case OPCODE_SET_SOUND_DATA:
-        g_SoundSlotArray[slotIdx].soundDataPtr = (void *)opcodeData;// OPCODE_SET_SOUND_DATA: Set sound data pointer
+        g_SoundSlotArray[slotIdx].soundDataPtr = (void *)(INT_PTR)opcodeData;// OPCODE_SET_SOUND_DATA: Set sound data pointer
         break;
       case OPCODE_SET_MUSIC_TRACK_DATA:
         *((_DWORD *)&g_MusicTrackArray->trackData + slotIdx) = opcodeData;// OPCODE_SET_MUSIC_TRACK_DATA: Set music track data for track slot
         break;
       case OPCODE_SET_OVERLAY_SPRITE_DATA:
-        g_OverlaySlotArray[slotIdx].spriteDataPtr = (int *)opcodeData;// OPCODE_SET_OVERLAY_SPRITE_DATA: Set overlay slot's sprite data pointer
+        g_OverlaySlotArray[slotIdx].spriteDataPtr = (int *)(INT_PTR)opcodeData;// OPCODE_SET_OVERLAY_SPRITE_DATA: Set overlay slot's sprite data pointer
         break;
       case OPCODE_SET_OVERLAY_COORDS:
-        g_OverlaySlotArray[slotIdx].coords = (OverlayCoords *)opcodeData;// OPCODE_SET_OVERLAY_COORDS: Set overlay slot's coordinate data
+        g_OverlaySlotArray[slotIdx].coords = (OverlayCoords *)(INT_PTR)opcodeData;// OPCODE_SET_OVERLAY_COORDS: Set overlay slot's coordinate data
         break;
       case OPCODE_SET_GLOBAL_PTR_1:
-        g_CustomDataPtr1 = (int *)opcodeData;// OPCODE_SET_GLOBAL_PTR_1: Store custom global data pointer 1
+        g_CustomDataPtr1 = (int *)(INT_PTR)opcodeData;// OPCODE_SET_GLOBAL_PTR_1: Store custom global data pointer 1
         break;
       case OPCODE_SET_GLOBAL_PTR_2:
-        g_CustomDataPtr2 = (_DWORD *)opcodeData;// OPCODE_SET_GLOBAL_PTR_2: Store custom global data pointer 2
+        g_CustomDataPtr2 = (_DWORD *)(INT_PTR)opcodeData;// OPCODE_SET_GLOBAL_PTR_2: Store custom global data pointer 2
         break;
       case OPCODE_SET_GLOBAL_PTR_3:
-        g_CustomDataPtr3 = (int *)opcodeData;// OPCODE_SET_GLOBAL_PTR_3: Store custom global data pointer 3
+        g_CustomDataPtr3 = (int *)(INT_PTR)opcodeData;// OPCODE_SET_GLOBAL_PTR_3: Store custom global data pointer 3
         break;
     }
   }
@@ -525,7 +525,7 @@ BOOL __stdcall GameMainLoop(int opcodeType, int startResourceId)
         case 5:
           ReadJumpOffset(5, &jumpTarget);       // Opcode 5: Read jump offset
           if ( opcodeType == 20 )
-            *(_DWORD *)(dword_416338 + 4 * opcodeParam) = jumpTarget;
+            *(_DWORD *)(INT_PTR)(dword_416338 + 4 * opcodeParam) = jumpTarget;
           break;
         default:
           if ( (unsigned __int8)g_CurrentOpcode == 255 )
@@ -566,14 +566,14 @@ BOOL __stdcall GameMainLoop(int opcodeType, int startResourceId)
                   }
                   InitRenderingEngine();
                   SetupMemoryContext();
-                  g_TemplateDataBuffer = (void *)AllocOpcodeBuffer();
+                  g_TemplateDataBuffer = (INT_PTR)AllocOpcodeBuffer();
                 }
                 g_CurrentScenePtr = GetCurrentFileOffset();
                 ++g_TotalSnapshotCount;
                 goto LABEL_47;
               default:
 LABEL_47:
-                if (opcodeType >= 0x40 && opcodeType <= 0x43) DBG_LOG("LABEL_47: opcodeType=0x%X param=%d g_TemplateDataBuffer=%p g_FontSlotArray=%p", opcodeType, opcodeParam, (void*)(int)g_TemplateDataBuffer, g_FontSlotArray);
+                if (opcodeType >= 0x40 && opcodeType <= 0x43) DBG_LOG("LABEL_47: opcodeType=0x%X param=%d g_TemplateDataBuffer=%p g_FontSlotArray=%p", opcodeType, opcodeParam, (void*)(INT_PTR)g_TemplateDataBuffer, g_FontSlotArray);
                 opcodeDataPtr = (int)g_TemplateDataBuffer;
                 ReadCompressedData((char *)g_TemplateDataBuffer);
                 if ( !GameOpcodeDispatcher((int)g_TemplateDataBuffer, arg3, arg2, arg1, opcodeParam, opcodeType) )
@@ -597,7 +597,7 @@ LABEL_47:
                     g_TemplateDataSize = 16;
                   }
 LABEL_63:
-                  g_TemplateDataBuffer = (void *)AllocMemoryChunk(g_TemplateDataSize);
+                  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(g_TemplateDataSize);
                   continue;
                 }
                 if ( opcodeType != OPCODE_UPDATE_FRAME
@@ -670,14 +670,14 @@ char __stdcall ExecuteGameLoop(char skipCapture, int snapIdx)
   snapshot = &g_ScreenSnapshotArray[snapIdx];// Get pointer to snapshot structure
   DBG_LOG("ExecuteGameLoop: snapshot=%p sceneDataPtr=%p compressedData=%p decompressedData=%p objCount=%d",
     snapshot, snapshot->sceneDataPtr, snapshot->compressedData, snapshot->decompressedData, snapshot->objectCount);
-  if ( SeekFileWithBuffer(0, (int)snapshot->sceneDataPtr) && ReadCompressedData((char *)snapshot->compressedData) )// Seek to snapshot file position and decompress data
+  if ( SeekFileWithBuffer(0, (int)(INT_PTR)snapshot->sceneDataPtr) && ReadCompressedData((char *)snapshot->compressedData) )// Seek to snapshot file position and decompress data
   {
     row = 0;                                    // PHASE 1: RESTORE SCREEN - Initialize row counter
     srcOffset = 0;
     do
     {
       memcpy(
-        (void *)(g_TileMapBuffer + 2 * (row << g_TileMapShift)),
+        (void *)(INT_PTR)(g_TileMapBuffer + 2 * (row << g_TileMapShift)),
         (char *)snapshot->decompressedData + g_ScreenWidth * srcOffset,
         2 * g_ScreenWidth);                     // Copy each row from snapshot buffer to tile map (2 bytes per pixel)
       srcOffset += 2;
@@ -703,7 +703,7 @@ char __stdcall ExecuteGameLoop(char skipCapture, int snapIdx)
       while ( remainingObjects-- );
     }
     snapshot->objectCount = 0;                  // Clear object count after restoration
-    FreeMemoryBlock((int)snapshot->decompressedData);// PHASE 3: CLEANUP - Free snapshot buffer
+    FreeMemoryBlock((int)(INT_PTR)snapshot->decompressedData);// PHASE 3: CLEANUP - Free snapshot buffer
     ClearDirtyRegionsAndInit(0);                // Clear dirty regions and reinitialize game state
     if ( !skipCapture )                         // If not skipping capture, restore graphics (after video playback)
       RestoreGraphicsAfterVideo();

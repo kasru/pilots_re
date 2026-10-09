@@ -80,7 +80,7 @@ int __stdcall BuildAlternateSavePath(char *Str, LPSTR a2)
   return wsprintfA(a2, "%s\\%s", tmpBuffer, v2);
 }
 
-unsigned int __stdcall OpenSaveFile(int save_slot, int ext_string, char *base_path)
+unsigned int __stdcall OpenSaveFile(int save_slot, INT_PTR ext_string, char *base_path)
 {
   char FileName[128]; // [esp+0h] [ebp-100h] BYREF
   CHAR v5[128]; // [esp+80h] [ebp-80h] BYREF
@@ -97,13 +97,13 @@ unsigned int __stdcall OpenSaveFile(int save_slot, int ext_string, char *base_pa
   return (-g_VideoConfig.saveFileHandle - (unsigned int)(g_VideoConfig.saveFileHandle != 0)) >> 31;
 }
 
-int __stdcall DeleteSaveFile(int save_slot, int ext_string, char *base_path)
+int __stdcall DeleteSaveFile(int save_slot, INT_PTR ext_string, char *base_path)
 {
   int result; // al
   char FileName[128]; // [esp+0h] [ebp-100h] BYREF
   CHAR v5[128]; // [esp+80h] [ebp-80h] BYREF
 
-  BuildSaveFilePath(save_slot, ext_string, base_path, FileName);
+  BuildSaveFilePath(save_slot, (const char *)ext_string, base_path, FileName);
   result = 1;
   if ( remove(FileName) )
   {

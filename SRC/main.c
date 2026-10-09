@@ -7,7 +7,7 @@
 int __stdcall ShowMessageBox(LPCSTR lpText, LPCSTR lpCaption)
 {
   MessageBeep(0x10u);
-  return MessageBoxA(g_MainWindow, lpText, lpCaption, 0x10u);
+  return MessageBoxA((HWND)g_MainWindow, lpText, lpCaption, 0x10u);
 }
 
 int __stdcall ShowErrorDialog(LPCSTR lpText)
@@ -44,8 +44,8 @@ BOOL CleanupHelpAndWindow()
 
   if ( g_MainWindow )
   {
-    WinHelpA(g_MainWindow, g_VideoConfig.helpFilePath, 2u, 0);
-    return DestroyWindow(g_MainWindow);
+    WinHelpA((HWND)g_MainWindow, g_VideoConfig.helpFilePath, 2u, 0);
+    return DestroyWindow((HWND)g_MainWindow);
   }
   return result;
 }
@@ -60,13 +60,13 @@ int CleanupGameResources()
   result = CloseFile();
   if ( g_VideoConfig.hPalette )
   {
-    result = DeleteObject((HGDIOBJ)g_VideoConfig.hPalette);
+    result = DeleteObject((HGDIOBJ)(INT_PTR)g_VideoConfig.hPalette);
     g_VideoConfig.hPalette = 0;
   }
   if ( g_MemoryDeviceContext )
-    result = DeleteDC(g_MemoryDeviceContext);
+    result = DeleteDC((HDC)g_MemoryDeviceContext);
   if ( g_BitmapHandle )
-    result = DeleteObject(g_BitmapHandle);
+    result = DeleteObject((HBITMAP)g_BitmapHandle);
   if ( g_VideoConfig.hGlobalMem )
   {
     GlobalFree(g_VideoConfig.hGlobalMem);
@@ -105,7 +105,7 @@ struct tagRECT updateRect;
 LABEL_24:
       if ( g_VideoConfig.hPalette )             // WM_QUERYNEWPALETTE / WM_PALETTECHANGED: Realize palette and invalidate if colors changed
       {
-        SelectPalette(g_VideoConfig.hDC, (HPALETTE)g_VideoConfig.hPalette, 0);
+        SelectPalette(g_VideoConfig.hDC, (HPALETTE)(INT_PTR)g_VideoConfig.hPalette, 0);
         if ( RealizePalette(g_VideoConfig.hDC) )
         {
           AddDirtyRegion(g_VideoConfig.clientHeight, g_VideoConfig.clientWidth, 0, 0);
@@ -321,7 +321,7 @@ HDC __stdcall CreateMainWindow(struct VideoConfigEx *config)
        metric math): SDL owns the class, we subclass its wndproc in SdlBackendCreateWindow.
        The window is created hidden - like the original style without WS_VISIBLE - and shown
        by the game's own ShowWindow calls in InitDisplay/PlayIntroVideo. */
-    g_MainWindow = SdlBackendCreateWindow(
+    g_MainWindow = (INT_PTR)SdlBackendCreateWindow(
                       windowPosX,
                       windowPosY,
                       g_VideoConfig.clientWidth,
@@ -337,19 +337,19 @@ HDC __stdcall CreateMainWindow(struct VideoConfigEx *config)
   }
   { /* Fix window size: use AdjustWindowRectEx for correct client area */
     RECT rc;
-    DWORD dwStyle = (DWORD)GetWindowLongA(g_MainWindow, -16); /* GWL_STYLE */
-    DWORD dwExStyle = (DWORD)GetWindowLongA(g_MainWindow, -20); /* GWL_EXSTYLE */
+    DWORD dwStyle = (DWORD)GetWindowLongA((HWND)g_MainWindow, -16); /* GWL_STYLE */
+    DWORD dwExStyle = (DWORD)GetWindowLongA((HWND)g_MainWindow, -20); /* GWL_EXSTYLE */
     rc.left = 0; rc.top = 0;
     rc.right = g_VideoConfig.initialClientWidth;
     rc.bottom = g_VideoConfig.initialClientHeight;
     AdjustWindowRectEx(&rc, dwStyle, 0, dwExStyle);
     g_VideoConfig.borderWidth = (rc.right - rc.left) - g_VideoConfig.initialClientWidth;
     g_VideoConfig.titleBarHeight = (rc.bottom - rc.top) - g_VideoConfig.initialClientHeight;
-    SetWindowPos(g_MainWindow, 0, 0, 0,
+    SetWindowPos((HWND)g_MainWindow, 0, 0, 0,
       rc.right - rc.left, rc.bottom - rc.top,
       0x0016); /* SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE */
   }
-  hDC = GetDC(g_MainWindow);                    // Get device context for rendering
+  hDC = GetDC((HWND)g_MainWindow);                    // Get device context for rendering
   g_VideoConfig.hDC = hDC;
   return hDC;
 }
@@ -366,7 +366,7 @@ BOOL __stdcall HandleHelpRequest(DWORD *pHelpContext)
     helpData = 0;                               // Clear dwData for HELP_CONTENTS call
     helpCommand = 3;                            // HELP_CONTENTS (3) - show help table of contents
   }
-  return WinHelpA(g_MainWindow, g_VideoConfig.helpFilePath, helpCommand, (ULONG_PTR)helpData);// WinHelpA(g_MainWindow, helpFilePath, uCommand, dwData)
+  return WinHelpA((HWND)g_MainWindow, g_VideoConfig.helpFilePath, helpCommand, (ULONG_PTR)helpData);// WinHelpA(g_MainWindow, helpFilePath, uCommand, dwData)
 }
 
 BOOL __stdcall LaunchProcessAndWait(LPSTR lpCommandLine)
@@ -408,7 +408,7 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
     ShowErrorDialog("SDL initialization failed.");
     return 1;
   }
-  DBG_LOG("hInstance=0x%08X nShowCmd=%d", (unsigned int)hInstance, nShowCmd);
+  DBG_LOG("hInstance=0x%08X nShowCmd=%d", (unsigned int)(INT_PTR)hInstance, nShowCmd);
   int v4; // esi
   char *v5; // eax
   DWORD Time; // ebx
@@ -418,7 +418,7 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 
   GetModuleFileNameA(hInstance, Filename, 0x100u);
   DBG_LOG("Module file: %s", Filename);
-  g_hAppInstance = hInstance;
+  g_hAppInstance = (INT_PTR)hInstance;
   g_VideoConfig.nShowCmd = nShowCmd;
   g_VideoConfig.hDC = 0;
   g_VideoConfig.hPalette = 0;
@@ -458,12 +458,12 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
             goto LABEL_19;
           if ( !g_VideoConfig.pErrorMessage )
             break;
-          if ( g_VideoConfig.pErrorMessage == 1 )
+          if ( g_VideoConfig.pErrorMessage == (const char *)(INT_PTR)1 )
             goto LABEL_19;
           DisplayErrorMessage();
           CleanupHelpAndWindow();
         }
-        if ( !IsIconic(g_MainWindow) )
+        if ( !IsIconic((HWND)g_MainWindow) )
         {
           Time = SDL_GetTicks();                // was: timeGetTime()
           if ( g_VideoConfig.frameDelayMs + g_LastFrameTime < Time )
@@ -475,7 +475,7 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
       if ( (g_VideoConfig.pInputConfig->flags & 2) != 0 )
       {
         GetCursorPos(&Point);
-        ScreenToClient(g_MainWindow, &Point);
+        ScreenToClient((HWND)g_MainWindow, &Point);
         if ( Point.x < 0 || Point.x >= g_VideoConfig.clientWidth || Point.y < 0 || Point.y >= g_VideoConfig.clientHeight )
           inputState[0] = 0;
       }

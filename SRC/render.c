@@ -7,11 +7,11 @@
 int __stdcall RemoveAndFreeRenderObject(RenderObject *render_object)
 {
   if ( (render_object->flags & 0x80u) != 0 )
-    AddObjectToDirtyRegions((int)render_object);
+    AddObjectToDirtyRegions(render_object);
   return FreeRenderObject(render_object);
 }
 
-int __stdcall RemoveChildTextObjects(int parent_object_addr)
+int __stdcall RemoveChildTextObjects(INT_PTR parent_object_addr)
 {
   int result; // eax
   int parent_index; // esi
@@ -20,7 +20,7 @@ int __stdcall RemoveChildTextObjects(int parent_object_addr)
   if ( (*(_BYTE *)(parent_object_addr + 3) & 2) != 0 )
   {
     *(_BYTE *)(parent_object_addr + 3) &= ~2u;
-    result = ((int)g_RenderObjectsStart - parent_object_addr) / 16;
+    result = ((INT_PTR)g_RenderObjectsStart - parent_object_addr) / 16;
     parent_index = result;
     for ( current_object = g_RenderObjectsStart; current_object > g_RenderObjectsEnd; --current_object )
     {
@@ -75,7 +75,7 @@ LABEL_9:
 
 int ReexecuteCurrentSpriteScript()
 {
-  int gameFlags; // eax
+  INT_PTR gameFlags; // eax
   int spriteIndex; // edi
   SpriteSlot *spriteSlot; // esi
   RenderObject *renderObj; // ebx
@@ -102,7 +102,7 @@ LABEL_7:
       0,
       0xFFFF,
       0,
-      (int)spriteSlot,
+      (INT_PTR)spriteSlot,
       (BYTE *)spriteSlot->scriptPtr);
     gameFlags = g_GameFlags1;
     *(_WORD *)(g_GameFlags1 + 2) = -3842;       // Mark as processed: screenIndex=0xFE (inactive), upper byte=0xF0
@@ -122,7 +122,7 @@ int __stdcall RemoveAndCreateTileObject(char removeStandalone, int tileY, int ti
   __int16 packedTileCoords; // [esp+18h] [ebp-4h]
 
   tileMapIndex = tileX + (tileY << g_TileMapShift);// tileMapIndex = (tileY << g_TileMapShift) + tileX
-  tileEntryPtr = (unsigned __int8 *)(g_TileMapBuffer + 2 * tileMapIndex);// tileEntryPtr = &g_TileMapBuffer[tileMapIndex * 2] — each entry is 2 bytes: [spriteIndex, direction+flags]
+  tileEntryPtr = (unsigned __int8 *)(INT_PTR)(g_TileMapBuffer + 2 * tileMapIndex);// tileEntryPtr = &g_TileMapBuffer[tileMapIndex * 2] — each entry is 2 bytes: [spriteIndex, direction+flags]
   if ( *tileEntryPtr == 0xFE )
     return tileMapIndex;                        // 0xFE = empty tile, nothing to do
   spriteSlot = &g_SpriteSlotArray[*tileEntryPtr];
@@ -160,9 +160,9 @@ LABEL_13:
   if ( renderObj->posY != renderObj->posX )
     RemoveRenderObjectByIndex(renderObj->posX);
   if ( (renderObj->flags & 8) != 0 )            // bit3: object owns allocated memory block in spriteDataPtr
-    FreeMemoryBlock((int)renderObj->spriteDataPtr);
+    FreeMemoryBlock((INT_PTR)renderObj->spriteDataPtr);
   compositeObj = renderObj;
-  RemoveChildTextObjects((int)renderObj);       // Remove any text overlay child objects
+  RemoveChildTextObjects((INT_PTR)renderObj);       // Remove any text overlay child objects
   FreeRenderObject(renderObj);
   UpdateRenderObjectCache(renderObj);
   if ( removeStandalone && !removalDone )
@@ -185,7 +185,7 @@ LABEL_14:
            0,
            0xFFFF,
            0,
-           (int)spriteSlot,
+           (INT_PTR)spriteSlot,
            (BYTE *)spriteSlot->scriptPtr);
 }
 
@@ -196,8 +196,8 @@ __int16 __stdcall CreateTileObject(int a1, int a2, __int16 a3)
   _BYTE *frameModificationData; // esi
   int v6; // ebx
   SpriteSlot *v7; // esi
-  int v8; // ebx
-  uint16_t *v9; // edi
+  INT_PTR v8; // ebx
+  void *v9; // edi
   RenderObject *v10; // eax
   unsigned int v11; // ecx
   __int16 result; // ax
@@ -205,7 +205,7 @@ __int16 __stdcall CreateTileObject(int a1, int a2, __int16 a3)
   int v14; // [esp+10h] [ebp-Ch]
   size_t Size; // [esp+14h] [ebp-8h]
 
-  v3 = (__int16 *)(g_TileMapBuffer + 2 * (a2 + (a1 << g_TileMapShift)));
+  v3 = (__int16 *)(INT_PTR)(g_TileMapBuffer + 2 * (a2 + (a1 << g_TileMapShift)));
   LOBYTE(v13) = a3;
   if ( (a3 & 0x100) != 0 )
   {
@@ -220,7 +220,7 @@ __int16 __stdcall CreateTileObject(int a1, int a2, __int16 a3)
     {
       v6 = (int)HIBYTE(a3) >> 4;
       HIBYTE(a3) = frameModificationData[v13];
-      g_TileMatchHandlers[v6]((int)&a3);
+      g_TileMatchHandlers[v6]((INT_PTR)&a3);
     }
   }
   else if ( (unsigned __int8)a3 == 254 )
@@ -239,7 +239,7 @@ __int16 __stdcall CreateTileObject(int a1, int a2, __int16 a3)
   {
     RemoveAndCreateTileObject(0, a1, a2);
     v10 = AllocRenderObject();
-    v8 = (int)v10;
+    v8 = (INT_PTR)v10;
     v10->flags = HIBYTE(a3) & 0xF0 | 3;
     v10->slotIndex = a3;
     LOBYTE(v10->animLink) = 0;
@@ -249,7 +249,7 @@ __int16 __stdcall CreateTileObject(int a1, int a2, __int16 a3)
     v10->posY = -1;
     v10->posX = -1;
     v10->renderInfo = *v3;
-    if ( (unsigned int)v10 < g_GameFlags1 )
+    if ( (UINT_PTR)v10 < (UINT_PTR)g_GameFlags1 )
       HIBYTE(v10->renderInfo) |= 1u;
     v11 = HIBYTE(v7->baseData) + 1;
     Size = v11;
@@ -261,13 +261,13 @@ __int16 __stdcall CreateTileObject(int a1, int a2, __int16 a3)
     else
     {
       v9 = (uint16_t *)AllocFromMemoryPool(v11);
-      *(_DWORD *)(v8 + 12) = v9;
+      *(void **)(v8 + 12) = v9;
       ClearBuffer(Size, v9);
       *(_BYTE *)v8 |= 8u;
     }
-    v14 = ((int)g_RenderObjectsStart - v8) / 16;
+    v14 = ((INT_PTR)g_RenderObjectsStart - v8) / 16;
     if ( LOBYTE(v7->baseData) == 3 && !g_LastCheckedRenderObject )
-      g_LastCheckedRenderObject = v8;
+      g_LastCheckedRenderObject = (RenderObject *)v8;
   }
   else
   {
@@ -277,7 +277,7 @@ __int16 __stdcall CreateTileObject(int a1, int a2, __int16 a3)
     v9 = 0;
   }
   *v3 = a3;
-  return ExecuteScriptWithContext(SHIBYTE(a3), a1, a2, (int)v9, v14, v8, (int)v7, (int)v7->dataPtr);
+  return ExecuteScriptWithContext(SHIBYTE(a3), a1, a2, (INT_PTR)v9, v14, v8, (INT_PTR)v7, (BYTE *)v7->dataPtr);
 }
 
 char __stdcall MoveObjectOnTileMap(int a1)
@@ -294,11 +294,11 @@ char __stdcall MoveObjectOnTileMap(int a1)
     v1 = *(_BYTE *)(g_GameFlags1 + 3) & 0xF;
     v2 = *(_WORD *)(g_GameFlags1 + 2);
     HIBYTE(v2) &= 0xF0u;
-    *(_WORD *)(g_TileMapBuffer + 2 * (g_PreviousTileX + (g_PreviousTileY << g_TileMapShift))) = v2;
+    *(_WORD *)(INT_PTR)(g_TileMapBuffer + 2 * (g_PreviousTileX + (g_PreviousTileY << g_TileMapShift))) = v2;
     RemoveAndCreateTileObject(0, g_CurrentTileY_Wrapped, g_CurrentTileX_Wrapped);
     *(_BYTE *)(g_GameFlags1 + 6) = g_CurrentTileX_Wrapped;
     *(_BYTE *)(g_GameFlags1 + 7) = g_CurrentTileY_Wrapped;
-    v3 = (_WORD *)(g_TileMapBuffer + 2 * (g_CurrentTileX_Wrapped + (g_CurrentTileY_Wrapped << g_TileMapShift)));
+    v3 = (_WORD *)(INT_PTR)(g_TileMapBuffer + 2 * (g_CurrentTileX_Wrapped + (g_CurrentTileY_Wrapped << g_TileMapShift)));
     *(_WORD *)(g_GameFlags1 + 2) = *v3;
     *(_BYTE *)(g_GameFlags1 + 3) |= v1;
     *v3 = *(unsigned __int8 *)(g_GameFlags1 + 1) | ((*(_BYTE *)g_GameFlags1 & 0xF0) << 8);
@@ -311,7 +311,7 @@ char __stdcall MoveObjectOnTileMap(int a1)
     *(_BYTE *)g_GameFlags1 &= 0xFu;
     *(_BYTE *)g_GameFlags1 |= g_CurrentDirection;
     result = g_CurrentDirection;
-    *(_BYTE *)(g_TileMapBuffer + 2 * (g_CurrentTileX_Wrapped + (g_CurrentTileY_Wrapped << g_TileMapShift)) + 1) = g_CurrentDirection;
+    *(_BYTE *)(INT_PTR)(g_TileMapBuffer + 2 * (g_CurrentTileX_Wrapped + (g_CurrentTileY_Wrapped << g_TileMapShift)) + 1) = g_CurrentDirection;
     g_TileMapModified = 1;
   }
   return result;
@@ -434,7 +434,7 @@ LABEL_27:
   {
     g_CurrentTileX = v8 / g_TileWidth;
     g_CurrentTileY = ya / g_TileHeight;
-    HIBYTE(video_recursion_counter) = *(_BYTE *)(g_TileMapBuffer
+    HIBYTE(video_recursion_counter) = *(_BYTE *)(INT_PTR)(g_TileMapBuffer
                                                + 2 * (v8 / g_TileWidth + ((ya / g_TileHeight) << g_TileMapShift)));
     goto LABEL_44;
   }
@@ -531,7 +531,7 @@ char ProcessNormalEvent()
   uint16_t prev_object_link; // si
   RenderObject *next_object_linked; // ebx
   SpriteSlot *sprite_slot; // eax
-  int v7; // edx
+  INT_PTR v7; // edx
   char direction_offset; // di
   unsigned int direction_index; // esi
   int v10; // eax
@@ -539,7 +539,7 @@ char ProcessNormalEvent()
   int **sprite_command_list; // [esp+14h] [ebp-8h]
 
   current_object = *(RenderObject **)&g_InputState[3];
-  if ( !*(_DWORD *)&g_InputState[3] )
+  if ( !*(INT_PTR *)&g_InputState[3] )
     current_object = g_RenderObjectsStart;
   if ( current_object <= g_RenderObjectsEnd )
     goto LABEL_15;
@@ -548,12 +548,12 @@ char ProcessNormalEvent()
     if ( (current_object->flags & 3) != 3 )
     {
       if ( !g_SpecialMode && (current_object->flags & 0x83) == 0x81 && current_object->parentIndex == 0xFFFF )
-        UpdateSpriteAnimation(1, 0, (int)current_object);
+        UpdateSpriteAnimation(1, 0, current_object);
       goto LABEL_48;
     }
     if ( !g_SpecialMode
       || ((1 << (current_object->slotIndex & 7))
-        & *(unsigned __int8 *)(((int)current_object->slotIndex >> 3) + g_SpecialMode)) != 0 )
+        & *(unsigned __int8 *)(((int)current_object->slotIndex >> 3) + (INT_PTR)g_SpecialMode)) != 0 )
     {
       if ( (current_object->renderInfo & 0x100) != 0 )
       {
@@ -565,7 +565,7 @@ char ProcessNormalEvent()
         if ( !UpdateSpriteAnimation(
                 current_object->posY != current_object->posX,
                 1,
-                (int)&g_RenderObjectsStart[-current_object->posY]) )
+                &g_RenderObjectsStart[-current_object->posY]) )
         {
           if ( current_object == *(RenderObject **)&g_InputState[3] )
             goto LABEL_15;
@@ -579,8 +579,8 @@ char ProcessNormalEvent()
           next_object->flags |= 0x80u;
           LOBYTE(next_object->animLink) = current_object->parentIndex;
           HIBYTE(next_object->animLink) = HIBYTE(current_object->parentIndex);
-          CalculateObjectPosition((int)next_object);
-          AddObjectToDirtyRegions((int)next_object);
+          CalculateObjectPosition(next_object);
+          AddObjectToDirtyRegions(next_object);
         }
         current_object->flags &= ~4u;
       }
@@ -589,7 +589,7 @@ char ProcessNormalEvent()
         nextLink = current_object->posY;
         if ( nextLink != 0xFFFF )
         {
-          if ( UpdateSpriteAnimation(1, 0, (int)&g_RenderObjectsStart[-nextLink]) )
+          if ( UpdateSpriteAnimation(1, 0, &g_RenderObjectsStart[-nextLink]) )
           {
             prev_object_link = current_object->posX;
             current_object->posY = prev_object_link;
@@ -599,19 +599,19 @@ char ProcessNormalEvent()
               next_object_linked->flags |= 0x80u;
               LOBYTE(next_object_linked->animLink) = current_object->parentIndex;
               HIBYTE(next_object_linked->animLink) = HIBYTE(current_object->parentIndex);
-              CalculateObjectPosition((int)next_object_linked);
-              AddObjectToDirtyRegions((int)next_object_linked);
+              CalculateObjectPosition(next_object_linked);
+              AddObjectToDirtyRegions(next_object_linked);
             }
           }
         }
       }
-      g_GameFlags1 = (int)current_object;
+      g_GameFlags1 = (INT_PTR)current_object;
       g_ResourceID2 = g_RenderObjectsStart - current_object;
       sprite_slot = &g_SpriteSlotArray[current_object->slotIndex];
-      g_GameFlags2 = (int)sprite_slot;
+      g_GameFlags2 = (INT_PTR)sprite_slot;
       v7 = (current_object->flags & 8) != 0
-         ? *(_DWORD *)&current_object->spriteDataPtr
-         : (int)&current_object->spriteDataPtr;
+         ? *(INT_PTR *)&current_object->spriteDataPtr
+         : (INT_PTR)&current_object->spriteDataPtr;
       g_CurrentObjectData = v7;
       sprite_command_list = (int **)sprite_slot->subObjectArray;
       g_RenderComplete = 0;
@@ -643,7 +643,7 @@ LABEL_31:
     direction_index = 0;
     while ( 1 )
     {
-      if ( ((1 << direction_index) & *(unsigned __int8 *)(g_GameFlags2 + 1)) != 0 )
+      if ( ((1 << direction_index) & *(unsigned __int8 *)(INT_PTR)(g_GameFlags2 + 1)) != 0 )
       {
         g_SpriteDirectionIndex = (direction_offset + (direction_index & 3)) & 3;
         if ( direction_index > 3 )
@@ -659,9 +659,9 @@ LABEL_31:
     }
     if ( v10 != 1 )
     {
-      if ( !*(_DWORD *)&g_InputState[3] )
+      if ( !*(INT_PTR *)&g_InputState[3] )
       {
-        UpdateRenderObjectCache((SpriteSlot *)current_object);
+        UpdateRenderObjectCache((RenderObject *)current_object);
         goto LABEL_48;
       }
       goto LABEL_53;
@@ -677,16 +677,16 @@ LABEL_40:
       }
       if ( !direction_index )
       {
-        *(_DWORD *)&g_InputState[3] = current_object;
+        *(INT_PTR *)&g_InputState[3] = (INT_PTR)current_object;
         goto LABEL_15;
       }
     }
     break;
   }
-  if ( !*(_DWORD *)&g_InputState[3] )
+  if ( !*(INT_PTR *)&g_InputState[3] )
     goto LABEL_48;
 LABEL_53:
-  *(_DWORD *)&g_InputState[3] = 0;
+  *(INT_PTR *)&g_InputState[3] = 0;
 LABEL_15:
   g_GameFlags1 = 0;
   g_ResourceID2 = 0xFFFF;
@@ -771,13 +771,13 @@ char RenderDirtyRegions()
 {
   RenderObject *i; // edx
   int v1; // eax
-  int *p_render_objects_array; // esi
+  INT_PTR *p_render_objects_array; // esi
   int v3; // ebx
   char *v4; // edi
-  int v5; // ecx
+  INT_PTR v5; // ecx
   int v6; // eax
   char *v7; // edi
-  int v8; // eax
+  INT_PTR v8; // eax
   int v9; // ebx
   int v10; // esi
   int v11; // edi
@@ -795,7 +795,7 @@ char RenderDirtyRegions()
   _DWORD *dirty_region; // [esp+Ch] [ebp-104Ch]
   int object_index; // [esp+10h] [ebp-1048h]
   int object_count; // [esp+14h] [ebp-1044h]
-  int render_objects_array[1024]; // [esp+18h] [ebp-1040h] BYREF
+  INT_PTR render_objects_array[1024]; // [esp+18h] [ebp-1040h] BYREF
   _DWORD *next_dirty_region; // [esp+1018h] [ebp-40h]
   int clip_left; // [esp+101Ch] [ebp-3Ch]
   int clip_right; // [esp+1020h] [ebp-38h]
@@ -809,7 +809,7 @@ char RenderDirtyRegions()
   char render_flags; // [esp+1040h] [ebp-18h]
   int v40; // [esp+1044h] [ebp-14h]
   int v41; // [esp+1048h] [ebp-10h]
-  int *current_object_ptr; // [esp+104Ch] [ebp-Ch]
+  INT_PTR *current_object_ptr; // [esp+104Ch] [ebp-Ch]
   int v43; // [esp+1050h] [ebp-8h]
   char *v44; // [esp+1054h] [ebp-4h]
 
@@ -822,7 +822,7 @@ char RenderDirtyRegions()
       if ( (i->flags & 0x83) == 0x81 )
       {
         v1 = object_count++;
-        *(render_objects_array + v1) = (int)i;
+        *(render_objects_array + v1) = (INT_PTR)i;
       }
     }
     if ( object_count )
@@ -840,18 +840,18 @@ char RenderDirtyRegions()
           do
           {
             v5 = *p_render_objects_array;
-            if ( *(_BYTE *)(*p_render_objects_array + 3) < *(_BYTE *)(*(_DWORD *)v4 + 3) )
+            if ( *(_BYTE *)(*p_render_objects_array + 3) < *(_BYTE *)(*(INT_PTR *)v4 + 3) )
             {
-              *p_render_objects_array = *(_DWORD *)v4;
-              *(_DWORD *)v4 = v5;
+              *p_render_objects_array = *(INT_PTR *)v4;
+              *(INT_PTR *)v4 = v5;
             }
-            v4 += 4;
+            v4 += sizeof(INT_PTR);              // was 4 (pointer slots)
             ++v3;
           }
           while ( v3 < object_count );
         }
         ++p_render_objects_array;
-        v44 += 4;
+        v44 += sizeof(INT_PTR);
         ++v41;
       }
       while ( v43 > v41 );
@@ -859,11 +859,11 @@ char RenderDirtyRegions()
     if ( !g_DisableCursor && g_InputState[1] )
     {
       v6 = object_count++;
-      *(render_objects_array + v6) = (int)&g_CursorObject;
+      *(render_objects_array + v6) = (INT_PTR)&g_CursorObject;
     }
     do
     {
-      next_dirty_region = (_DWORD *)dirty_region[4];
+      next_dirty_region = *(_DWORD **)(dirty_region + 4);
       clip_left = *dirty_region - g_CameraOffsetX;
       if ( clip_left < 0 )
         clip_left = 0;
@@ -889,7 +889,7 @@ char RenderDirtyRegions()
             *(_DWORD *)(g_SnapshotBasePtr + 8),
             -clip_top,
             -clip_left,
-            g_SnapshotBasePtr + 24);
+            (void *)(g_SnapshotBasePtr + 24));
           object_index = 0;
           if ( object_count > 0 )
           {
@@ -897,7 +897,7 @@ char RenderDirtyRegions()
             do
             {
               v7 = (char *)*current_object_ptr;
-              v8 = *(_DWORD *)(*current_object_ptr + 12);
+              v8 = *(INT_PTR *)(*current_object_ptr + 12);
               sprite_header = *(unsigned __int16 **)v8;
               v9 = *((__int16 *)v7 + 4) - g_CameraOffsetX;
               v10 = *((__int16 *)v7 + 5) - g_CameraOffsetY;
@@ -949,17 +949,17 @@ char RenderDirtyRegions()
                     if ( (render_flags & 8) != 0 )
                     {
                       if ( (render_flags & 0x10) != 0 )
-                        DrawSpriteFlippedHV(v17, v16, v19, v20, sprite_height, sprite_width, v21, v22, (int)SpriteData);
+                        DrawSpriteFlippedHV(v17, v16, v19, v20, sprite_height, sprite_width, v21, v22, (INT_PTR)SpriteData);
                       else
-                        DrawSpriteFlippedH(v17, v16, v19, v20, sprite_height, sprite_width, v21, v22, (int)SpriteData);
+                        DrawSpriteFlippedH(v17, v16, v19, v20, sprite_height, sprite_width, v21, v22, (INT_PTR)SpriteData);
                     }
                     else if ( (render_flags & 0x10) != 0 )
                     {
-                      DrawSpriteFlippedV(v17, v16, v19, v20, sprite_height, sprite_width, v21, v22, (int)SpriteData);
+                      DrawSpriteFlippedV(v17, v16, v19, v20, sprite_height, sprite_width, v21, v22, (INT_PTR)SpriteData);
                     }
                     else
                     {
-                      DrawSpriteTransparent(v17, v16, v19, v20, sprite_height, sprite_width, v21, v22, (int)SpriteData);
+                      DrawSpriteTransparent(v17, v16, v19, v20, sprite_height, sprite_width, v21, v22, (INT_PTR)SpriteData);
                     }
                   }
                 }
@@ -972,7 +972,7 @@ char RenderDirtyRegions()
           BlitDirtyRegion(g_InputState[0], clip_bottom, clip_right, clip_top, clip_left);
         }
       }
-      FreeMemoryBlock((int)dirty_region);
+      FreeMemoryBlock((INT_PTR)dirty_region);
       dirty_region = next_dirty_region;
     }
     while ( next_dirty_region );
@@ -993,16 +993,16 @@ int __stdcall ClearDirtyRegionsAndInit(char a1)
   {
     do
     {
-      v2 = (int *)v1[4];
+      v2 = *(int **)(v1 + 4);
       if ( a1 )
         BlitDirtyRegion(0, v1[3], v1[2], v1[1], *v1);
-      FreeMemoryBlock((int)v1);
+      FreeMemoryBlock((INT_PTR)v1);
       v1 = v2;
     }
     while ( v2 );
   }
   FlushGDI();
-  g_DirtyRegionsList = (int)v1;
+  g_DirtyRegionsList = (INT_PTR)v1;
   HIBYTE(g_PreviousScreen) = -1;
   g_PreviousInput = 14;
   g_SpecialMode = 0;
@@ -1080,7 +1080,7 @@ int __stdcall RenderSprite(int useAbsoluteCoords, int *spriteData)
   dataPtr = spriteData + 1;
   if ( (spriteFlags & 1) != 0 )                 // --- Bit 0: Precondition script. Evaluate and abort if returns 0 ---
   {
-    LODWORD(v2) = EvaluateScriptBytecode(v2, (BYTE *)*dataPtr);
+    LODWORD(v2) = EvaluateScriptBytecode(v2, (BYTE *)(INT_PTR)*dataPtr);
     if ( !(_DWORD)v2 )
       return 0;
     dataPtr = spriteData + 2;
@@ -1114,17 +1114,17 @@ LABEL_9:
   rangeMaxPtr = &rangeArray[2 * groupIndex];
   while ( 1 )
   {
-    tileEntry = (BYTE *)*dataPtr++;             // === PATTERN ENTRY LOOP: Read packed tile entry and match against tilemap ===
-    g_TileProcessor(&tileEntry);                // Transform tile coordinates (absolute or relative)
+    tileEntry = (BYTE *)(INT_PTR)*dataPtr++;             // === PATTERN ENTRY LOOP: Read packed tile entry and match against tilemap ===
+    g_TileProcessor((INT_PTR)&tileEntry);                // Transform tile coordinates (absolute or relative)
     if ( useAbsoluteCoords )                    // Read tile map value at computed coords
     {
-      tileMapValue = *(_WORD *)(g_TileMapBuffer + 2 * (BYTE2(tileEntry) + (HIBYTE(tileEntry) << g_TileMapShift)));
+      tileMapValue = *(_WORD *)(INT_PTR)(g_TileMapBuffer + 2 * (BYTE2(tileEntry) + (HIBYTE(tileEntry) << g_TileMapShift)));
     }
     else
     {
       HIDWORD(v2) = (((g_ScreenHeight + g_CurrentTileY_Wrapped + SHIBYTE(tileEntry)) % g_ScreenHeight) << g_TileMapShift)
                   + (g_ScreenWidth + g_CurrentTileX_Wrapped + SBYTE2(tileEntry)) % g_ScreenWidth;
-      tileMapValue = *(_WORD *)(g_TileMapBuffer + 2 * HIDWORD(v2));
+      tileMapValue = *(_WORD *)(INT_PTR)(g_TileMapBuffer + 2 * HIDWORD(v2));
     }
     matchResult = 0;
     if ( (BYTE1(tileEntry) & 1) != 0 )          // Bit 0 of entry flags: use animation-based matching (bitmask check)
@@ -1140,7 +1140,7 @@ LABEL_9:
       {
         frameBit = BYTE1(tileEntry);
         BYTE1(tileEntry) = frameModData[(unsigned __int8)tileMapValue] | BYTE1(tileEntry) & 0xF;
-        g_TileMatchHandlers[(int)frameBit >> 4]((int)&tileEntry);
+        g_TileMatchHandlers[(int)frameBit >> 4]((INT_PTR)&tileEntry);
       }
     }
     else if ( (unsigned __int8)tileEntry != (unsigned __int8)tileMapValue )
@@ -1171,10 +1171,10 @@ LABEL_26:
       return 0;                                 // Mode 1 (bits=4): early success → return 0 (pattern matched, no commands)
     if ( (_DWORD)v2 == 8 )
       break;                                    // Mode 2 (bits=8): pattern matched → skip remaining groups, proceed to commands
-    HIDWORD(v2) = rangeMaxPtr;                  // Mode 3 (bits=0xC): record matched tile value in g_RandomChoiceArray for later random selection
+    HIDWORD(v2) = (int)(INT_PTR)rangeMaxPtr;                  // Mode 3 (bits=0xC): record matched tile value in g_RandomChoiceArray for later random selection
     rangeCount = *rangeMaxPtr;
     g_RandomChoiceArray[rangeCount] = HIWORD(tileEntry);
-    *(_DWORD *)HIDWORD(v2) = rangeCount + 1;
+    *rangeMaxPtr = rangeCount + 1;              // v2.hi can't hold a 64-bit pointer (LP64)
 LABEL_63:
     if ( dataPtr == groupEndPtr )
     {
@@ -1194,7 +1194,7 @@ LABEL_34:
   if ( (spriteFlags & 4) != 0 )                 // --- Bit 2: Process movement on tilemap ---
   {
     savedMoveFlags = BYTE1(spriteFlags);        // Save original movement flags before tile processor modifies them
-    g_TileProcessor(&spriteFlags);
+    g_TileProcessor((INT_PTR)&spriteFlags);
     g_MoveDirectionHandlers[(int)BYTE1(spriteFlags) >> 4]((INT_PTR)&spriteFlags);// Dispatch direction handler based on upper 4 bits of movement flags
     g_RandomSeed *= 1103515245;                 // Advance LCG random seed
     g_RandomSeed += 12345;
@@ -1210,7 +1210,7 @@ LABEL_34:
       LOBYTE(v2) = *(_BYTE *)(g_GameFlags1 + 5);
       LOBYTE(savedRenderLayer) = v2;
     }
-    EvaluateScriptBytecode(v2, (BYTE *)*dataPtr++);
+    EvaluateScriptBytecode(v2, (BYTE *)(INT_PTR)*dataPtr++);
     if ( !*((_BYTE*)&g_PreviousScreen + 2)
       && !g_TileMapModified
       && g_GameFlags1
@@ -1328,7 +1328,7 @@ LABEL_70:
 int __stdcall AddDirtyRegion(int a1, int a2, int a3, int a4)
 {
   _DWORD *v4; // esi
-  int result; // eax
+  INT_PTR result; // eax
   _DWORD *v6; // ebx
   _DWORD *v7; // edi
   _DWORD *v8; // esi
@@ -1341,7 +1341,7 @@ int __stdcall AddDirtyRegion(int a1, int a2, int a3, int a4)
   v4 = (_DWORD *)g_DirtyRegionsList;
   if ( !g_DirtyRegionsList )
   {
-    result = AllocFromMemoryPool(0x14u);
+    result = (INT_PTR)AllocFromMemoryPool(sizeof(DirtyRegion));
     v13 = (_DWORD *)result;
     g_DirtyRegionsList = result;
 LABEL_45:
@@ -1349,7 +1349,7 @@ LABEL_45:
     v13[1] = a3;
     v13[2] = a2;
     v13[3] = a1;
-    v13[4] = 0;
+    *(INT_PTR *)(v13 + 4) = 0;
     return result;
   }
   if ( *(_DWORD *)g_DirtyRegionsList > a2
@@ -1359,15 +1359,15 @@ LABEL_45:
   {
     while ( 1 )
     {
-      v12 = (_DWORD *)v4[4];
+      v12 = *(_DWORD **)(v4 + 4);
       if ( !v12 )
         break;
-      v4 = (_DWORD *)v4[4];
+      v4 = *(_DWORD **)(v4 + 4);
       if ( *v12 <= a2 && v4[1] <= a1 && v4[2] >= a4 && v4[3] >= a3 )
         goto LABEL_6;
     }
-    result = AllocFromMemoryPool(0x14u);
-    v4[4] = result;
+    result = (INT_PTR)AllocFromMemoryPool(sizeof(DirtyRegion));
+    *(INT_PTR *)(v4 + 4) = result;
     v13 = (_DWORD *)result;
     goto LABEL_45;
   }
@@ -1401,19 +1401,19 @@ LABEL_6:
       v7 = 0;
       while ( 1 )
       {
-        v8 = (_DWORD *)v6[4];
+        v8 = *(_DWORD **)(v6 + 4);
         if ( v8 )
           break;
 LABEL_35:
         v7 = v6;
-        v6 = (_DWORD *)v6[4];
+        v6 = *(_DWORD **)(v6 + 4);
         if ( !v6 )
           return result;
       }
-      result = (int)(v6 + 2);
+      result = (INT_PTR)(v6 + 2);
       while ( *v8 > *(_DWORD *)result || v8[1] > v6[3] || v8[2] < *v6 || v8[3] < v6[1] )
       {
-        v8 = (_DWORD *)v8[4];
+        v8 = *(_DWORD **)(v8 + 4);
         if ( !v8 )
           goto LABEL_35;
       }
@@ -1429,10 +1429,10 @@ LABEL_35:
       if ( v11 > v8[3] )
         v8[3] = v11;
       if ( v7 )
-        v7[4] = v6[4];
+        *(_DWORD **)(v7 + 4) = *(_DWORD **)(v6 + 4);
       else
-        g_DirtyRegionsList = v6[4];
-      result = (int)FreeMemoryBlock((int)v6);
+        g_DirtyRegionsList = (INT_PTR)*(_DWORD **)(v6 + 4);
+      result = (INT_PTR)FreeMemoryBlock((INT_PTR)v6);
     }
   }
   return result;
@@ -1443,7 +1443,7 @@ int __stdcall UpdateRenderObjectBounds(RenderObject *a1)
   int result; // eax
 
   g_RenderObjectsEnd = a1;
-  result = ((int)a1 - g_MemoryPoolCurrent) / 4 - 4;
+  result = ((INT_PTR)a1 - g_MemoryPoolCurrent) / 4 - 4;
   *(_DWORD *)g_MemoryPoolCurrent = result;
   g_MemoryPoolAvailable = result;
   return result;
@@ -1452,7 +1452,7 @@ int __stdcall UpdateRenderObjectBounds(RenderObject *a1)
 int __stdcall CalculateObjectPosition(RenderObject *object)
 {
   __int16 *spriteDataPtr; // ebp
-  int v2; // eax
+  INT_PTR v2; // eax
   int parentIndex; // edx
   int v4; // ebx
   int v5; // ecx
@@ -1475,7 +1475,7 @@ int __stdcall CalculateObjectPosition(RenderObject *object)
   parentIndex = object->parentIndex;
   if ( parentIndex != 0xFFFF )
   {
-    v2 = (int)&g_RenderObjectsStart[-parentIndex];
+    v2 = (INT_PTR)&g_RenderObjectsStart[-parentIndex];
     if ( (*(_BYTE *)v2 & 4) != 0 )
     {
       v4 = object->slotIndex + 1;
@@ -1516,7 +1516,7 @@ int __stdcall AddObjectToDirtyRegions(RenderObject *object)
     nextLink -= v1[3];
   }
   return AddDirtyRegion(
-           nextLink + *(unsigned __int16 *)(*(_DWORD *)v1 + 2),
+           nextLink + *(unsigned __int16 *)(*(INT_PTR *)v1 + 2),
            prevLink + **(unsigned __int16 **)v1,
            nextLink,
            prevLink);
@@ -1524,10 +1524,10 @@ int __stdcall AddObjectToDirtyRegions(RenderObject *object)
 
 int __stdcall AddObjectToDirtyRegionByIndex(int a1)
 {
-  return AddObjectToDirtyRegions((int)&g_RenderObjectsStart[-a1]);
+  return AddObjectToDirtyRegions(&g_RenderObjectsStart[-a1]);
 }
 
-int __stdcall SetObjectSpriteByDirection(char a1, RenderObject *object, int a3)
+int __stdcall SetObjectSpriteByDirection(char a1, RenderObject *object, INT_PTR a3)
 {
   int v3; // esi
 
@@ -1562,7 +1562,7 @@ int __stdcall SetObjectSpriteByDirection(char a1, RenderObject *object, int a3)
         if ( (*(_BYTE *)(a3 + 1) & 8) == 0 || g_CurrentTileX_Wrapped != g_PreviousTileX )
         {
 LABEL_42:
-          object->spriteDataPtr = *(void **)(*(_DWORD *)(a3 + 4) + 4 * v3);
+          object->spriteDataPtr = *(void **)(*(INT_PTR *)(a3 + 4) + 4 * v3);
           goto LABEL_43;
         }
         break;
@@ -1646,7 +1646,7 @@ LABEL_43:
   return AddObjectToDirtyRegions(object);
 }
 
-FontSlot *__stdcall FindFontSlotByPointer(int a1)
+FontSlot *__stdcall FindFontSlotByPointer(INT_PTR a1)
 {
   void *v1; // esi
   FontSlot *result; // eax
@@ -1667,20 +1667,20 @@ FontSlot *__stdcall FindFontSlotByPointer(int a1)
   return result;
 }
 
-int __stdcall UpdateObjectPosition(int a1)
+int __stdcall UpdateObjectPosition(INT_PTR a1)
 {
-  int result; // eax
+  INT_PTR result; // eax
   int v2; // esi
   RenderObject *v3; // ebx
-  int FontSlotByPointer; // edi
+  INT_PTR FontSlotByPointer; // edi
 
   result = a1;
   v2 = *(unsigned __int16 *)(a1 + 10);
   if ( v2 != 0xFFFF )
   {
     v3 = &g_RenderObjectsStart[-v2];
-    FontSlotByPointer = FindFontSlotByPointer((int)v3);
-    AddObjectToDirtyRegions((int)v3);
+    FontSlotByPointer = (INT_PTR)FindFontSlotByPointer((INT_PTR)v3);
+    AddObjectToDirtyRegions(v3);
     if ( g_PreviousTileX != g_CurrentTileX_Wrapped || g_PreviousTileY != g_CurrentTileY_Wrapped )
       *(_BYTE *)a1 |= 4u;
     return SetObjectSpriteByDirection(0, v3, FontSlotByPointer);

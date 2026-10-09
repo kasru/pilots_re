@@ -4,7 +4,7 @@
 
 /* ---- audio module ---- */
 
-int __stdcall PlayMusicTrack(int a1)
+int __stdcall PlayMusicTrack(INT_PTR a1)
 {
   int result; // eax
 
@@ -342,7 +342,7 @@ int InitMidiOut()
   return 0;
 }
 
-int __stdcall StartMidiPlayback(int a1)
+int __stdcall StartMidiPlayback(INT_PTR a1)
 {
   int result; // eax
 
@@ -407,14 +407,14 @@ HGLOBAL WinNT_CleanupMultimedia()
   HGLOBAL result; // eax
 
   if ( g_pGraphicsFunc )
-    result = (HGLOBAL)g_pGraphicsFunc(0, 513, 0);
+    result = (HGLOBAL)(INT_PTR)g_pGraphicsFunc(0, 513, 0);
   if ( g_pUnregisterFunc )
-    result = (HGLOBAL)g_pUnregisterFunc(g_hAppInstance);
+    result = (HGLOBAL)(INT_PTR)g_pUnregisterFunc(g_hAppInstance);
   if ( g_hGraphicsDLL )
-    result = (HGLOBAL)FreeLibrary(g_hGraphicsDLL);
+    result = (HGLOBAL)(INT_PTR)FreeLibrary((HMODULE)g_hGraphicsDLL);
   if ( g_hGraphicsMemory )
   {
-    result = GlobalFree(g_hGraphicsMemory);
+    result = GlobalFree((HGLOBAL)g_hGraphicsMemory);
     g_hGraphicsMemory = 0;
   }
   return result;
@@ -456,7 +456,7 @@ int __stdcall WinNT_StartMidiPlayback(_DWORD *Src)
 
   if ( g_hGraphicsMemory )
   {
-    memcpy(g_hGraphicsMemory, Src, *Src + 4);
+    memcpy((void *)g_hGraphicsMemory, Src, *Src + 4);
     return g_pGraphicsFunc(g_hGraphicsMemory, 520, 0);
   }
   return result;
@@ -472,27 +472,27 @@ int __stdcall WinNT_SetMidiVolume(unsigned __int8 a1)
   return g_pGraphicsFunc(0, a1 + 256, 0);
 }
 
-char __stdcall InitGraphics_WinNT(int a1)
+char __stdcall InitGraphics_WinNT(INT_PTR a1)
 {
   DBG_ENTER("InitGraphics_WinNT");
   HMODULE LibraryA; // eax
 
   LibraryA = LoadLibraryA("GMW.DLL");
-  g_hGraphicsDLL = LibraryA;
+  g_hGraphicsDLL = (INT_PTR)LibraryA;
   if ( LibraryA )
   {
-    g_pRegisterFunc = (int (__stdcall *)(_DWORD, _DWORD, _DWORD, _DWORD, _DWORD, _DWORD, _DWORD))GetProcAddress(
+    g_pRegisterFunc = (int (__stdcall *)(INT_PTR, LPCSTR, _DWORD, _DWORD, _DWORD, _DWORD, _DWORD))GetProcAddress(
                                                                                                    LibraryA, "UTRegister");
     if ( g_pRegisterFunc )
     {
-      g_pUnregisterFunc = (int (__stdcall *)(_DWORD))GetProcAddress(g_hGraphicsDLL, "UTUnRegister");
+      g_pUnregisterFunc = (int (__stdcall *)(INT_PTR))GetProcAddress((HMODULE)g_hGraphicsDLL, "UTUnRegister");
       if ( g_pUnregisterFunc )
       {
         if ( g_pRegisterFunc(g_hAppInstance, "GMW.DLL", 0, 2, &g_pGraphicsFunc, 0, 0) )
         {
           if ( g_pGraphicsFunc(a1, 512, 0) )
           {
-            g_hGraphicsMemory = GlobalAlloc(0, 0xF000u);
+            g_hGraphicsMemory = (INT_PTR)GlobalAlloc(0, 0xF000u);
             if ( g_hGraphicsMemory )
             {
               g_pfnWriteWaveBuffer = WinNT_WriteWaveBuffer;
@@ -667,9 +667,9 @@ char __stdcall InitGraphics(_BYTE *pMaxScreen, _BYTE *pCurrentScreen, int unused
   windowsVersion = GetVersion();
   g_hMainWindow[0] = (DWORD_PTR)g_MainWindow;
   if ( windowsVersion >= 0 || (unsigned __int8)windowsVersion >= 4u )
-    initResult = InitDirectDraw_Win95(g_hMainWindow);
+    initResult = InitDirectDraw_Win95((DWORD_PTR *)g_hMainWindow);
   else
-    initResult = InitGraphics_WinNT((int)g_hMainWindow);
+    initResult = InitGraphics_WinNT((INT_PTR)g_hMainWindow);
   if ( initResult )
   {
     *pCurrentScreen = g_pfnGetWaveVolume();
@@ -688,9 +688,9 @@ char __stdcall InitGraphics(_BYTE *pMaxScreen, _BYTE *pCurrentScreen, int unused
   return 1;
 }
 
-int __stdcall StartMusicPlayback(int a1, int a2, int param)
+int __stdcall StartMusicPlayback(int a1, int a2, INT_PTR param)
 {
-  return ((int (__stdcall *)(int))g_pfnStartMidiPlayback)(param);
+  return ((int (__stdcall *)(INT_PTR))g_pfnStartMidiPlayback)(param);
 }
 
 char __stdcall PlaySoundEffect(char a1, char a2, char a3, int *a4)
@@ -714,8 +714,8 @@ char __stdcall PlaySoundEffect(char a1, char a2, char a3, int *a4)
   LOBYTE(v5) = *a4 & 0xFC;
   v6 = 4 * v4;
   dword_411DB8[v6] = v5;
-  g_GraphicsBuffers[v6] = (int)(a4 + 1);
-  dword_411DB4[v6] = (int)(a4 + 1);
+  g_GraphicsBuffers[v6] = (int)(INT_PTR)(a4 + 1);
+  dword_411DB4[v6] = (int)(INT_PTR)(a4 + 1);
   byte_411DBD[v6 * 4] = a2;
   byte_411DBC[v6 * 4] = a3;
   byte_411DBE[v6 * 4] = a1;
@@ -795,7 +795,7 @@ unsigned __int8 MixAudioBuffers()
       v4 = v3[2];
       if ( v4 > 0x800 )
         v4 = 2048;
-      v6 = (int *)v3[1];
+      v6 = (int *)(INT_PTR)v3[1];
       if ( v0 )
         result = BlendPixelBuffersSaturated(v4, v6, v2);
       else
@@ -832,7 +832,7 @@ void __cdecl ShutdownMultimedia()
   DBG_ENTER("ShutdownMultimedia");
   g_pfnCleanupMultimedia();
   g_pfnStartMidiPlayback = (int (*)(int))MultimediaStub_StartMidi;// Reset all multimedia function pointers to no-op stubs
-  g_pfnResumeWave = MultimediaStub_NoArgs;
+  g_pfnResumeWave = (int (*)())MultimediaStub_NoArgs;
   g_pfnPauseWave = (int (*)())MultimediaStub_NoArgs;
   g_pfnGetNextWaveBuffer = (_DWORD (*)())MultimediaStub_NoArgs;
   g_pfnGetMidiVolume = (_DWORD (*)())MultimediaStub_NoArgs;

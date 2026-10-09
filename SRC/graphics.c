@@ -22,7 +22,7 @@ char InitDisplay()
   DBG_LOG("InitDisplay: screenRes=%dx%d client=%dx%d pConfigEx=0x%X",
     g_VideoConfig.screenResX, g_VideoConfig.screenResY,
     g_VideoConfig.clientWidth, g_VideoConfig.clientHeight,
-    (unsigned)g_VideoConfig.pConfigEx);
+    (unsigned)(INT_PTR)g_VideoConfig.pConfigEx);
   if ( g_VideoConfig.screenResX >= g_VideoConfig.clientWidth && g_VideoConfig.screenResY >= g_VideoConfig.clientHeight )
   {
     ProcessMessages();
@@ -33,9 +33,9 @@ char InitDisplay()
             g_VideoConfig.pConfigEx->videoWindowHeight,
             0) )
     {
-      ShowWindow(g_MainWindow, g_VideoConfig.nShowCmd);
-      UpdateWindow(g_MainWindow);
-      SendMessageA(g_MainWindow, 0x30Fu, 0, 0);
+      ShowWindow((HWND)g_MainWindow, g_VideoConfig.nShowCmd);
+      UpdateWindow((HWND)g_MainWindow);
+      SendMessageA((HWND)g_MainWindow, 0x30Fu, 0, 0);
     }
     return 1;
   }
@@ -49,13 +49,13 @@ char InitDisplay()
 BOOL __stdcall InitializeVideoSystem(void *a1, struct VideoConfigEx *a2, struct VideoDataBuffer *a3)
 {
   DBG_ENTER("InitializeVideoSystem");
-  int v5; // eax
+  INT_PTR v5; // eax
   void *pLockedMem; // eax
 
   g_VideoConfig.pDataBuffer = a3;
   g_VideoConfig.pConfigEx = a2;
   DBG_LOG("InitVidSys: pConfigEx=0x%X (&dword_4161F0=0x%X)",
-    (unsigned)g_VideoConfig.pConfigEx, (unsigned)&dword_4161F0);
+    (unsigned)(INT_PTR)g_VideoConfig.pConfigEx, (unsigned)(INT_PTR)&dword_4161F0);
   g_VideoConfig.pInputConfig = a1;
   if ( !g_MainWindow )
     CreateMainWindow(a2);
@@ -66,7 +66,7 @@ BOOL __stdcall InitializeVideoSystem(void *a1, struct VideoConfigEx *a2, struct 
        (SdlBackendPresentRect) flips rows, like the BitBlt source did. */
     int bbStride = (bmi.bmiHeader.biWidth + 3) & ~3;
     int bbHeight = bmi.bmiHeader.biHeight < 0 ? -bmi.bmiHeader.biHeight : bmi.bmiHeader.biHeight;
-    g_Reserved = (int)calloc(1, (size_t)bbStride * bbHeight);
+    g_Reserved = (INT_PTR)calloc(1, (size_t)bbStride * bbHeight);
     DBG_LOG("InitVidSys: backbuffer %dx%d stride=%d -> 0x%X", bbStride, bbHeight, bbStride, g_Reserved);
   }
   if ( !s_VideoTargetsDone )
@@ -86,10 +86,10 @@ BOOL __stdcall InitializeVideoSystem(void *a1, struct VideoConfigEx *a2, struct 
   {
     g_VideoConfig.hGlobalMem = GlobalAlloc(2u, a3->field_0);
     g_VideoConfig.pLockedMem = GlobalLock(g_VideoConfig.hGlobalMem);
-    DBG_LOG("InitVidSys: hGlobalMem=0x%X pLockedMem=0x%X", (unsigned int)g_VideoConfig.hGlobalMem, (unsigned int)g_VideoConfig.pLockedMem);
+    DBG_LOG("InitVidSys: hGlobalMem=0x%X pLockedMem=0x%X", (unsigned int)(INT_PTR)g_VideoConfig.hGlobalMem, (unsigned int)(INT_PTR)g_VideoConfig.pLockedMem);
   }
   pLockedMem = g_VideoConfig.pLockedMem;
-  a3->field_4 = (int)g_VideoConfig.pLockedMem;
+  a3->field_4 = (INT_PTR)g_VideoConfig.pLockedMem;
   return pLockedMem != 0;
 }
 
@@ -140,10 +140,10 @@ BOOL __stdcall SetPalette(char a1, char a2, int cEntries, BYTE *a4)
   }
   SdlBackendUpdatePalette(plpal.palPalEntry, cEntries);// palette LUT for 8-bit present (replaces SetDIBColorTable)
   if ( g_VideoConfig.hPalette )
-    DeleteObject((HGDIOBJ)g_VideoConfig.hPalette);
-  g_VideoConfig.hPalette = (int)CreatePalette((LOGPALETTE *)&plpal);
+    DeleteObject((HGDIOBJ)(INT_PTR)g_VideoConfig.hPalette);
+  g_VideoConfig.hPalette = (INT_PTR)CreatePalette((LOGPALETTE *)&plpal);
   if ( g_MainWindow )
-    SendMessageA(g_MainWindow, 0x30Fu, 0, 0);
+    SendMessageA((HWND)g_MainWindow, 0x30Fu, 0, 0);
   return g_VideoConfig.hPalette != 0;
 }
 
@@ -221,7 +221,7 @@ char __stdcall PumpWindowMessages(DWORD *timestamp)
     g_VideoConfig.eventCode = 14;
   if ( SdlBackendPumpEvents() )                 // SDL_PollEvent drains + dispatches; SDL_QUIT == WM_QUIT (18)
   {
-    g_VideoConfig.pErrorMessage = 1;
+    g_VideoConfig.pErrorMessage = (const char *)(INT_PTR)1;
     return -125;
   }
   *timestamp = SDL_GetTicks();                  // was: timeGetTime()

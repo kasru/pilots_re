@@ -11,7 +11,7 @@ void ResetMemoryPool()
   g_MemoryPoolCurrent = g_MemoryPool.poolBasePtr;// g_MemoryPoolCurrent = current allocation pointer, reset to start
 }
 
-int __stdcall AllocMemoryChunk(unsigned int a1)
+INT_PTR __stdcall AllocMemoryChunk(unsigned int a1)
 {
   unsigned int v1; // ecx
   unsigned int v2; // ecx
@@ -55,7 +55,7 @@ LABEL_9:
       v1[v3] = v4 - v3;
       if ( v1 == (unsigned int *)g_MemoryPoolCurrent )
       {
-        g_MemoryPoolCurrent = (int)&v1[v3];
+        g_MemoryPoolCurrent = (INT_PTR)&v1[v3];
         g_MemoryPoolAvailable = v4 - v3;
       }
     }
@@ -64,18 +64,18 @@ LABEL_9:
   }
   else
   {
-    while ( (unsigned int)v1 < g_MemoryPoolCurrent )
+    while ( (UINT_PTR)v1 < (UINT_PTR)g_MemoryPoolCurrent )
     {
       v1 += v4;
       v4 = *v1;
       if ( (*v1 & 0x80000000) == 0 && v4 > v3 )
         goto LABEL_9;
     }
-    return (unsigned int *)Error_InsufficientMemory();
+    return (unsigned int *)(INT_PTR)Error_InsufficientMemory();
   }
 }
 
-int *__stdcall FreeMemoryBlock(int a1)
+int *__stdcall FreeMemoryBlock(INT_PTR a1)
 {
   int *v1; // edx
   int *v2; // ebx
@@ -111,7 +111,7 @@ int *__stdcall FreeMemoryBlock(int a1)
   result = v4;
   if ( v4 == (int *)g_MemoryPoolCurrent )
   {
-    g_MemoryPoolCurrent = (int)v1;
+    g_MemoryPoolCurrent = (INT_PTR)v1;
     g_MemoryPoolAvailable = v3;
   }
   *v1 = v3;
@@ -127,7 +127,7 @@ unsigned int *AllocOpcodeBuffer()
   if ( v0 <= dword_416178 )
     v0 = dword_416178;
   result = AllocFromMemoryPool(v0);
-  dword_4115C8 = (int)result;
+  dword_4115C8 = (int)(INT_PTR)result;   /* field is 32-bit (generated struct): truncates on LP64 */
   return result;
 }
 
@@ -168,7 +168,7 @@ RenderObject *AllocRenderObject()
     ;
   i->flags = 1;
   if ( i == g_RenderObjectsEnd )
-    UpdateRenderObjectBounds((int)&i[-1]);
+    UpdateRenderObjectBounds(&i[-1]);
   return i;
 }
 
@@ -186,9 +186,9 @@ int __stdcall FreeRenderObject(RenderObject *a1)
     {
       ++v1;
       if ( (v1->flags & 1) != 0 )
-        return UpdateRenderObjectBounds((int)--v1);
+        return UpdateRenderObjectBounds(--v1);
     }
-    return UpdateRenderObjectBounds((int)v1);
+    return UpdateRenderObjectBounds(v1);
   }
   return result;
 }
@@ -202,7 +202,7 @@ int ResetRenderObjects()
 void __stdcall SafeFreeMemoryBlock(void *ptr)
 {
   if ( ptr )
-    FreeMemoryBlock((int)ptr);
+    FreeMemoryBlock((INT_PTR)ptr);
 }
 
 #pragma pack(pop)

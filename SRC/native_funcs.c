@@ -20,7 +20,7 @@ BOOL __stdcall Native_CheckCurrentFontSlot(int a1)
   int v1; // ebx
 
   v1 = *(unsigned __int16 *)(g_GameFlags1 + 8);
-  return v1 != 0xFFFF && ((int)FindFontSlotByPointer((int)&g_RenderObjectsStart[-v1]) - (int)g_FontSlotArray) / 8 == a1;
+  return v1 != 0xFFFF && ((INT_PTR)FindFontSlotByPointer((INT_PTR)&g_RenderObjectsStart[-v1]) - (INT_PTR)g_FontSlotArray) / 8 == a1;
 }
 
 BOOL Native_IsInputModeActive()
@@ -106,7 +106,7 @@ int __stdcall Native_MeasureTextAtTile(int a1, int a2)
 
 int __stdcall Native_SetRenderLayer(char a1)
 {
-  int v1; // edi
+  INT_PTR v1; // edi
   int v2; // esi
   int v3; // esi
   RenderObject *v4; // edi
@@ -466,7 +466,7 @@ int Native_ClearSpecialMode()
 
 int __stdcall Native_SetTimerCallback(ULONG_PTR dwData)
 {
-  return HandleHelpRequest(dwData);
+  return HandleHelpRequest((DWORD *)dwData);
 }
 
 int __stdcall Native_SetPaletteEntry(int a1, _BYTE *a2)

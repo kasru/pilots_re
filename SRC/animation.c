@@ -63,13 +63,13 @@ void __stdcall TransformDir_ReflectDiag(SpriteDesc *desc)
   desc->dirFlags = g_DirFlagRemap_ReflectDiag[(int)desc->dirFlags >> 4] | desc->dirFlags & 0xF;
 }
 
-int __stdcall RandomSpriteAttrib_Clear(int a1)
+int __stdcall RandomSpriteAttrib_Clear(INT_PTR a1)
 {
   *(_BYTE *)(a1 + 1) &= 0xF0u;
   return a1;
 }
 
-int __stdcall RandomSpriteAttrib_2A(int a1)
+int __stdcall RandomSpriteAttrib_2A(INT_PTR a1)
 {
   int result; // eax
 
@@ -80,7 +80,7 @@ int __stdcall RandomSpriteAttrib_2A(int a1)
   return result;
 }
 
-int __stdcall RandomSpriteAttrib_2B(int a1)
+int __stdcall RandomSpriteAttrib_2B(INT_PTR a1)
 {
   int result; // eax
 
@@ -91,7 +91,7 @@ int __stdcall RandomSpriteAttrib_2B(int a1)
   return result;
 }
 
-int __stdcall RandomSpriteAttrib_2C(int a1)
+int __stdcall RandomSpriteAttrib_2C(INT_PTR a1)
 {
   int result; // eax
 
@@ -102,7 +102,7 @@ int __stdcall RandomSpriteAttrib_2C(int a1)
   return result;
 }
 
-int __stdcall RandomSpriteAttrib_3A(int renderObj)
+int __stdcall RandomSpriteAttrib_3A(INT_PTR renderObj)
 {
   int result; // eax
 
@@ -113,7 +113,7 @@ int __stdcall RandomSpriteAttrib_3A(int renderObj)
   return result;
 }
 
-int __stdcall RandomSpriteAttrib_2D(int a1)
+int __stdcall RandomSpriteAttrib_2D(INT_PTR a1)
 {
   int result; // eax
 
@@ -124,7 +124,7 @@ int __stdcall RandomSpriteAttrib_2D(int a1)
   return result;
 }
 
-int __stdcall RandomSpriteAttrib_2E(int a1)
+int __stdcall RandomSpriteAttrib_2E(INT_PTR a1)
 {
   int result; // eax
 
@@ -135,7 +135,7 @@ int __stdcall RandomSpriteAttrib_2E(int a1)
   return result;
 }
 
-int __stdcall RandomSpriteAttrib_3B(int a1)
+int __stdcall RandomSpriteAttrib_3B(INT_PTR a1)
 {
   int result; // eax
 
@@ -146,7 +146,7 @@ int __stdcall RandomSpriteAttrib_3B(int a1)
   return result;
 }
 
-int __stdcall RandomSpriteAttrib_2F(int a1)
+int __stdcall RandomSpriteAttrib_2F(INT_PTR a1)
 {
   int result; // eax
 
@@ -157,7 +157,7 @@ int __stdcall RandomSpriteAttrib_2F(int a1)
   return result;
 }
 
-int __stdcall RandomSpriteAttrib_3C(int a1)
+int __stdcall RandomSpriteAttrib_3C(INT_PTR a1)
 {
   int result; // eax
 
@@ -168,7 +168,7 @@ int __stdcall RandomSpriteAttrib_3C(int a1)
   return result;
 }
 
-int __stdcall RandomSpriteAttrib_3D(int a1)
+int __stdcall RandomSpriteAttrib_3D(INT_PTR a1)
 {
   int result; // eax
 
@@ -179,7 +179,7 @@ int __stdcall RandomSpriteAttrib_3D(int a1)
   return result;
 }
 
-int __stdcall RandomSpriteAttrib_4A(int a1)
+int __stdcall RandomSpriteAttrib_4A(INT_PTR a1)
 {
   int result; // eax
 
@@ -210,7 +210,7 @@ int __stdcall SelectRandomAnimationFrame(char a1, int a2)
            0,
            0xFFFF,
            0,
-           (int)&g_SpriteSlotArray[a2],
+           (INT_PTR)&g_SpriteSlotArray[a2],
            (BYTE *)g_SpriteSlotArray[a2].dataPtr);
 }
 
@@ -265,7 +265,7 @@ BOOL __stdcall CheckRotatedDirectionMatch(int base_direction, int expected_direc
 
 int __stdcall SetCurrentAnimationSlot(int a1)
 {
-  g_SpecialMode = (int)g_AnimationSlotArray[a1].frameBitmask;
+  g_SpecialMode = (INT_PTR)g_AnimationSlotArray[a1].frameBitmask;
   return 1;
 }
 

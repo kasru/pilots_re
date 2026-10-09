@@ -1,6 +1,7 @@
 /*
  * win32_shim.c - Linux implementation of the Win32/mmsystem/CRT surface declared in
- * win32_shim.h. On Windows this translation unit is empty (#ifndef _WIN32) and the
+ * win32_shim.h. On Windows this translation unit is empty (#ifndef _WIN32, except a
+ * Win64-only setjmp side buffer at the bottom) and the
  * real SDK provides everything; the .bat builds still list the file for symmetry.
  *
  * Design notes:
@@ -1304,3 +1305,11 @@ int main(int argc, char **argv)
 }
 
 #endif /* !_WIN32 */
+
+#ifdef _WIN64
+/* Side setjmp buffer for Win64 (pilots_globals.h routes setjmp/longjmp here):
+ * MSVC x64 jmp_buf is 256 bytes (16 x 16-byte _JBTYPE), while the generated
+ * g_JumpBuffer field stays the original's 64 bytes - using it directly would
+ * overflow into neighbouring globals. */
+jmp_buf g_ShimJumpBuf;
+#endif

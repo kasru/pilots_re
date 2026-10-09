@@ -4,19 +4,19 @@
 
 /* ---- blitting module ---- */
 
-char __stdcall InitBackbuffer(int videoConfig, VideoDataBuffer *dataBuffer)
+char __stdcall InitBackbuffer(INT_PTR videoConfig, VideoDataBuffer *dataBuffer)
 {
   void *allocPtr; // eax
 
   g_BackbufferStride = *(_DWORD *)(videoConfig + 12);// Store backbuffer stride (width) and height from video config
   g_BackbufferHeight = *(_DWORD *)(videoConfig + 16);
-  g_BackbufferPixels = dataBuffer->buffer;      // Try to use existing buffer pointer from data buffer
+  g_BackbufferPixels = (INT_PTR)dataBuffer->buffer;      // Try to use existing buffer pointer from data buffer
   if ( !g_BackbufferPixels )                    // No buffer allocated yet: bump-allocate from data buffer's free region
   {
-    allocPtr = (void *)dataBuffer->field_4;     // Take current free pointer as buffer start
+    allocPtr = (void *)(INT_PTR)dataBuffer->field_4;     // Take current free pointer as buffer start
     dataBuffer->buffer = allocPtr;
-    g_BackbufferPixels = allocPtr;
-    dataBuffer->field_4 = (int)allocPtr + dataBuffer->size;// Advance free pointer by buffer size
+    g_BackbufferPixels = (INT_PTR)allocPtr;
+    dataBuffer->field_4 = (INT_PTR)allocPtr + dataBuffer->size;// Advance free pointer by buffer size
     dataBuffer->field_0 -= dataBuffer->size;    // Decrease available memory by buffer size
   }
   return 1;
@@ -119,7 +119,7 @@ void __stdcall CopyRectToBackbuffer(
   }
 }
 
-char __stdcall DrawSpriteTransparent(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9)
+char __stdcall DrawSpriteTransparent(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, INT_PTR a9)
 {
   char *v9; // edi
   char *v10; // esi
@@ -256,7 +256,7 @@ LABEL_34:
   return result;
 }
 
-char __stdcall DrawSpriteFlippedV(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9)
+char __stdcall DrawSpriteFlippedV(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, INT_PTR a9)
 {
   char *v9; // edi
   char *v10; // esi
@@ -300,7 +300,7 @@ LABEL_8:
   return result;
 }
 
-char __stdcall DrawSpriteFlippedH(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9)
+char __stdcall DrawSpriteFlippedH(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, INT_PTR a9)
 {
   char *v9; // edi
   char *v10; // esi
@@ -344,7 +344,7 @@ LABEL_8:
   return result;
 }
 
-char __stdcall DrawSpriteFlippedHV(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9)
+char __stdcall DrawSpriteFlippedHV(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, INT_PTR a9)
 {
   char *v9; // edi
   char *v10; // esi
@@ -395,7 +395,7 @@ void __stdcall ClearBackbuffer(unsigned __int8 colorIndex)
   LOBYTE(fillPattern) = colorIndex;             // AL = colorIndex
   BYTE1(fillPattern) = colorIndex;              // AH = AL → AX = colorIndex | (colorIndex << 8)
   memset32(
-    g_BackbufferPixels,
+    (void *)g_BackbufferPixels,
     (fillPattern << 16) | fillPattern,
     (unsigned int)(g_BackbufferHeight * g_BackbufferStride) >> 2);// rep stosd: fill backbuffer DWORDs with replicated color byte
 }
@@ -660,7 +660,7 @@ unsigned __int8 *__stdcall RLEBlitAdditive_Dispatch(int a1, int a2, int a3, int 
 
 int __stdcall BlitDirtyRegion(char a1, int a2, int a3, int y, int x)
 {
-  return BlitScreenWithDissolve(a1, g_BackbufferHeight, g_BackbufferStride, a2 - y, a3 - x, y, x, g_BackbufferPixels);
+  return BlitScreenWithDissolve(a1, g_BackbufferHeight, g_BackbufferStride, a2 - y, a3 - x, y, x, (void *)g_BackbufferPixels);
 }
 
 #pragma pack(pop)

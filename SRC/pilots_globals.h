@@ -3,12 +3,13 @@
 
 #pragma once
 
-#ifndef _WIN32
+#if !defined(_WIN32) || defined(_WIN64)
 /*
  * setjmp/longjmp routing: g_JumpBuffer (g_Globals.g_jmpbuf) is the generated
  * MSVC jmp_buf field - 64 bytes, byte-for-byte from the original EXE - while
  * glibc's jmp_buf is 156 bytes (it saves the signal mask as well), so using
- * it directly would overflow into neighbouring globals. There is exactly one
+ * it directly would overflow into neighbouring globals (Win64 MSVC jmp_buf is
+ * 256 bytes: _JBTYPE=16 x _JBLEN=16). There is exactly one
  * setjmp site (gameloop.c, via the defs.h _setjmp3 macro) and one longjmp
  * site, so both are routed to a side buffer of the correct size. The setjmp
  * macro still expands inside the game function's own frame - which is what
@@ -43,7 +44,7 @@ int __stdcall AddDirtyRegion(int a1, int a2, int a3, int a4);
 int __stdcall AddObjectToDirtyRegionByIndex(int a1);
 int __stdcall AddObjectToDirtyRegions(RenderObject *object);
 unsigned int *__stdcall AllocFromMemoryPool(unsigned int a1);
-int __stdcall AllocMemoryChunk(unsigned int a1);
+INT_PTR __stdcall AllocMemoryChunk(unsigned int a1);
 unsigned int *AllocOpcodeBuffer();
 RenderObject *AllocRenderObject();
 char *__stdcall AllocTempBuffer(unsigned int size);
@@ -98,29 +99,29 @@ char *__stdcall CreateHelpFilePath(char *Source);
 HDC __stdcall CreateMainWindow(struct VideoConfigEx *config);
 __int16 __stdcall CreateTileObject(int a1, int a2, __int16 a3);
 char __stdcall DecodeVLQ(char *resultBuffer);
-int __stdcall DeleteSaveFile(int save_slot, int ext_string, char *base_path);
+int __stdcall DeleteSaveFile(int save_slot, INT_PTR ext_string, char *base_path);
 int __stdcall DeleteTextCharacters(int char_count);
 int DisplayErrorMessage();
-char __stdcall DrawSpriteFlippedH(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9);
-char __stdcall DrawSpriteFlippedHV(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9);
-char __stdcall DrawSpriteFlippedV(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9);
-char __stdcall DrawSpriteTransparent(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9);
+char __stdcall DrawSpriteFlippedH(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, INT_PTR a9);
+char __stdcall DrawSpriteFlippedHV(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, INT_PTR a9);
+char __stdcall DrawSpriteFlippedV(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, INT_PTR a9);
+char __stdcall DrawSpriteTransparent(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, INT_PTR a9);
 int Error_InsufficientMemory();
 int __stdcall EvaluateScriptBytecode(unsigned __int64 accumulator, BYTE *bytecode);
 char __stdcall ExecuteGameLoop(char skipCapture, int snapIdx);
-int __stdcall ExecuteScriptWithContext( char direction, unsigned __int8 tile_y, unsigned __int8 tile_x, int object_data, int resource_id, int game_flags1, int game_flags2, BYTE *script_ptr);
+int __stdcall ExecuteScriptWithContext( char direction, unsigned __int8 tile_y, unsigned __int8 tile_x, INT_PTR object_data, int resource_id, INT_PTR game_flags1, INT_PTR game_flags2, BYTE *script_ptr);
 int __stdcall ExecuteVideoPlayback(int videoIndex);
 char __cdecl ExpandWave_Pass1();
 char __cdecl ExpandWave_Pass2();
 char __cdecl ExpandWave_Pass3();
 int FileTell();
 char __stdcall FindDriveByType(char drive_type, _BYTE *drive_type_map, _BYTE *out_drive_path);
-FontSlot *__stdcall FindFontSlotByPointer(int a1);
+FontSlot *__stdcall FindFontSlotByPointer(INT_PTR a1);
 int __stdcall FindPathToTarget(char use_direct_direction);
 BOOL __stdcall FindVideoOnRemovableDrives(_BYTE *a1, _BYTE *a2);
-int __stdcall FixupObjectPointers(int base_adjust, int object_count, char *object_data);
+int __stdcall FixupObjectPointers(INT_PTR base_adjust, int object_count, char *object_data);
 BOOL FlushGDI(void);
-int *__stdcall FreeMemoryBlock(int a1);
+int *__stdcall FreeMemoryBlock(INT_PTR a1);
 int __stdcall FreeRenderObject(RenderObject *a1);
 BOOL __stdcall GameMainLoop(int opcodeType, int startResourceId);
 char __stdcall GameOpcodeDispatcher( int opcodeData, int dataOffset, int arrayIdx, int subIdx, int slotIdx, int opcodeType);
@@ -137,14 +138,14 @@ char __stdcall HandleGameEvent(int coordY, int coordX);
 BOOL __stdcall HandleHelpRequest(DWORD *pHelpContext);
 int HandleVideoError();
 int HideTextInput();
-char __stdcall InitBackbuffer(int videoConfig, VideoDataBuffer *dataBuffer);
+char __stdcall InitBackbuffer(INT_PTR videoConfig, VideoDataBuffer *dataBuffer);
 char __stdcall InitDirectDraw_Win95(DWORD_PTR *pHwnd);
 char InitDisplay();
 void *__stdcall InitFileReadBuffer(void *buffer);
 BOOL __stdcall InitGameState(int gameOpcode);
 char __stdcall InitGraphics(_BYTE *pMaxScreen, _BYTE *pCurrentScreen, int unused, unsigned __int8 graphicsConfig);
 char __stdcall InitGraphicsMode(int updateDirtyRegions, int fontIndex);
-char __stdcall InitGraphics_WinNT(int a1);
+char __stdcall InitGraphics_WinNT(INT_PTR a1);
 int InitMidiOut();
 int InitRenderingEngine();
 void *__stdcall InitSlotFromTemplate(void *a1);
@@ -213,7 +214,7 @@ BOOL __stdcall Native_TestGameFlag(char a1);
 int __stdcall Native_TransitionEffect(int a1);
 int __stdcall Native_TransitionEffectEx(int a1, char a2);
 char OpenMCIVideoDevice();
-unsigned int __stdcall OpenSaveFile(int save_slot, int ext_string, char *base_path);
+unsigned int __stdcall OpenSaveFile(int save_slot, INT_PTR ext_string, char *base_path);
 char ParseVideoHeader();
 int __stdcall PathfindByTileType(unsigned __int8 pathfind_mode, char tile_type, unsigned __int8 search_type);
 int __stdcall PathfindWithBitmask(unsigned __int8 pathfind_mode, unsigned __int8 anim_index, char search_type);
@@ -221,7 +222,7 @@ BOOL PauseWave();
 char __cdecl PauseWavePlayback();
 char __stdcall PlayIntroVideo(int windowHeight, int windowWidth, int windowY, int windowX, char *videoPath);
 int PlayMCIVideo();
-int __stdcall PlayMusicTrack(int a1);
+int __stdcall PlayMusicTrack(INT_PTR a1);
 char __stdcall PlaySoundEffect(char a1, char a2, char a3, int *a4);
 char PlayVideoMusic();
 int PlayVideoSoundEffect();
@@ -244,18 +245,18 @@ unsigned __int8 *__stdcall RLEBlitAdditive_Dispatch(int a1, int a2, int a3, int 
 char *__cdecl RLEBlitAdditive_TypeA( int a1, int a2, int a3, int a4, _BYTE *a5, char *a6);
 char *__cdecl RLEBlitAdditive_TypeB( int a1, int a2, int a3, int a4, _BYTE *a5, char *a6);
 char *__cdecl RLEBlitAdditive_TypeC( int a1, int a2, int a3, int a4, _BYTE *a5, char *a6);
-int __stdcall RandomSpriteAttrib_2A(int a1);
-int __stdcall RandomSpriteAttrib_2B(int a1);
-int __stdcall RandomSpriteAttrib_2C(int a1);
-int __stdcall RandomSpriteAttrib_2D(int a1);
-int __stdcall RandomSpriteAttrib_2E(int a1);
-int __stdcall RandomSpriteAttrib_2F(int a1);
-int __stdcall RandomSpriteAttrib_3A(int renderObj);
-int __stdcall RandomSpriteAttrib_3B(int a1);
-int __stdcall RandomSpriteAttrib_3C(int a1);
-int __stdcall RandomSpriteAttrib_3D(int a1);
-int __stdcall RandomSpriteAttrib_4A(int a1);
-int __stdcall RandomSpriteAttrib_Clear(int a1);
+int __stdcall RandomSpriteAttrib_2A(INT_PTR a1);
+int __stdcall RandomSpriteAttrib_2B(INT_PTR a1);
+int __stdcall RandomSpriteAttrib_2C(INT_PTR a1);
+int __stdcall RandomSpriteAttrib_2D(INT_PTR a1);
+int __stdcall RandomSpriteAttrib_2E(INT_PTR a1);
+int __stdcall RandomSpriteAttrib_2F(INT_PTR a1);
+int __stdcall RandomSpriteAttrib_3A(INT_PTR renderObj);
+int __stdcall RandomSpriteAttrib_3B(INT_PTR a1);
+int __stdcall RandomSpriteAttrib_3C(INT_PTR a1);
+int __stdcall RandomSpriteAttrib_3D(INT_PTR a1);
+int __stdcall RandomSpriteAttrib_4A(INT_PTR a1);
+int __stdcall RandomSpriteAttrib_Clear(INT_PTR a1);
 int __stdcall ReadAndDecompressVideoData(int a1, void *DstBuf);
 int ReadByte();
 char __stdcall ReadCompressedData(char *destBuffer);
@@ -270,7 +271,7 @@ void ReallocFrameBuffers(void);
 int ReexecuteCurrentSpriteScript();
 int __stdcall RemoveAndCreateTileObject(char removeStandalone, int tileY, int tileX);
 int __stdcall RemoveAndFreeRenderObject(RenderObject *render_object);
-int __stdcall RemoveChildTextObjects(int parent_object_addr);
+int __stdcall RemoveChildTextObjects(INT_PTR parent_object_addr);
 int __stdcall RemoveRenderObjectByIndex(int a1);
 char RenderDirtyRegions();
 int __stdcall RenderFormattedText(uint16_t renderY, int renderX, int fontIndex, int textDataPtr);
@@ -304,7 +305,7 @@ int __stdcall SetErrorMessage(const CHAR *a1);
 char __stdcall SetFrameRate(int frameRate);
 int __stdcall SetMidiVolume(unsigned __int8 a1);
 int __stdcall SetMusicVolume(int a1);
-int __stdcall SetObjectSpriteByDirection(char a1, RenderObject *object, int a3);
+int __stdcall SetObjectSpriteByDirection(char a1, RenderObject *object, INT_PTR a3);
 BOOL __stdcall SetPalette(char a1, char a2, int cEntries, BYTE *a4);
 int __stdcall SetSoundVolume(int volume);
 BOOL SetVideoPalette();
@@ -316,8 +317,8 @@ int __stdcall ShowErrorDialog(LPCSTR lpText);
 int ShowFileError();
 int __stdcall ShowMessageBox(LPCSTR lpText, LPCSTR lpCaption);
 void __cdecl ShutdownMultimedia();
-int __stdcall StartMidiPlayback(int a1);
-int __stdcall StartMusicPlayback(int a1, int a2, int param);
+int __stdcall StartMidiPlayback(INT_PTR a1);
+int __stdcall StartMusicPlayback(int a1, int a2, INT_PTR param);
 int __stdcall StepValueTowardTarget(unsigned __int8 target, _BYTE *current);
 char __cdecl StopMidiMusic();
 char StopMidiPlayback();
@@ -335,7 +336,7 @@ int __stdcall TriggerSoundSlot(int a1);
 int TruncateFile();
 char __stdcall UpdateCursorPosition(unsigned __int16 a1, unsigned __int16 a2);
 char UpdateFrameRate();
-int __stdcall UpdateObjectPosition(int a1);
+int __stdcall UpdateObjectPosition(INT_PTR a1);
 int __stdcall UpdateRenderObjectBounds(RenderObject *a1);
 void __stdcall UpdateRenderObjectCache(RenderObject *object);
 int UpdateScreenSections();

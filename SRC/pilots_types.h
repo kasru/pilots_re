@@ -136,7 +136,7 @@ struct GameLoopData
 struct MemoryPoolDescriptor
 {
     int poolSizeBytes;
-    int poolBasePtr;
+    INT_PTR poolBasePtr;
     int frameDataSize;
     void *allocBuffer;
 };
@@ -191,7 +191,7 @@ struct VideoConfigEx
 struct VideoDataBuffer
 {
     int field_0;
-    int field_4;
+    INT_PTR field_4;
     int size;
     void *buffer;
 };
@@ -205,7 +205,7 @@ struct VideoConfig
     struct VideoDataBuffer *pDataBuffer;
     struct InputConfig *pInputConfig;
     HDC hDC;
-    int hPalette;
+    INT_PTR hPalette;
     HGLOBAL hGlobalMem;
     void *pLockedMem;
     int nShowCmd;

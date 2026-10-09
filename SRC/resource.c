@@ -11,11 +11,11 @@ void *__stdcall InitFileReadBuffer(void *buffer)
   g_BufferSize = 0;
   g_FileBufferSize = 0;
   bufferSize = buffer;
-  g_BufferPtr = buffer;
+  g_BufferPtr = (INT_PTR)buffer;
   if ( buffer )
   {
     g_BufferSize = g_MaxReadBufferSize;
-    return (void *)g_MaxReadBufferSize;
+    return (void *)(INT_PTR)g_MaxReadBufferSize; /* size, not address: widen only at the cast site */
   }
   return bufferSize;
 }
@@ -43,7 +43,7 @@ int __stdcall BufferedRead(unsigned int maxBytes, char *DstBuf)
     {
       if ( maxBytes >= g_BufferSize || !g_BufferPtr )
         return ReadFileData(maxBytes, DstBuf);
-      g_FileBufferSize = ReadFileRaw(g_MaxReadBufferSize, g_BufferPtr);
+      g_FileBufferSize = ReadFileRaw(g_MaxReadBufferSize, (void *)g_BufferPtr);
       g_BufferSize = g_FileBufferSize;
     }
     v5 = g_FileBufferSize;
@@ -218,7 +218,7 @@ char __stdcall LoadDataFile(char *FileName)
 
   g_DemoMode = 0;
   InitFileReadBuffer(0);
-  if ( (unsigned __int8)Game_OpenFile(FileName, (LPOFSTRUCT)openFileStruct, headerVersion)
+  if ( (unsigned __int8)Game_OpenFile(FileName, (LPOFSTRUCT)(INT_PTR)openFileStruct, headerVersion)
     && SeekFileWithBuffer(2, -12)
     && (headerBuffer = ClearBuffer(0xCu, &openFileStruct), ReadFileData(0xCu, headerBuffer))
     && HIBYTE(headerVersion) == 4
@@ -241,7 +241,7 @@ int __stdcall CaptureScreenSnapshot(int snapIdx)
   ScreenSnapshot *snapshot; // edi
   int objectType; // eax
   int destRowOffset; // ebx
-  int decompressedData; // ecx
+  INT_PTR decompressedData; // ecx
   RenderObject *parentObjAddr; // ebp
   RenderObject *childScanAddr; // ebp
   int i; // ebx
@@ -284,19 +284,19 @@ LABEL_8:
   {
     memcpy(
       (char *)snapshot->decompressedData + g_ScreenWidth * destRowOffset,
-      (const void *)(g_TileMapBuffer + 2 * (snapshotIndexa << g_TileMapShift)),
+      (const void *)(INT_PTR)(g_TileMapBuffer + 2 * (snapshotIndexa << g_TileMapShift)),
       2 * g_ScreenWidth);                       // Copy each row from tile map buffer to snapshot (skips every other row, copies 2 bytes per pixel)
     destRowOffset += 2;
     ++snapshotIndexa;
   }
   while ( snapshotIndexa < g_ScreenHeight );
-  decompressedData = (int)snapshot->decompressedData;
+  decompressedData = (INT_PTR)snapshot->decompressedData;
   objDataPtr = (RenderObject *)(decompressedData + 2 * g_ScreenPixelCount);// objDataPtr (uint32_t*) - Pointer to write render objects as DWORDs. Each object = 4 DWORDs (16 bytes). Points to position after screen data in snapshot buffer.
   snapshotIndexb = 0;
   for ( objScanAddr = g_RenderObjectsStart; objScanAddr > g_RenderObjectsEnd; --objScanAddr )// Iterate through all render objects from start to end
   {
     LOBYTE(decompressedData) = objScanAddr->flags;
-    objectFlags = decompressedData;
+    objectFlags = (int)decompressedData;
     decompressedData = objScanAddr->flags & 3;
     if ( decompressedData == 3 )                // TYPE 3 HANDLER: Parent object with potential children
     {
@@ -352,7 +352,7 @@ LABEL_8:
 
 void *__stdcall InitSlotFromTemplate(void *a1)
 {
-  return memcpy(a1, g_TemplateDataBuffer, g_TemplateDataSize);
+  return memcpy(a1, (void *)g_TemplateDataBuffer, g_TemplateDataSize);
 }
 
 char ProcessSpriteData()
@@ -369,23 +369,23 @@ char ProcessSpriteData()
   g_MemoryPool.frameDataSize = dword_416200 * dword_4161FC;
   DBG_LOG("ProcessSpriteData: pool.poolSizeBytes=%d pool.frameDataSize=%d",
     g_MemoryPool.poolSizeBytes, g_MemoryPool.frameDataSize);
-  { int vsRet = InitializeVideoSystem(&unk_4162A0, (struct VideoConfigEx *)&dword_4161F0, &g_MemoryPool);
+  { int vsRet = InitializeVideoSystem(&unk_4162A0, (struct VideoConfigEx *)&dword_4161F0, (struct VideoDataBuffer *)&g_MemoryPool);
     DBG_LOG("ProcessSpriteData: InitializeVideoSystem returned %d", vsRet);
     if (!vsRet) return 0; }
-  { int bbRet = InitBackbuffer((int)&dword_4161F0, &g_MemoryPool);
+  { int bbRet = InitBackbuffer((INT_PTR)&dword_4161F0, (struct VideoDataBuffer *)&g_MemoryPool);
     DBG_LOG("ProcessSpriteData: InitBackbuffer returned %d", bbRet);
     if (!bbRet) return 0; }
   /* diagnostic removed: PRE-RESET snapshot logging */
   ClearRenderAndMemoryPoolState();
   ResetMemoryPool();
-  v1 = (void *)AllocMemoryChunk(4 * video_queue_active);
-  g_TemplateDataBuffer = v1;
-  opcodeDataPtr = (int)v1;
+  v1 = (void *)(INT_PTR)AllocMemoryChunk(4 * video_queue_active);
+  g_TemplateDataBuffer = (INT_PTR)v1;
+  opcodeDataPtr = (INT_PTR)v1;
   if ( g_MaxReadBufferSize )
   {
     InitFileReadBuffer(v1);
-    g_TemplateDataBuffer = (void *)AllocMemoryChunk(g_MaxReadBufferSize);
-    opcodeDataPtr = (int)g_TemplateDataBuffer;
+    g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(g_MaxReadBufferSize);
+    opcodeDataPtr = (INT_PTR)g_TemplateDataBuffer;
   }
   /* Preallocate slot arrays using cached config from previous
    * InitializeFrameBuffers call. This prevents stale pointers when
@@ -405,9 +405,9 @@ void *InitializeFrameBuffers()
   ReadCompressedData((char *)&dword_416160);
   dword_4161E4 = dword_416164 * dword_416160;
   g_ScreenPixelCount = g_ScreenHeight * g_ScreenWidth;
-  g_SnapshotBasePtr = (int)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(dword_416178);
-  g_TileMapBuffer = (int)g_TemplateDataBuffer;
+  g_SnapshotBasePtr = (INT_PTR)g_TemplateDataBuffer;
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(dword_416178);
+  g_TileMapBuffer = (INT_PTR)g_TemplateDataBuffer;
   v0 = 0;
   if ( dword_410234 < g_ScreenWidth )
   {
@@ -420,30 +420,30 @@ void *InitializeFrameBuffers()
     while ( *v1 < g_ScreenWidth );
   }
   g_TileMapShift = dword_410238[2 * v0];
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(g_ScreenHeight << (g_TileMapShift + 1));
-  v2 = g_TemplateDataBuffer;
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(g_ScreenHeight << (g_TileMapShift + 1));
+  v2 = (_BYTE *)g_TemplateDataBuffer;
   g_ScreenSnapshotArray = (ScreenSnapshot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(16 * dword_4161E4);
-  g_TileMapPtr = (int)g_TemplateDataBuffer;
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(16 * dword_4161E4);
+  g_TileMapPtr = (INT_PTR)g_TemplateDataBuffer;
   g_MapMaxX = g_ScreenWidth - 1;
   g_NegScreenWidth = -g_ScreenWidth;
   g_MapMaxY = g_ScreenHeight - 1;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(g_ScreenPixelCount);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(g_ScreenPixelCount);
   g_SpriteSlotArray = (SpriteSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(16 * dword_41617C);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(16 * dword_41617C);
   g_AnimationSlotArray = (AnimationSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(16 * dword_416180);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(16 * dword_416180);
   g_FontSlotArray = (FontSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(8 * dword_416184);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(8 * dword_416184);
   g_SoundSlotArray = (SoundSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(8 * dword_416188);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(8 * dword_416188);
   g_MusicTrackArray = (MusicTrackSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(4 * dword_41618C);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(4 * dword_41618C);
   g_OverlaySlotArray = (OverlaySlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(8 * dword_416190);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(8 * dword_416190);
   result = ClearBuffer((_BYTE *)g_TemplateDataBuffer - v2, v2);
-  opcodeDataPtr = (int)g_TemplateDataBuffer;
-  g_GlobalVarsPtr = (int)g_TemplateDataBuffer;
+  opcodeDataPtr = (INT_PTR)g_TemplateDataBuffer;
+  g_GlobalVarsPtr = (INT_PTR)g_TemplateDataBuffer;
   return result;
 }
 
@@ -457,9 +457,9 @@ void ReallocFrameBuffers(void)
   DBG_MSG("ReallocFrameBuffers: preallocating arrays from cached config");
   dword_4161E4 = dword_416164 * dword_416160;
   g_ScreenPixelCount = g_ScreenHeight * g_ScreenWidth;
-  g_SnapshotBasePtr = (int)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(dword_416178);
-  g_TileMapBuffer = (int)g_TemplateDataBuffer;
+  g_SnapshotBasePtr = (INT_PTR)g_TemplateDataBuffer;
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(dword_416178);
+  g_TileMapBuffer = (INT_PTR)g_TemplateDataBuffer;
   v0 = 0;
   if ( dword_410234 < g_ScreenWidth )
   {
@@ -472,36 +472,36 @@ void ReallocFrameBuffers(void)
     while ( *v1 < g_ScreenWidth );
   }
   g_TileMapShift = dword_410238[2 * v0];
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(g_ScreenHeight << (g_TileMapShift + 1));
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(g_ScreenHeight << (g_TileMapShift + 1));
   /* Skip snapshot and tilemap areas — do NOT overwrite g_ScreenSnapshotArray.
      In the original binary, these areas keep valid data from the previous
      GameMainLoop call because ResetMemoryPool only moves the cursor,
      not zeroing memory, and InitializeFrameBuffers is not called again.
      We just advance the pool cursor past them. */
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(16 * dword_4161E4);
-  g_TileMapPtr = (int)g_TemplateDataBuffer;
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(16 * dword_4161E4);
+  g_TileMapPtr = (INT_PTR)g_TemplateDataBuffer;
   g_MapMaxX = g_ScreenWidth - 1;
   g_NegScreenWidth = -g_ScreenWidth;
   g_MapMaxY = g_ScreenHeight - 1;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(g_ScreenPixelCount);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(g_ScreenPixelCount);
   /* Slot arrays start here — these MUST be zeroed to prevent stale pointers */
   slotStart = (_BYTE *)g_TemplateDataBuffer;
   g_SpriteSlotArray = (SpriteSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(16 * dword_41617C);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(16 * dword_41617C);
   g_AnimationSlotArray = (AnimationSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(16 * dword_416180);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(16 * dword_416180);
   g_FontSlotArray = (FontSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(8 * dword_416184);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(8 * dword_416184);
   g_SoundSlotArray = (SoundSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(8 * dword_416188);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(8 * dword_416188);
   g_MusicTrackArray = (MusicTrackSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(4 * dword_41618C);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(4 * dword_41618C);
   g_OverlaySlotArray = (OverlaySlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (void *)AllocMemoryChunk(8 * dword_416190);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(8 * dword_416190);
   /* Only clear the slot arrays, NOT the snapshot/tilemap data above */
   ClearBuffer((_BYTE *)g_TemplateDataBuffer - slotStart, slotStart);
-  opcodeDataPtr = (int)g_TemplateDataBuffer;
-  g_GlobalVarsPtr = (int)g_TemplateDataBuffer;
+  opcodeDataPtr = (INT_PTR)g_TemplateDataBuffer;
+  g_GlobalVarsPtr = (INT_PTR)g_TemplateDataBuffer;
 }
 
 unsigned __int16 *__stdcall LoadSpriteData(unsigned __int16 *a1)
@@ -524,16 +524,16 @@ unsigned __int16 *__stdcall LoadSpriteData(unsigned __int16 *a1)
     {
       v3 = (void *)AllocTempBuffer(v1);
       ReadFileData(v1, v3);
-      LZSSDecompress(v1, g_SpriteDataBuffer, v3);
+      LZSSDecompress(v1, (_BYTE *)(INT_PTR)g_SpriteDataBuffer, v3);
     }
     else
     {
-      ReadFileData(a1[1] * *a1, g_SpriteDataBuffer);
+      ReadFileData(a1[1] * *a1, (void *)g_SpriteDataBuffer);
     }
   }
   v4 = -(v1 == 0);
   LOBYTE(v4) = v4 & 0xFC;
-  return (unsigned __int16 *)((char *)g_SpriteDataBuffer + v4 + 4);
+  return (unsigned __int16 *)((char *)(INT_PTR)g_SpriteDataBuffer + v4 + 4);
 }
 
 int CloseFile_Wrapper()

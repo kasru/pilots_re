@@ -34,11 +34,11 @@ char CleanupVideoResources()
   if ( sound_playing_flag )
     ClearInputBuffer();
   ResetGameState();
-  SafeFreeMemoryBlock(compressed_buffer);
-  SafeFreeMemoryBlock(frame_data_buffer);
-  SafeFreeMemoryBlock(palette_buffer);
-  SafeFreeMemoryBlock(sound_data_buffer);
-  SafeFreeMemoryBlock(music_data_buffer);
+  SafeFreeMemoryBlock((void *)compressed_buffer);
+  SafeFreeMemoryBlock((void *)frame_data_buffer);
+  SafeFreeMemoryBlock((void *)palette_buffer);
+  SafeFreeMemoryBlock((void *)sound_data_buffer);
+  SafeFreeMemoryBlock((void *)music_data_buffer);
   RestoreGraphicsAfterVideo();
   return 1;
 }
@@ -56,8 +56,8 @@ int __stdcall ReadAndDecompressVideoData(int a1, void *DstBuf)
     return 1;
   if ( (_DWORD)chunk_data_qword == HIDWORD(chunk_data_qword) )
     return ReadFileData(chunk_data_qword, DstBuf);
-  ReadFileData(chunk_data_qword, compressed_buffer);
-  LZSSDecompress(chunk_data_qword, DstBuf, compressed_buffer);
+  ReadFileData(chunk_data_qword, (void *)compressed_buffer);
+  LZSSDecompress(chunk_data_qword, DstBuf, (char *)(INT_PTR)compressed_buffer);
   return 1;
 }
 
@@ -83,7 +83,7 @@ char ParseVideoHeader()
       if ( has_low_dword )
       {
         compressed_buffer_size = chunk_data_qword;
-        compressed_buffer = (void *)AllocFromMemoryPool(chunk_data_qword);
+        compressed_buffer = (INT_PTR)AllocFromMemoryPool(chunk_data_qword);
         if ( !compressed_buffer )
           goto LABEL_20;
       }
@@ -92,26 +92,26 @@ char ParseVideoHeader()
       if ( has_low_dword )
       {
         frame_data_size = chunk_data_qword;
-        frame_data_buffer = (void *)AllocFromMemoryPool(chunk_data_qword);
+        frame_data_buffer = (INT_PTR)AllocFromMemoryPool(chunk_data_qword);
         if ( !frame_data_buffer )
           goto LABEL_20;
       }
       if ( has_high_dword )
       {
         palette_size = HIDWORD(chunk_data_qword);
-        palette_buffer = (void *)AllocFromMemoryPool(HIDWORD(chunk_data_qword));
+        palette_buffer = (INT_PTR)AllocFromMemoryPool(HIDWORD(chunk_data_qword));
         if ( !palette_buffer )
           goto LABEL_20;
       }
       goto LABEL_29;
     case 4:
       if ( !has_low_dword
-        || (sound_data_size = chunk_data_qword, (sound_data_buffer = (void *)AllocFromMemoryPool(chunk_data_qword)) != 0) )
+        || (sound_data_size = chunk_data_qword, (sound_data_buffer = (INT_PTR)AllocFromMemoryPool(chunk_data_qword)) != 0) )
       {
         if ( !has_high_dword )
           goto LABEL_29;
         music_data_size = HIDWORD(chunk_data_qword);
-        music_data_buffer = (void *)AllocFromMemoryPool(HIDWORD(chunk_data_qword));
+        music_data_buffer = (INT_PTR)AllocFromMemoryPool(HIDWORD(chunk_data_qword));
         if ( music_data_buffer )
           goto LABEL_29;
       }
@@ -161,9 +161,9 @@ char ProcessAnimationFrame()
   int current_time; // [esp+14h] [ebp-8h] BYREF
   int sprite_height; // [esp+18h] [ebp-4h]
 
-  if ( ReadAndDecompressVideoData(frame_data_size, frame_data_buffer) )
+  if ( ReadAndDecompressVideoData(frame_data_size, (void *)frame_data_buffer) )
   {
-    v0 = (char *)frame_data_buffer;
+    v0 = (char *)(INT_PTR)frame_data_buffer;
     current_time = 1;
     if ( video_chunk_type == 1 )
     {
@@ -227,7 +227,7 @@ char ProcessAnimationFrame()
             sprite_height += *v13 << 8;
           }
         }
-        v0 = (char *)(v3 + (int)RLEBlitAdditive_Dispatch(sprite_height, sprite_width, sprite_y, sprite_x, sprite_flags & 3, v3));
+        v0 = (char *)(v3 + (int)(INT_PTR)RLEBlitAdditive_Dispatch(sprite_height, sprite_width, sprite_y, sprite_x, sprite_flags & 3, v3));
         if ( frame_ready_flag )
           BlitDirtyRegion(0, sprite_height + sprite_y, sprite_width + sprite_x, sprite_y, sprite_x);
       }
@@ -297,8 +297,8 @@ LABEL_45:
 
 BOOL SetVideoPalette()
 {
-  return (unsigned __int8)ReadAndDecompressVideoData(palette_size, palette_buffer)
-      && SetPalette(0, g_DisplayMode[0], 256, (BYTE *)palette_buffer);
+  return (unsigned __int8)ReadAndDecompressVideoData(palette_size, (void *)palette_buffer)
+      && SetPalette(0, g_DisplayMode[0], 256, (BYTE *)(INT_PTR)palette_buffer);
 }
 
 int PlayVideoSoundEffect()
@@ -307,8 +307,8 @@ int PlayVideoSoundEffect()
 
   if ( video_chunk_type )
     PauseWavePlayback();
-  if ( (unsigned __int8)ReadAndDecompressVideoData(sound_data_size, sound_data_buffer) )
-    result = PlaySoundEffect(-127, 0, -1, (int *)sound_data_buffer);
+  if ( (unsigned __int8)ReadAndDecompressVideoData(sound_data_size, (void *)sound_data_buffer) )
+    result = PlaySoundEffect(-127, 0, -1, (int *)(INT_PTR)sound_data_buffer);
   else
     result = 0;
   sound_playing_flag = result;
@@ -328,8 +328,8 @@ char PlayVideoMusic()
     return 1;
   if ( music_playing_flag )
     return SeekFile(1, chunk_data_qword);
-  if ( (unsigned __int8)ReadAndDecompressVideoData(music_data_size, music_data_buffer) )
-    result = PlayMusicTrack((int)music_data_buffer);
+  if ( (unsigned __int8)ReadAndDecompressVideoData(music_data_size, (void *)music_data_buffer) )
+    result = PlayMusicTrack((INT_PTR)music_data_buffer);
   else
     result = 0;
   music_playing_flag = result;
@@ -400,7 +400,7 @@ int __stdcall ExecuteVideoPlayback(int videoIndex)
   if ( !video_enabled_flag )
     return 1;
   ++*((_BYTE*)&video_recursion_counter + 1);
-  commandResult = ProcessVideoCommands(*(_DWORD *)(dword_416338 + 4 * videoIndex));
+  commandResult = ProcessVideoCommands(*(_DWORD *)(INT_PTR)(dword_416338 + 4 * videoIndex));
   --*((_BYTE*)&video_recursion_counter + 1);
   return commandResult;
 }
@@ -505,12 +505,12 @@ LABEL_21:
 LABEL_40:
       if ( !g_VideoConfig.hPalette )
         return 0;
-      if ( Msg == 783 || wParam != g_VideoWindowHandle )
+      if ( Msg == 783 || wParam != (HWND)g_VideoWindowHandle )
         g_VideoFlags[2] = 0;
-      SendMessageA(g_VideoWindowHandle, Msg, (WPARAM)wParam, (LPARAM)lParam);
+      SendMessageA((HWND)g_VideoWindowHandle, Msg, (WPARAM)wParam, (LPARAM)lParam);
       if ( g_VideoFlags[3] || Msg == 785 )
         g_VideoFlags[2] = 1;
-      SelectPalette(g_VideoConfig.hDC, (HPALETTE)g_VideoConfig.hPalette, Msg == 785);
+      SelectPalette(g_VideoConfig.hDC, (HPALETTE)(INT_PTR)g_VideoConfig.hPalette, Msg == 785);
       if ( !RealizePalette(g_VideoConfig.hDC) )
         return 0;
       InvalidateRect(hWnd, 0, 0);
@@ -529,7 +529,7 @@ LABEL_40:
           v9 = g_VideoWindowWidth;
           if ( !g_VideoWindowWidth )
             v9 = 320;
-          MoveWindow(g_VideoWindowHandle, g_VideoWindowX, g_VideoWindowY, v9, v11, 1);
+          MoveWindow((HWND)g_VideoWindowHandle, g_VideoWindowX, g_VideoWindowY, v9, v11, 1);
         }
         BlitDirtyRegion(
           g_VideoFlags[0],
@@ -788,10 +788,10 @@ char OpenMCIVideoDevice()
       DBG_LOG("OpenMCIVideoDevice: g_MCIDeviceID set to %d", g_MCIDeviceID);
       v7 = 16385;
       SendMCICommand((DWORD_PTR)&v5, 0x100u, 0x814u);
-      DBG_LOG("OpenMCIVideoDevice: MCI_WINDOW returned hWnd=0x%X", (unsigned)hWnd);
-      g_VideoWindowHandle = hWnd;
+      DBG_LOG("OpenMCIVideoDevice: MCI_WINDOW returned hWnd=0x%X", (unsigned)(INT_PTR)hWnd);
+      g_VideoWindowHandle = (INT_PTR)hWnd;
       DBG_LOG("OpenMCIVideoDevice: MoveWindow(0x%X, %d, %d, 0, 0)",
-        (unsigned)hWnd, g_VideoWindowX, g_VideoWindowY);
+        (unsigned)(INT_PTR)hWnd, g_VideoWindowX, g_VideoWindowY);
       MoveWindow(hWnd, g_VideoWindowX, g_VideoWindowY, 0, 0, 0);
       return LoadVideoBitmap(Destination);
     }
@@ -872,13 +872,13 @@ char __stdcall PlayIntroVideo(int windowHeight, int windowWidth, int windowY, in
     if ( (_BYTE)v9 )
     {
       if ( videoPath )
-        InvalidateRect(g_MainWindow, 0, 0);
+        InvalidateRect((HWND)g_MainWindow, 0, 0);
       else
-        ShowWindow(g_MainWindow, 1);
+        ShowWindow((HWND)g_MainWindow, 1);
       if ( !g_VideoFlags[2] )
       {
         if ( (GetDeviceCaps(g_VideoConfig.hDC, 38) & 0x100) != 0 )
-          PostMessageA(g_MainWindow, 0x30Fu, 0, 0);
+          PostMessageA((HWND)g_MainWindow, 0x30Fu, 0, 0);
         else
           g_VideoFlags[2] = 1;
       }
@@ -899,12 +899,12 @@ char __stdcall PlayIntroVideo(int windowHeight, int windowWidth, int windowY, in
       while ( g_VideoPlaying );
     }
     SendMCICommandSimple(v9, 0, 0x804u);
-    DestroyWindow(g_VideoWindowHandle);
+    DestroyWindow((HWND)g_VideoWindowHandle);
     g_VideoWindowHandle = 0;
     g_VideoFlags[1] = 0;
     if ( g_VideoExitRequested )
     {
-      PostMessageA(g_MainWindow, 0x10u, 0, 0);
+      PostMessageA((HWND)g_MainWindow, 0x10u, 0, 0);
     }
     else
     {

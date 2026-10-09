@@ -158,8 +158,8 @@ int __cdecl CallNativeWithVMStack(
 int __stdcall EvaluateScriptBytecode(unsigned __int64 accumulator, BYTE *bytecode)
 {
   int _savedVMTop = g_VMStackTop; /* Save VM stack depth for reentrancy */
-  int globalBase; // edi
-  int objectBase; // ebx
+  INT_PTR globalBase; // edi (address of global vars block)
+  INT_PTR objectBase; // ebx (address of current object data)
   BYTE *ip; // esi
   int opcode_after_true; // ecx
   int opcode_after_false; // ecx
@@ -506,12 +506,12 @@ op_store_dword_object:
     case OP_RET_CALL:
 op_ret_call:
       if (g_VMStackTop > 0) ip = (BYTE *)g_VMStack[--g_VMStackTop];
-      else ip = (BYTE *)localStack[0];
+      else ip = (BYTE *)(INT_PTR)localStack[0];
       goto fetch_after_dword;
     case OP_RET_CALL_SKIP4:
 op_ret_call_skip4:
       if (g_VMStackTop > 0) ip = (BYTE *)g_VMStack[--g_VMStackTop];
-      else ip = (BYTE *)localStack[0];
+      else ip = (BYTE *)(INT_PTR)localStack[0];
       { int _adj = *(_DWORD *)ip / 4;
         if (g_VMStackTop >= _adj) g_VMStackTop -= _adj;
         else g_VMStackTop = 0;
@@ -719,15 +719,15 @@ op_lea_object:
 op_lea_local:
       localOffset = *(_DWORD *)ip;              // OP_LEA_LOCAL: lo = &local[offset]
       ip += 4;
-      LODWORD(accumulator) = (char *)localStack + localOffset;
+      LODWORD(accumulator) = (INT_PTR)((char *)localStack + localOffset);
       goto dispatch_normal;
     case OP_STORE_BYTE_IND:
 op_store_byte_ind:
-      *(_BYTE *)HIDWORD(accumulator) = accumulator;// OP_STORE_BYTE_IND: *(byte*)hi = lo
+      *(_BYTE *)(INT_PTR)HIDWORD(accumulator) = accumulator;// OP_STORE_BYTE_IND: *(byte*)hi = lo
       goto dispatch_normal;
     case OP_STORE_DWORD_IND:
 op_store_dword_ind:
-      *(_DWORD *)HIDWORD(accumulator) = accumulator;// OP_STORE_DWORD_IND: *(dword*)hi = lo
+      *(_DWORD *)(INT_PTR)HIDWORD(accumulator) = accumulator;// OP_STORE_DWORD_IND: *(dword*)hi = lo
       goto dispatch_normal;
     case OP_MUL4:
 op_mul4:

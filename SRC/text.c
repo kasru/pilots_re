@@ -10,16 +10,16 @@ int __stdcall RenderOverlayWithContext(int **a1)
   int v2; // esi
   int v3; // edi
   int result; // eax
-  int v5; // [esp+Ch] [ebp-2Ch]
+  INT_PTR v5; // [esp+Ch] [ebp-2Ch]
   int v6; // [esp+10h] [ebp-28h]
-  int v7; // [esp+14h] [ebp-24h]
+  INT_PTR v7; // [esp+14h] [ebp-24h]
   int v8; // [esp+18h] [ebp-20h]
   int v9; // [esp+1Ch] [ebp-1Ch]
   int v10; // [esp+20h] [ebp-18h]
   char v11; // [esp+24h] [ebp-14h]
-  int (__stdcall *v12)(_DWORD); // [esp+28h] [ebp-10h]
+  MoveDirectionHandler v12; // [esp+28h] [ebp-10h]
   int (__stdcall *v13)(_DWORD); // [esp+2Ch] [ebp-Ch]
-  int v14; // [esp+30h] [ebp-8h]
+  INT_PTR v14; // [esp+30h] [ebp-8h]
   unsigned __int8 v15; // [esp+34h] [ebp-4h]
 
   v5 = g_GameFlags1;
@@ -117,13 +117,13 @@ int __stdcall CreateFontRenderObject(char is_overlay, unsigned __int16 posY, uns
   }
   else
   {
-    HIBYTE(newObj->renderInfo) = *(_BYTE *)(g_GameFlags2 + 2);// No game flags: use g_GameFlags2 byte 2 as render layer
+    HIBYTE(newObj->renderInfo) = *(_BYTE *)(INT_PTR)(g_GameFlags2 + 2);// No game flags: use g_GameFlags2 byte 2 as render layer
   }
   DBG_LOG("CreateFontRenderObject: font_index=%d fontSlot=%p fontData=%p type=%d flags=%d", font_index, fontSlot, fontSlot->fontData, fontSlot->type, fontSlot->flags);
   if ( !fontSlot->fontData ) {
     DBG_LOG("ERROR: fontSlot->fontData is NULL for font_index=%d! g_FontSlotArray=%p", font_index, g_FontSlotArray);
   }
-  SetObjectSpriteByDirection(is_overlay, renderObj, (int)fontSlot);// Configure sprite frame based on current direction and font slot data
+  SetObjectSpriteByDirection(is_overlay, renderObj, (INT_PTR)fontSlot);// Configure sprite frame based on current direction and font slot data
   return 1;
 }
 
@@ -178,13 +178,13 @@ int __stdcall PrepareTextDisplay(int a1)
 
 int __stdcall DeleteTextCharacters(int char_count)
 {
-  int char_object; // ebx
+  INT_PTR char_object; // ebx
   int result; // eax
 
   do
   {
     char_object = g_TextCharacterObjects[--g_TextInputLength];
-    g_TextRenderX -= ***(unsigned __int16 ***)(char_object + 12) - *(__int16 *)(*(_DWORD *)(char_object + 12) + 4);
+    g_TextRenderX -= ***(unsigned __int16 ***)(char_object + 12) - *(__int16 *)(*(INT_PTR *)(char_object + 12) + 4);
     result = RemoveAndFreeRenderObject((RenderObject *)char_object);
     --char_count;
   }
@@ -252,7 +252,7 @@ LABEL_14:
           strcpy(*(char **)g_TextInputTargetPtr, g_TextInputBuffer);
           break;
         case 2:
-          strcpy(g_TextInputTargetPtr, g_TextInputBuffer);
+          strcpy((char *)g_TextInputTargetPtr, g_TextInputBuffer);
           break;
         case 3:
           *(_DWORD *)g_TextInputTargetPtr = atoi(g_TextInputBuffer);
@@ -272,7 +272,7 @@ LABEL_14:
       g_TextInputMaxLength = *(unsigned __int8 *)g_TextCommandPtr++;
       if ( (g_TextInputMode & 0x70) == 0 )
       {
-        g_TextInputTargetPtr = (char *)g_GlobalVarsPtr;
+        g_TextInputTargetPtr = (int *)g_GlobalVarsPtr;
         goto LABEL_30;
       }
       if ( (g_TextInputMode & 0x70) == 0x10 )
@@ -283,18 +283,18 @@ LABEL_37:
     {
       if ( g_TextInputLength < (unsigned int)g_TextInputMaxLength )
       {
-        if ( *(_BYTE *)(g_TextCharRangePtr + 1) > keyCode )
+        if ( *(_BYTE *)(INT_PTR)(g_TextCharRangePtr + 1) > keyCode )
           keyCode = tolower(keyCode);
-        if ( *(_BYTE *)(g_TextCharRangePtr + 2) < keyCode )
+        if ( *(_BYTE *)(INT_PTR)(g_TextCharRangePtr + 2) < keyCode )
           keyCode = toupper(keyCode);
-        if ( *(_BYTE *)(g_TextCharRangePtr + 1) <= keyCode
-          && *(_BYTE *)(g_TextCharRangePtr + 2) >= keyCode
+        if ( *(_BYTE *)(INT_PTR)(g_TextCharRangePtr + 1) <= keyCode
+          && *(_BYTE *)(INT_PTR)(g_TextCharRangePtr + 2) >= keyCode
           && (!g_TextInputNumericMode || isdigit(keyCode) != 0) )
         {
           g_TextInputBuffer[g_TextInputLength] = keyCode;
           char_object = RenderTextCharacter(g_TextRenderY, (uint16_t *)&g_TextRenderX, g_TextFontIndex, keyCode);
           char_index = g_TextInputLength++;
-          g_TextCharacterObjects[char_index] = (int)char_object;
+          g_TextCharacterObjects[char_index] = (INT_PTR)char_object;
         }
       }
       return 1;
@@ -302,7 +302,7 @@ LABEL_37:
     RenderTextCharacter(g_TextRenderY, (uint16_t *)&g_TextRenderX, g_TextFontIndex, keyCode);
     keyCode = *(_BYTE *)g_TextCommandPtr++;
   }
-  g_TextInputTargetPtr = (char *)g_CurrentObjectData;
+  g_TextInputTargetPtr = (int *)g_CurrentObjectData;
 LABEL_30:
   if ( (signed char)g_TextInputMode >= 0 )
   {
@@ -341,7 +341,7 @@ int __stdcall SetupTextDisplay(int a1, int a2, int a3, int a4)
   g_TextRenderX = a2;
   g_TextRenderY = a1;
   g_TextFontIndex = a3;
-  g_TextCharRangePtr = (int)&g_FontSlotArray[a3];
+  g_TextCharRangePtr = (INT_PTR)&g_FontSlotArray[a3];
   g_SavedGameFlags1 = g_GameFlags1;
   g_SavedResourceID2 = g_ResourceID2;
   g_SavedGameFlags2 = g_GameFlags2;
@@ -365,7 +365,7 @@ int __stdcall RenderFormattedText(uint16_t renderY, int renderX, int fontIndex, 
   int sourceType; // ecx
   unsigned __int8 *nativeFuncIdPtr; // edx
   int nativeResult; // eax
-  int dataBase; // edi
+  INT_PTR dataBase; // edi
   const char **varDataPtr; // edi
   int scriptEvalResult; // eax
   char *bufIter; // ebx
@@ -385,14 +385,14 @@ int __stdcall RenderFormattedText(uint16_t renderY, int renderX, int fontIndex, 
       fmtPtr = (unsigned __int8 *)textPtr + 1;
       LOBYTE(acc) = *fmtPtr++;                  // fmtDescriptor: bits[6:4]=source, bit[7]=offset_size, bits[2:0]=data_type
       maxLen = *fmtPtr;
-      textPtr = fmtPtr + 1;
+      textPtr = (_DWORD *)(fmtPtr + 1);
       sourceType = acc & 0x70;
       if ( sourceType == 32 )
       {
         nativeFuncIdPtr = (unsigned __int8 *)textPtr;
         textPtr = (_DWORD *)((char *)textPtr + 1);
         nativeResult = g_NativeFuncTable[*nativeFuncIdPtr]();
-        LODWORD(acc) = itoa(nativeResult, &fmtBuffer, 10);
+        LODWORD(acc) = (INT_PTR)itoa(nativeResult, &fmtBuffer, 10);
       }
       else
       {
@@ -407,9 +407,9 @@ int __stdcall RenderFormattedText(uint16_t renderY, int renderX, int fontIndex, 
 LABEL_10:
           if ( (acc & 0x80u) == 0LL )           // bit7=0: 1-byte offset, bit7=1: 4-byte offset
           {
-            HIDWORD(acc) = textPtr;
+            HIDWORD(acc) = (INT_PTR)textPtr;
             textPtr = (_DWORD *)((char *)textPtr + 1);
-            varDataPtr = (const char **)((unsigned __int8)*(_BYTE *)HIDWORD(acc) + dataBase);// dataType = descriptor & 7: 0=sbyte, 1=strptr, 2=inline_str, 3=dword_as_int, 4=deref_dword, 5=script_eval
+            varDataPtr = (const char **)((unsigned __int8)*(_BYTE *)(INT_PTR)HIDWORD(acc) + dataBase);// dataType = descriptor & 7: 0=sbyte, 1=strptr, 2=inline_str, 3=dword_as_int, 4=deref_dword, 5=script_eval
           }
           else
           {
@@ -418,26 +418,26 @@ LABEL_10:
           switch ( acc & (FMT_SCRIPT_EVAL|FMT_INLINE_STR) )
           {
             case FMT_SBYTE:
-              LODWORD(acc) = itoa(*(char *)varDataPtr, &fmtBuffer, 0xA);
+              LODWORD(acc) = (INT_PTR)itoa(*(char *)varDataPtr, &fmtBuffer, 0xA);
               break;
             case FMT_STRPTR:
-              LODWORD(acc) = strncpy(&fmtBuffer, *varDataPtr, maxLen);
+              LODWORD(acc) = (INT_PTR)strncpy(&fmtBuffer, *varDataPtr, maxLen);
               break;
             case FMT_INLINE_STR:
-              LODWORD(acc) = strncpy(&fmtBuffer, (const char *)varDataPtr, maxLen);
+              LODWORD(acc) = (INT_PTR)strncpy(&fmtBuffer, (const char *)varDataPtr, maxLen);
               break;
             case FMT_DWORD_INT:
-              LODWORD(acc) = itoa((int)*varDataPtr, &fmtBuffer, 0xA);
+              LODWORD(acc) = (INT_PTR)itoa((int)(INT_PTR)*varDataPtr, &fmtBuffer, 0xA);
               break;
             case FMT_DEREF_DWORD:
-              LODWORD(acc) = itoa(*(_DWORD *)*varDataPtr, &fmtBuffer, 0xA);
+              LODWORD(acc) = (INT_PTR)itoa(*(_DWORD *)*varDataPtr, &fmtBuffer, 0xA);
               break;
             case FMT_SCRIPT_EVAL:
               fmtBuffer = 0x35;                 // Build inline script: [OP_CALL_INDIRECT(0x35)][varOffset][OP_RETURN(0x00)] to evaluate script function at varDataPtr
               scriptVarOffset = (char *)varDataPtr - g_GlobalVarsPtr;// scriptVarOffset = varDataPtr - g_GlobalVarsPtr (relative offset for OP_CALL_INDIRECT)
               scriptTerminator = 0;             // scriptTerminator = OP_RETURN (0x00)
               scriptEvalResult = EvaluateScriptBytecode(acc, (BYTE *)&fmtBuffer);
-              LODWORD(acc) = itoa(scriptEvalResult, &fmtBuffer, 10);
+              LODWORD(acc) = (INT_PTR)itoa(scriptEvalResult, &fmtBuffer, 10);
               break;
             default:
               break;
@@ -449,7 +449,7 @@ LABEL_10:
             do
             {
               curChar = bufIter++;              // Render each character of formatted buffer
-              LODWORD(acc) = RenderTextCharacter(renderY, (uint16_t *)&renderX, fontIndex, (unsigned __int8)*curChar);
+              LODWORD(acc) = (INT_PTR)RenderTextCharacter(renderY, (uint16_t *)&renderX, fontIndex, (unsigned __int8)*curChar);
             }
             while ( *bufIter );
           }
@@ -460,7 +460,7 @@ LABEL_10:
     {
       literalCharPtr = (unsigned __int8 *)textPtr;// literalCharPtr: pointer to plain text character to render
       textPtr = (_DWORD *)((char *)textPtr + 1);
-      LODWORD(acc) = RenderTextCharacter(renderY, (uint16_t *)&renderX, fontIndex, *literalCharPtr);
+      LODWORD(acc) = (INT_PTR)RenderTextCharacter(renderY, (uint16_t *)&renderX, fontIndex, *literalCharPtr);
     }
   }
   return 1;
