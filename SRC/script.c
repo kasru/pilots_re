@@ -790,11 +790,14 @@ op_load_dword_object:
       goto dispatch_normal;
     case OP_LOAD_SBYTE_IND:
 op_load_sbyte_ind:
-      LODWORD(accumulator) = *(char *)accumulator;// OP_LOAD_SBYTE_IND: lo = *(signed char*)lo
+      /* Address is in lo. On x86 the deref used only the low32 bits; on LP64 the
+         full 64-bit accumulator (hi:lo) would be used and stale hi bits make the
+         pointer wild. Truncate to lo (zero-extend) - byte-identical on x86. */
+      LODWORD(accumulator) = *(char *)(INT_PTR)LODWORD(accumulator);// OP_LOAD_SBYTE_IND: lo = *(signed char*)lo
       goto dispatch_normal;
     case OP_LOAD_DWORD_IND:
 op_load_dword_ind:
-      LODWORD(accumulator) = *(_DWORD *)accumulator;// OP_LOAD_DWORD_IND: lo = *(dword*)lo
+      LODWORD(accumulator) = *(_DWORD *)(INT_PTR)LODWORD(accumulator);// OP_LOAD_DWORD_IND: lo = *(dword*)lo
       goto dispatch_normal;
     case OP_CALL_SCRIPT:
 op_call_script:

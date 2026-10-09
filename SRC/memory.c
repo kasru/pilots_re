@@ -66,7 +66,11 @@ LABEL_9:
   {
     while ( (UINT_PTR)v1 < (UINT_PTR)g_MemoryPoolCurrent )
     {
-      v1 += v4;
+      /* v4 is the raw block header and still carries the 0x80000000 alloc-flag.
+         On x86 the advance was a 32-bit "shl eax,2" so bit31 shifted out and the
+         flag vanished; on LP64 the 64-bit "lea rax,[rcx+rax*4]" keeps it and throws
+         the pointer 8GB off. Masking here is byte-identical on x86, correct on x64. */
+      v1 += v4 & 0x7FFFFFFF;
       v4 = *v1;
       if ( (*v1 & 0x80000000) == 0 && v4 > v3 )
         goto LABEL_9;
@@ -91,16 +95,16 @@ int *__stdcall FreeMemoryBlock(INT_PTR a1)
     do
     {
       v2 = v1;
-      v1 += *v1;
+      v1 += *v1 & 0x7FFFFFFF;      /* mask alloc-flag: raw header in 64-bit add (see AllocFromMemoryPool) */
     }
     while ( v1 != (int *)(a1 - 4) );
   }
   v3 = *v1 & 0x7FFFFFFF;
   v4 = 0;
-  v5 = v1[*v1];
+  v5 = v1[*v1 & 0x7FFFFFFF];        /* next-block header: index by size, not flagged header */
   if ( v5 >= 0 )
   {
-    v4 = &v1[*v1];
+    v4 = &v1[*v1 & 0x7FFFFFFF];     /* address of next block: by size, not flagged header */
     v3 += v5;
   }
   if ( v2 && *v2 >= 0 )
