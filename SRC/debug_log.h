@@ -158,6 +158,7 @@ static LONG WINAPI DebugExceptionFilter(EXCEPTION_POINTERS *pExcept)
     DWORD *sp;
     int i;
 
+#if defined(_M_IX86)
     DbgPrintf("[PILOTS] *** EXCEPTION: 0x%08X (%s) at address 0x%08X ***\n",
         rec->ExceptionCode,
         ExceptionCodeToString(rec->ExceptionCode),
@@ -197,6 +198,39 @@ static LONG WINAPI DebugExceptionFilter(EXCEPTION_POINTERS *pExcept)
             frame++;
         }
     }
+#else /* !_M_IX86: x64 - full-width registers, no EBP chain ---------------- */
+    DbgPrintf("[PILOTS] *** EXCEPTION: 0x%08X (%s) at address 0x%p ***\n",
+        rec->ExceptionCode,
+        ExceptionCodeToString(rec->ExceptionCode),
+        rec->ExceptionAddress);
+
+    DbgPrintf("[PILOTS] Registers: RAX=0x%016I64X RBX=0x%016I64X RCX=0x%016I64X RDX=0x%016I64X\n",
+        ctx->Rax, ctx->Rbx, ctx->Rcx, ctx->Rdx);
+    DbgPrintf("[PILOTS]            RSI=0x%016I64X RDI=0x%016I64X RBP=0x%016I64X RSP=0x%016I64X\n",
+        ctx->Rsi, ctx->Rdi, ctx->Rbp, ctx->Rsp);
+    DbgPrintf("[PILOTS]            R8 =0x%016I64X R9 =0x%016I64X R10=0x%016I64X R11=0x%016I64X\n",
+        ctx->R8, ctx->R9, ctx->R10, ctx->R11);
+    DbgPrintf("[PILOTS]            R12=0x%016I64X R13=0x%016I64X R14=0x%016I64X R15=0x%016I64X\n",
+        ctx->R12, ctx->R13, ctx->R14, ctx->R15);
+    DbgPrintf("[PILOTS]            RIP=0x%016I64X EFLAGS=0x%08X\n",
+        ctx->Rip, ctx->EFlags);
+
+    if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2) {
+        DbgPrintf("[PILOTS] Access violation: %s address 0x%p\n",
+            rec->ExceptionInformation[0] ? "WRITE to" : "READ from",
+            (void *)rec->ExceptionInformation[1]);
+    }
+
+    /* Raw stack around RSP. MSVC x64 unwinds via RUNTIME_FUNCTION records,
+       not [rbp] links, so the i386 EBP-chain walk has no x64 counterpart;
+       the raw dump plus RIP is enough to identify the faulting frame. */
+    sp = (DWORD *)ctx->Rsp;
+    DbgPrintf("[PILOTS] Raw stack (RSP=0x%016I64X):\n", ctx->Rsp);
+    for (i = 0; i < 32; i += 4) {
+        DbgPrintf("[PILOTS]   +%02X: %08X %08X %08X %08X\n",
+            i*4, sp[i], sp[i+1], sp[i+2], sp[i+3]);
+    }
+#endif /* _M_IX86 */
 
     /* Flush the log before we crash */
     DbgLogClose();

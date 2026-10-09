@@ -230,7 +230,7 @@ __int16 __stdcall CreateTileObject(int a1, int a2, __int16 a3)
     *v3 = a3;
     return result;
   }
-  g_MoveDirectionHandlers[(int)HIBYTE(a3) >> 4]((int)&a3);
+  g_MoveDirectionHandlers[(int)HIBYTE(a3) >> 4]((INT_PTR)&a3);
   g_RandomSeed *= 1103515245;
   g_RandomSeed += 12345;
   LOBYTE(a3) = v13;
@@ -1195,7 +1195,7 @@ LABEL_34:
   {
     savedMoveFlags = BYTE1(spriteFlags);        // Save original movement flags before tile processor modifies them
     g_TileProcessor(&spriteFlags);
-    g_MoveDirectionHandlers[(int)BYTE1(spriteFlags) >> 4]((int)&spriteFlags);// Dispatch direction handler based on upper 4 bits of movement flags
+    g_MoveDirectionHandlers[(int)BYTE1(spriteFlags) >> 4]((INT_PTR)&spriteFlags);// Dispatch direction handler based on upper 4 bits of movement flags
     g_RandomSeed *= 1103515245;                 // Advance LCG random seed
     g_RandomSeed += 12345;
     BYTE1(spriteFlags) = savedMoveFlags & 0xF | BYTE1(spriteFlags) & 0xF0;

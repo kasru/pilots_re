@@ -368,7 +368,7 @@ typedef struct VideoDataBuffer VideoDataBuffer;
 typedef struct VideoConfig VideoConfig;
 
 /* ---- Function pointer types ---- */
-typedef void (__stdcall *MoveDirectionHandler)(int param);
+typedef void (__stdcall *MoveDirectionHandler)(INT_PTR param);
 typedef void (__stdcall *SpriteTransformHandler)(SpriteDesc *desc);
 
 /* ---- Blit function type (register-based calling convention) ---- */

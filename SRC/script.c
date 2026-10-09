@@ -7,8 +7,17 @@
 /* VM stack for script push/pop operations.
  * The original Watcom binary uses the x86 hardware stack for VM push/pop.
  * IDA decompiler could not represent this, so we use a software stack.
- * Size 256 allows deep nesting of recursive EvaluateScriptBytecode calls. */
-static int g_VMStack[256];
+ * Size 256 allows deep nesting of recursive EvaluateScriptBytecode calls.
+ *
+ * Entry type follows the pointer width: on i386 an int IS pointer-sized, so
+ * the stack keeps its original int[256] layout; on LP64 (x64/aarch64) the
+ * OP_CALL_SCRIPT/OP_CALL_INDIRECT ip pushes below need a full-width slot. */
+#if defined(_M_IX86) || defined(__i386__)
+typedef int g_VMStackEntry;
+#else
+typedef intptr_t g_VMStackEntry;
+#endif
+static g_VMStackEntry g_VMStack[256];
 static int g_VMStackTop = 0;
 static int g_NativeArgsConsumed = 0;
 
@@ -27,7 +36,7 @@ static int g_NativeArgsConsumed = 0;
  * view of the arguments and its `ret N` are unaffected; the wrapper
  * restores ESP from ebx anyway). The MSVC body keeps its original form:
  * MSVC maintains the alignment it needs itself. */
-#ifdef _WIN32
+#if defined(_M_IX86) /* MSVC x86 ------------------------------------------------ */
 __declspec(naked) int __cdecl CallNativeWithVMStack(
     int (*func)(), int *vmStack, int vmTop)
 {
@@ -66,7 +75,7 @@ __declspec(naked) int __cdecl CallNativeWithVMStack(
     ret
   }
 }
-#else /* !_WIN32: same stack dance, GCC extended-asm form --------------------
+#elif defined(__i386__) /* GCC i386: same stack dance, extended-asm form --------
   Natives are __stdcall -> GCC i386 attribute((stdcall)), so the callee still
   cleans N dwords via `ret N` and the measurement below yields the same
   g_NativeArgsConsumed as the original. Operands are memory constraints so
@@ -108,6 +117,40 @@ int __cdecl CallNativeWithVMStack(
       : "m" (vmStack), "m" (vmTop), "m" (func)
       : "eax", "ecx", "edx", "esi", "edi", "ebx", "cc", "memory");
   g_NativeArgsConsumed = consumed;
+  return result;
+}
+#else /* 64-bit / non-i386 -----------------------------------------------------
+  No 64-bit ABI (Win64, SysV x86_64, AAPCS64) has callee-cleanup stdcall, so
+  the "measure ret N" trick cannot work. Arity is a static property of each
+  table entry - identical to what ret N yields on i386 - so it is looked up
+  in s_NativeArgc and the call goes through a fixed max-arity cast. Passing
+  more arguments than declared is safe on every register ABI: the callee
+  reads only the slots of its own prototype, in the same argument order, so
+  formal #k still maps to vmStack[vmTop-1-k] exactly like the i386 pushes.
+  All vmTop entries are staged (as on i386) so a callee walking past its
+  declared parameters still sees the same sequence. */
+static const unsigned char s_NativeArgc[57] = {
+    0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 1, 0, 0, 1, 1,
+    0, 1, 0, 0, 1, 1, 2, 2, 1, 1, 1, 1, 1, 1, 1,
+    1, 2, 3, 1, 3, 1, 0, 1, 2, 1, 1, 1 };
+typedef intptr_t (__cdecl *pfnNativeWithArgs)(intptr_t, intptr_t, intptr_t);
+int __cdecl CallNativeWithVMStack(
+    int (*func)(), g_VMStackEntry *vmStack, int vmTop)
+{
+  int i, idx, argc;
+  intptr_t args[3];   /* max arity in s_NativeArgc is 3 */
+  int result;
+  idx = -1;
+  for (i = 0; i < 57; ++i)
+    if (g_NativeFuncTable[i] == func) { idx = i; break; }
+  argc = (idx >= 0) ? s_NativeArgc[idx] : 0;
+  for (i = 0; i < 3; ++i) {
+    int k = vmTop - 1 - i;  /* formal #i <- vmStack[vmTop-1-i] (topmost push) */
+    args[i] = (k >= 0) ? (intptr_t)vmStack[k] : 0;
+  }
+  result = (int)((pfnNativeWithArgs)func)(args[0], args[1], args[2]);
+  g_NativeArgsConsumed = argc;
   return result;
 }
 #endif
@@ -755,7 +798,7 @@ op_load_dword_ind:
       goto dispatch_normal;
     case OP_CALL_SCRIPT:
 op_call_script:
-      g_VMStack[g_VMStackTop++] = (int)ip;     // OP_CALL_SCRIPT: push IP to VM stack
+      g_VMStack[g_VMStackTop++] = (g_VMStackEntry)ip;     // OP_CALL_SCRIPT: push IP to VM stack
       savedIp = ip;
       ip = (BYTE *)(globalBase + *(_DWORD *)ip);
       goto dispatch_normal;
@@ -778,7 +821,7 @@ op_call_native:
 op_call_indirect:
       while ( 2 )
       {
-        g_VMStack[g_VMStackTop++] = (int)ip;   // OP_CALL_INDIRECT: push IP to VM stack
+        g_VMStack[g_VMStackTop++] = (g_VMStackEntry)ip;   // OP_CALL_INDIRECT: push IP to VM stack
         savedIp = ip;
         ip = (BYTE *)(HIDWORD(accumulator) + globalBase);
 dispatch_normal:
