@@ -464,7 +464,7 @@ int WinShim_PumpSDLToQueue(void)
 
 /* Headless test hook: SIGUSR1 makes SdlBackendPumpEvents report "quit", so the game
    leaves its main loop through the normal WinMain LABEL_19 cleanup path - lets the
-   full shutdown sequence be exercised without a window manager (diag_hang.sh pokes
+   full shutdown sequence be exercised without a window manager (scripts/diag_hang.sh pokes
    it from outside the container). */
 static volatile sig_atomic_t s_Usr1Quit;
 static void SdlSigUsr1Handler(int sig)
