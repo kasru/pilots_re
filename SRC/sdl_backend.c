@@ -52,6 +52,13 @@ static int s_StagePixels;
 #define PRESENT_MIN_INTERVAL_MS 1               /* burst presents no faster than ~1000/s */
 static Uint32 s_LastPresentTick;                /* SDL_GetTicks of the last real present */
 static int s_PresentPending;                    /* texture updated since, not yet shown */
+static int s_GameClientW;                       /* the game's pinned logical client size */
+static int s_GameClientH;                       /* - see SdlHandleResize: g_VideoConfig.clientWidth/Height
+                                                      is zeroed by the game's own WM_SIZE on minimize
+                                                      (SIZE_MINIMIZED -> 0,0) and cannot be the refill
+                                                      source on restore */
+static unsigned s_EvMotion;                     /* SDL mouse events seen (diagnostics) */
+static unsigned s_EvEnter;                      /* SDL window ENTER events seen */
 
 #ifdef _DEBUG
 static unsigned s_RectBlits;                    /* PILOTS_DEBUG_DISSOLVE statistics */
@@ -231,6 +238,31 @@ static void SdlPostChar(HWND hwnd, char ch)
   PostMessageA(hwnd, WM_CHAR, (WPARAM)(unsigned char)ch, 0);
 }
 
+#ifdef _DEBUG
+/* SDL window event ids by name, for the SDL_WINDOWEVENT dispatch log */
+static const char *SdlWindowEventName(unsigned char e)
+{
+  switch ( e )
+  {
+    case SDL_WINDOWEVENT_SHOWN:          return "SHOWN";
+    case SDL_WINDOWEVENT_HIDDEN:         return "HIDDEN";
+    case SDL_WINDOWEVENT_EXPOSED:        return "EXPOSED";
+    case SDL_WINDOWEVENT_MOVED:          return "MOVED";
+    case SDL_WINDOWEVENT_RESIZED:        return "RESIZED";
+    case SDL_WINDOWEVENT_SIZE_CHANGED:   return "SIZE_CHANGED";
+    case SDL_WINDOWEVENT_MINIMIZED:      return "MINIMIZED";
+    case SDL_WINDOWEVENT_MAXIMIZED:      return "MAXIMIZED";
+    case SDL_WINDOWEVENT_RESTORED:       return "RESTORED";
+    case SDL_WINDOWEVENT_ENTER:          return "ENTER";
+    case SDL_WINDOWEVENT_LEAVE:          return "LEAVE";
+    case SDL_WINDOWEVENT_FOCUS_GAINED:   return "FOCUS_GAINED";
+    case SDL_WINDOWEVENT_FOCUS_LOST:     return "FOCUS_LOST";
+    case SDL_WINDOWEVENT_CLOSE:          return "CLOSE";
+    default:                             return "?";
+  }
+}
+#endif
+
 /* One resize as the game sees it. The original window never changed size:
    WM_GETMINMAXINFO (MainWndProc/VideoWndProc case 0x24) pinned max track size and
    max size to the initial client rect, so every WM_SIZE carried exactly that size.
@@ -240,13 +272,18 @@ static void SdlPostChar(HWND hwnd, char ch)
    clip bound; with a clip past the fixed backbuffer the cursor repaint
    (CopyRectToBackbuffer) walks off the buffer (SIGSEGV on maximize, before the
    sizes were decoupled). So the game only ever sees its own logical client size;
-   the repaint (WM_WINDOWPOSCHANGED + InvalidateRect) still follows the real window. */
+   the repaint (WM_WINDOWPOSCHANGED + InvalidateRect) still follows the real window.
+   The logical size comes from s_GameClientW/H, NOT from g_VideoConfig: minimize
+   makes the game store 0x0 (its WM_SIZE writes lParam unconditionally), so a refill
+   sourced from that same field pins client=0x0 forever after restore - clip bound 0
+   -> no dirty region ever renders (frozen picture, cursor gone; maximize/restore
+   with a WM that unmaps on the way reproduces it). */
 static void SdlHandleResize(HWND hwnd, int w, int h)
 {
   DBG_LOG("SdlHandleResize: window %dx%d, game keeps %dx%d", w, h,
-          g_VideoConfig.clientWidth, g_VideoConfig.clientHeight);
+          s_GameClientW, s_GameClientH);
   PostMessageA(hwnd, WM_WINDOWPOSCHANGED, 0, 0);
-  PostMessageA(hwnd, WM_SIZE, 0, SdlPackPoint(g_VideoConfig.clientWidth, g_VideoConfig.clientHeight));
+  PostMessageA(hwnd, WM_SIZE, 0, SdlPackPoint(s_GameClientW, s_GameClientH));
   InvalidateRect(hwnd, 0, 0);
 }
 
@@ -291,6 +328,7 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
       break;
 
     case SDL_MOUSEMOTION:
+      ++s_EvMotion;
       if ( !hwnd )
         break;
       PostMessageA(hwnd, WM_SETCURSOR, (WPARAM)hwnd, HTCLIENT); /* LOWORD(lParam) == HTCLIENT */
@@ -317,6 +355,10 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
     case SDL_WINDOWEVENT:
       if ( !hwnd )
         break;
+#ifdef _DEBUG
+      DBG_LOG("SDL_WINDOWEVENT: %s (%d,%d)", SdlWindowEventName(ev->window.event),
+              ev->window.data1, ev->window.data2);
+#endif
       switch ( ev->window.event )
       {
         case SDL_WINDOWEVENT_RESIZED:
@@ -328,13 +370,16 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
           InvalidateRect(hwnd, 0, 0);     /* ...let the game mark its dirty regions too */
           break;
         case SDL_WINDOWEVENT_MINIMIZED:   /* Win32 SIZE_MINIMIZED sends client 0,0 */
+          DBG_LOG("MINIMIZED: post WM_SIZE 0,0 - the game client becomes 0x0");
           PostMessageA(hwnd, WM_SIZE, 0, 0);
           break;
         case SDL_WINDOWEVENT_RESTORED:         /* like SdlHandleResize: the game gets its logical size back, not the physical one */
-          PostMessageA(hwnd, WM_SIZE, 0, SdlPackPoint(g_VideoConfig.clientWidth, g_VideoConfig.clientHeight));
+          DBG_LOG("RESTORED: post WM_SIZE %dx%d", s_GameClientW, s_GameClientH);
+          PostMessageA(hwnd, WM_SIZE, 0, SdlPackPoint(s_GameClientW, s_GameClientH));
           InvalidateRect(hwnd, 0, 0);
           break;
         case SDL_WINDOWEVENT_ENTER:
+          ++s_EvEnter;
           PostMessageA(hwnd, WM_SETCURSOR, (WPARAM)hwnd, HTCLIENT);
           break;
         case SDL_WINDOWEVENT_CLOSE:
@@ -541,6 +586,12 @@ HWND SdlBackendCreateWindow(int x, int y, int clientW, int clientH, int resizabl
   SDL_SetWindowMaximumSize(s_SdlWindow, clientW, clientH);
   if ( resizable )                              /* SDL's WM_GETMINMAXINFO handler preserves this */
     SDL_SetWindowMinimumSize(s_SdlWindow, clientW, clientH);
+  /* Remember the logical size the window was created with: it is the game's
+     constant WM_SIZE payload for the whole session (the original window never
+     resized), and the only restore source that survives the game zeroing
+     g_VideoConfig.clientWidth/Height on minimize. */
+  s_GameClientW = clientW;
+  s_GameClientH = clientH;
   return hwnd;
 }
 
@@ -832,6 +883,42 @@ int SdlBackendPumpEvents(void)
   int quit = 0;
 
   SdlFlushPresent();                          /* show rect updates coalesced since the last pump */
+
+#ifdef _DEBUG
+  /* PILOTS_DEBUG_HB=1: 1 s heartbeat - is the pump alive, what does the game think
+     its client size / clip bounds are, does SDL still deliver rendering activity.
+     Catches the maximize/restore freeze (client 0x0, minimized flag, presents gone). */
+  {
+    static int s_HbEnable = -1;
+    if ( s_HbEnable < 0 )
+    {
+      char *hb = getenv("PILOTS_DEBUG_HB");
+      s_HbEnable = (hb && *hb && *hb != '0');
+    }
+    if ( s_HbEnable )
+    {
+      static Uint32 s_HbNext;
+      Uint32 now = SDL_GetTicks();
+      if ( !s_HbNext || (Sint32)(now - s_HbNext) >= 0 )
+      {
+        int mx = 0, my = 0, ww = 0, wh = 0;
+        float gx = 0, gy = 0;
+        Uint32 fl = s_SdlWindow ? SDL_GetWindowFlags(s_SdlWindow) : 0;
+
+        SDL_GetMouseState(&mx, &my);
+        SDL_GetGlobalMouseState(&gx, &gy);       /* server query: sees the pointer even with no events */
+        if ( s_SdlWindow )
+          SDL_GetWindowSize(s_SdlWindow, &ww, &wh);
+        s_HbNext = now + 1000;
+        DBG_LOG("HB: presents=%u blits=%u client=%dx%d tex=%dx%d win=%dx%d flags=0x%X mouse=%d,%d gmouse=%.0f,%.0f mot=%u enter=%u pending=%d",
+                s_Presents, s_RectBlits,
+                g_VideoConfig.clientWidth, g_VideoConfig.clientHeight,
+                s_TexWidth, s_TexHeight, ww, wh, (unsigned)fl, mx, my, gx, gy,
+                s_EvMotion, s_EvEnter, s_PresentPending);
+      }
+    }
+  }
+#endif
 
   if ( s_Usr1Quit )                               /* SIGUSR1 test hook: graceful quit */
     return 1;
