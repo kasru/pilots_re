@@ -1,4 +1,6 @@
-# build outputs (dropped into SRC/ by the build bats, or build/ by CMake on Linux)
+# build outputs: the Windows bats put .obj (+ the /Fd compiler PDB) in build/x86 and
+# build/x64, one subdir per arch; CMake on Linux uses build/ too. Exe/PDB/MAP/SDL2.dll
+# stay in SRC/ next to the game data.
 *.obj
 *.exe
 *.pdb

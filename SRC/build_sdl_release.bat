@@ -16,12 +16,19 @@ set ADLMIDI=..\third_party\libADLMIDI
 set INCLUDE=%INCLUDE%;%SDL2%\include;%ADLMIDI%\include
 set LIB=%LIB%;%SDL2%\lib\x86
 
+rem Intermediate .obj files go to ..\build\x86 (repo-root build\, one subdir per
+rem architecture), so x86 and x64 objects never stomp each other. SRC\ keeps only
+rem what the game needs at runtime: the exe, SDL2.dll and the linker PDB/MAP.
+set OBJDIR=..\build\x86
+
 echo === RELEASE BUILD (SDL2, VS2022) ===
 
-del /Q *.obj 2>nul
+if not exist "%OBJDIR%" mkdir "%OBJDIR%"
+del /Q "%OBJDIR%\*.obj" 2>nul
 
 rem ---- game sources ----
 cl.exe /c /TC /W3 /WX- /Od /DNDEBUG /DWIN32 /MT ^
+  /Fo%OBJDIR%\ ^
   /wd4996 /wd4113 /wd4047 /wd4024 /wd4133 /wd4028 /wd4029 /wd4090 ^
   /wd4244 /wd4267 /wd4554 /wd4838 /wd4309 /wd4005 /wd4701 ^
   globals.c animation.c render.c gameloop.c ^
@@ -35,7 +42,7 @@ rem ---- libADLMIDI (third_party/libADLMIDI): MIDI music synth, C++ core + Nuked
 set ADLMIDI_OPTS=/DADLMIDI_DISABLE_MIDI_SEQUENCER /DBWMIDI_DISABLE_XMI_SUPPORT /DADLMIDI_DISABLE_OPAL_EMULATOR /DADLMIDI_DISABLE_JAVA_EMULATOR /DADLMIDI_DISABLE_ESFMU_EMULATOR /DADLMIDI_DISABLE_MAME_OPL2_EMULATOR /DADLMIDI_DISABLE_YMFM_EMULATOR
 set ADLMIDI_WD=/wd4996 /wd4244 /wd4267 /wd4554 /wd4309 /wd4005 /wd4701 /wd4267
 
-cl.exe /c /TP /W3 /WX- /O2 /MT /EHsc %ADLMIDI_OPTS% %ADLMIDI_WD% ^
+cl.exe /c /TP /W3 /WX- /O2 /MT /EHsc %ADLMIDI_OPTS% %ADLMIDI_WD% /Fo%OBJDIR%\ ^
   %ADLMIDI%\src\adlmidi.cpp ^
   %ADLMIDI%\src\adlmidi_load.cpp ^
   %ADLMIDI%\src\adlmidi_midiplay.cpp ^
@@ -52,7 +59,7 @@ cl.exe /c /TP /W3 /WX- /O2 /MT /EHsc %ADLMIDI_OPTS% %ADLMIDI_WD% ^
 if errorlevel 1 goto :fail
 
 rem libADLMIDI C parts: instrument database, volume models, WOPL bank loader, chip cores
-cl.exe /c /TC /W3 /WX- /O2 /MT %ADLMIDI_OPTS% %ADLMIDI_WD% ^
+cl.exe /c /TC /W3 /WX- /O2 /MT %ADLMIDI_OPTS% %ADLMIDI_WD% /Fo%OBJDIR%\ ^
   %ADLMIDI%\src\wopl\wopl_file.c ^
   %ADLMIDI%\src\models\model_ail.c ^
   %ADLMIDI%\src\models\model_apogee.c ^
@@ -74,7 +81,7 @@ link.exe /OUT:PILOT_RV.EXE /SUBSYSTEM:WINDOWS /MACHINE:X86 /NOLOGO ^
   kernel32.lib user32.lib gdi32.lib winmm.lib vfw32.lib ^
   comdlg32.lib advapi32.lib shell32.lib ole32.lib oldnames.lib ^
   libcmt.lib libvcruntime.lib libucrt.lib libcpmt.lib SDL2.lib ^
-  *.obj
+  %OBJDIR%\*.obj
 if errorlevel 1 goto :fail
 
 copy /Y "%SDL2%\lib\x86\SDL2.dll" . >nul

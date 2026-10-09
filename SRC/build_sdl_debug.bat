@@ -16,15 +16,23 @@ set ADLMIDI=..\third_party\libADLMIDI
 set INCLUDE=%INCLUDE%;%SDL2%\include;%ADLMIDI%\include
 set LIB=%LIB%;%SDL2%\lib\x86
 
+rem Intermediate .obj files go to ..\build\x86 (repo-root build\, one subdir per
+rem architecture), so x86 and x64 objects never stomp each other. SRC\ keeps only
+rem what the game needs at runtime: the exe, SDL2.dll and the linker PDB/MAP.
+rem The compiler PDB (/Fd) follows the objs into the same dir.
+set OBJDIR=..\build\x86
+
 echo === DEBUG BUILD (SDL2, VS2022) ===
 
-del /Q *.obj 2>nul
+if not exist "%OBJDIR%" mkdir "%OBJDIR%"
+del /Q "%OBJDIR%\*.obj" 2>nul
 
 rem ---- game sources ----
 cl.exe /c /TC /W3 /WX- /Od /Zi /D_DEBUG /DWIN32 /MTd ^
+  /Fo%OBJDIR%\ ^
   /wd4996 /wd4113 /wd4047 /wd4024 /wd4133 /wd4028 /wd4029 /wd4090 ^
   /wd4244 /wd4267 /wd4554 /wd4838 /wd4309 /wd4005 /wd4701 ^
-  /FdPILOT_RV.pdb ^
+  /Fd%OBJDIR%\PILOT_RV.pdb ^
   globals.c animation.c render.c gameloop.c ^
   script.c resource.c saveload.c audio.c ^
   video.c text.c tilemap.c blitting.c ^
@@ -37,7 +45,7 @@ set ADLMIDI_OPTS=/DADLMIDI_DISABLE_MIDI_SEQUENCER /DBWMIDI_DISABLE_XMI_SUPPORT /
 set ADLMIDI_WD=/wd4996 /wd4244 /wd4267 /wd4554 /wd4309 /wd4005 /wd4701 /wd4267
 
 rem OPL emulation is kept optimized even in debug (/O2 on these files only, debug CRT still /MTd)
-cl.exe /c /TP /W3 /WX- /O2 /Zi /MTd /D_DEBUG /EHsc %ADLMIDI_OPTS% %ADLMIDI_WD% /FdPILOT_RV.pdb ^
+cl.exe /c /TP /W3 /WX- /O2 /Zi /MTd /D_DEBUG /EHsc %ADLMIDI_OPTS% %ADLMIDI_WD% /Fo%OBJDIR%\ /Fd%OBJDIR%\PILOT_RV.pdb ^
   %ADLMIDI%\src\adlmidi.cpp ^
   %ADLMIDI%\src\adlmidi_load.cpp ^
   %ADLMIDI%\src\adlmidi_midiplay.cpp ^
@@ -54,7 +62,7 @@ cl.exe /c /TP /W3 /WX- /O2 /Zi /MTd /D_DEBUG /EHsc %ADLMIDI_OPTS% %ADLMIDI_WD% /
 if errorlevel 1 goto :fail
 
 rem libADLMIDI C parts: instrument database, volume models, WOPL bank loader, chip cores
-cl.exe /c /TC /W3 /WX- /O2 /Zi /MTd /D_DEBUG %ADLMIDI_OPTS% %ADLMIDI_WD% /FdPILOT_RV.pdb ^
+cl.exe /c /TC /W3 /WX- /O2 /Zi /MTd /D_DEBUG %ADLMIDI_OPTS% %ADLMIDI_WD% /Fo%OBJDIR%\ /Fd%OBJDIR%\PILOT_RV.pdb ^
   %ADLMIDI%\src\wopl\wopl_file.c ^
   %ADLMIDI%\src\models\model_ail.c ^
   %ADLMIDI%\src\models\model_apogee.c ^
@@ -76,7 +84,7 @@ link.exe /OUT:PILOT_RV.EXE /SUBSYSTEM:WINDOWS /MACHINE:X86 /NOLOGO ^
   kernel32.lib user32.lib gdi32.lib winmm.lib vfw32.lib ^
   comdlg32.lib advapi32.lib shell32.lib ole32.lib oldnames.lib ^
   libcmtd.lib libvcruntimed.lib libucrtd.lib libcpmtd.lib SDL2.lib ^
-  *.obj
+  %OBJDIR%\*.obj
 if errorlevel 1 goto :fail
 
 copy /Y "%SDL2%\lib\x86\SDL2.dll" . >nul

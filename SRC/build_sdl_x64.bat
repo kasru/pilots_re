@@ -9,6 +9,9 @@ rem MSVC x64 (C4311/C4312) and proves the fixes run natively.
 rem
 rem Unlike x86, no /FIXED here: the x64 image must keep its base relocs
 rem (the loader/backups depend on them); /DYNAMICBASE:NO still pins the base.
+rem
+rem The binary is named PILOT_RV_x64.EXE so it can sit next to the x86 build
+rem without overwriting it.
 
 set VCTOOLS=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207
 set WINSDK=C:\Program Files (x86)\Windows Kits\10
@@ -25,12 +28,19 @@ set ADLMIDI=..\third_party\libADLMIDI
 set INCLUDE=%INCLUDE%;%SDL2%\include;%ADLMIDI%\include
 set LIB=%LIB%;%SDL2%\lib\x64
 
+rem Intermediate .obj files go to ..\build\x64 (repo-root build\, one subdir per
+rem architecture), so x86 and x64 objects never stomp each other. SRC\ keeps only
+rem what the game needs at runtime: the exe, SDL2.dll and the linker PDB/MAP.
+set OBJDIR=..\build\x64
+
 echo === X64 BUILD (SDL2, VS2022, Hostx64) ===
 
-del /Q *.obj 2>nul
+if not exist "%OBJDIR%" mkdir "%OBJDIR%"
+del /Q "%OBJDIR%\*.obj" 2>nul
 
 rem ---- game sources ----
 cl.exe /c /TC /W3 /WX- /Od /DNDEBUG /DWIN32 /MT ^
+  /Fo%OBJDIR%\ ^
   /wd4996 /wd4113 /wd4047 /wd4024 /wd4133 /wd4028 /wd4029 /wd4090 ^
   /wd4244 /wd4267 /wd4554 /wd4838 /wd4309 /wd4005 /wd4701 ^
   globals.c animation.c render.c gameloop.c ^
@@ -44,7 +54,7 @@ rem ---- libADLMIDI (third_party/libADLMIDI): MIDI music synth, C++ core + Nuked
 set ADLMIDI_OPTS=/DADLMIDI_DISABLE_MIDI_SEQUENCER /DBWMIDI_DISABLE_XMI_SUPPORT /DADLMIDI_DISABLE_OPAL_EMULATOR /DADLMIDI_DISABLE_JAVA_EMULATOR /DADLMIDI_DISABLE_ESFMU_EMULATOR /DADLMIDI_DISABLE_MAME_OPL2_EMULATOR /DADLMIDI_DISABLE_YMFM_EMULATOR
 set ADLMIDI_WD=/wd4996 /wd4244 /wd4267 /wd4554 /wd4309 /wd4005 /wd4701 /wd4267
 
-cl.exe /c /TP /W3 /WX- /O2 /MT /EHsc %ADLMIDI_OPTS% %ADLMIDI_WD% ^
+cl.exe /c /TP /W3 /WX- /O2 /MT /EHsc %ADLMIDI_OPTS% %ADLMIDI_WD% /Fo%OBJDIR%\ ^
   %ADLMIDI%\src\adlmidi.cpp ^
   %ADLMIDI%\src\adlmidi_load.cpp ^
   %ADLMIDI%\src\adlmidi_midiplay.cpp ^
@@ -61,7 +71,7 @@ cl.exe /c /TP /W3 /WX- /O2 /MT /EHsc %ADLMIDI_OPTS% %ADLMIDI_WD% ^
 if errorlevel 1 goto :fail
 
 rem libADLMIDI C parts: instrument database, volume models, WOPL bank loader, chip cores
-cl.exe /c /TC /W3 /WX- /O2 /MT %ADLMIDI_OPTS% %ADLMIDI_WD% ^
+cl.exe /c /TC /W3 /WX- /O2 /MT %ADLMIDI_OPTS% %ADLMIDI_WD% /Fo%OBJDIR%\ ^
   %ADLMIDI%\src\wopl\wopl_file.c ^
   %ADLMIDI%\src\models\model_ail.c ^
   %ADLMIDI%\src\models\model_apogee.c ^
@@ -77,19 +87,19 @@ cl.exe /c /TC /W3 /WX- /O2 /MT %ADLMIDI_OPTS% %ADLMIDI_WD% ^
   %ADLMIDI%\src\chips\nuked_cqm\cqm.c
 if errorlevel 1 goto :fail
 
-link.exe /OUT:PILOT_RV.EXE /SUBSYSTEM:WINDOWS /MACHINE:X64 /NOLOGO ^
+link.exe /OUT:PILOT_RV_x64.EXE /SUBSYSTEM:WINDOWS /MACHINE:X64 /NOLOGO ^
   /DEBUG /DYNAMICBASE:NO ^
-  /PDB:PILOT_RV.pdb /MAP:PILOT_RV.map ^
+  /PDB:PILOT_RV_x64.pdb /MAP:PILOT_RV_x64.map ^
   kernel32.lib user32.lib gdi32.lib winmm.lib vfw32.lib ^
   comdlg32.lib advapi32.lib shell32.lib ole32.lib oldnames.lib ^
   libcmt.lib libvcruntime.lib libucrt.lib libcpmt.lib SDL2.lib ^
-  *.obj
+  %OBJDIR%\*.obj
 if errorlevel 1 goto :fail
 
 copy /Y "%SDL2%\lib\x64\SDL2.dll" . >nul
 
 echo.
-echo SUCCESS: PILOT_RV.EXE (X64, SDL2, VS2022)
+echo SUCCESS: PILOT_RV_x64.EXE (X64, SDL2, VS2022)
 goto :end
 
 :fail
