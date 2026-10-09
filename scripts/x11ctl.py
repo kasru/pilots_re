@@ -11,11 +11,13 @@ Usage:
   x11ctl.py iconify <id>             - WM_CHANGE_STATE IconicState (minimize)
   x11ctl.py warp <id> <x> <y>        - pointer into window (relative)
   x11ctl.py xtest-motion <rx> <ry>   - hardware-like motion, root coords (libXtst)
+  x11ctl.py xtest-click [button]     - hardware-like button press+release (libXtst)
   x11ctl.py fake-motion <id> <x> <y> - synthetic MotionNotify straight to the window
                                        (bypasses covering overlays like the screen locker;
                                         delivered only if a client - SDL - selected it there)
   x11ctl.py fake-click <id> <x> <y>  - synthetic ButtonPress+Release at window coords
   x11ctl.py pointer                  - XQueryPointer: root coords + child under pointer
+  x11ctl.py geom <id>                - absolute window origin + size
   x11ctl.py sniff <id> <seconds>     - count pointer events arriving at THIS client
                                        (verifies event delivery on the X server side)
 """
@@ -203,6 +205,28 @@ def main():
         lib.XSendEvent(dpy, root, 0, mask, ctypes.byref(ev))
         lib.XFlush(dpy)
         print("activated 0x%x" % (win & 0xFFFFFFFF))
+    elif cmd == "geom":
+        # absolute window position + size (XGetGeometry + XTranslateCoordinates)
+        win = int(sys.argv[2], 0)
+        lib.XGetGeometry.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
+                                     ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_int),
+                                     ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_uint),
+                                     ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint),
+                                     ctypes.POINTER(ctypes.c_uint)]
+        lib.XGetGeometry.restype = ctypes.c_int
+        lib.XTranslateCoordinates.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
+                                              ctypes.c_int, ctypes.c_int,
+                                              ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
+                                              ctypes.POINTER(ctypes.c_ulong)]
+        lib.XTranslateCoordinates.restype = ctypes.c_int
+        r = ctypes.c_ulong(); ox = ctypes.c_int(); oy = ctypes.c_int()
+        w = ctypes.c_uint(); h = ctypes.c_uint(); b = ctypes.c_uint(); d = ctypes.c_uint()
+        lib.XGetGeometry(dpy, win, ctypes.byref(r), ctypes.byref(ox), ctypes.byref(oy),
+                         ctypes.byref(w), ctypes.byref(h), ctypes.byref(b), ctypes.byref(d))
+        tx = ctypes.c_int(); ty = ctypes.c_int(); child = ctypes.c_ulong()
+        lib.XTranslateCoordinates(dpy, win, r, 0, 0, ctypes.byref(tx), ctypes.byref(ty),
+                                  ctypes.byref(child))
+        print("%d,%d %dx%d" % (tx.value, ty.value, w.value, h.value))
     elif cmd == "pointer":
         rootwin = lib.XDefaultRootWindow(dpy)
         # XQueryPointer(dpy, w, &root, &child, &root_x, &root_y, &win_x, &win_y, &mask)
@@ -250,6 +274,17 @@ def main():
                  16: "MAP", 18: "REPARENT"}
         print("sniff: " + (", ".join("%s=%d" % (names.get(k, "type%d" % k), v)
                                      for k, v in sorted(counts.items())) or "nothing"))
+    elif cmd == "xtest-click":
+        # real button press+release through XTEST (hardware path)
+        xt = ctypes.CDLL("libXtst.so.6")
+        xt.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                            ctypes.c_int, ctypes.c_ulong]
+        xt.XTestFakeButtonEvent.restype = ctypes.c_int
+        button = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+        xt.XTestFakeButtonEvent(dpy, button, 1, 0)
+        xt.XTestFakeButtonEvent(dpy, button, 0, 0)
+        lib.XFlush(dpy)
+        print("xtest click button=%d" % button)
     elif cmd == "xtest-motion":
         # real pointer motion (as if from hardware) in ROOT coordinates
         xt = ctypes.CDLL("libXtst.so.6")
