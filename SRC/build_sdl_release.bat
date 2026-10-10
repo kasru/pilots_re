@@ -16,10 +16,11 @@ set ADLMIDI=..\third_party\libADLMIDI
 set INCLUDE=%INCLUDE%;%SDL2%\include;%ADLMIDI%\include
 set LIB=%LIB%;%SDL2%\lib\x86
 
-rem Intermediate .obj files go to ..\build\x86 (repo-root build\, one subdir per
-rem architecture), so x86 and x64 objects never stomp each other. SRC\ keeps only
-rem what the game needs at runtime: the exe, SDL2.dll and the linker PDB/MAP.
-set OBJDIR=..\build\x86
+rem Intermediate .obj files go to ..\build\<Configuration>\<Platform> - e.g.
+rem ..\build\Release\x86 for this bat - one dir per bat, so all four builds keep
+rem their own objects and never stomp each other. SRC\ keeps only what the
+rem game needs at runtime: the exe, SDL2.dll and the linker PDB/MAP.
+set OBJDIR=..\build\Release\x86
 
 echo === RELEASE BUILD (SDL2, VS2022) ===
 
