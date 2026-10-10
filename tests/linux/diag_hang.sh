@@ -2,7 +2,7 @@
 # Shutdown-path test: SIGUSR1 -> graceful quit via WinMain LABEL_19; if the
 # process is still alive 10s later it hangs in cleanup - catch with SIGSEGV
 # so the game's own handler prints a backtrace of the stuck point.
-cd /home/ntadmin/work/pilots_re || exit 1
+cd "$(dirname "$0")/../.." || exit 1
 LOG=build/PILOT_RV_debug.log
 podman rm -f plr >/dev/null 2>&1
 : > "$LOG"

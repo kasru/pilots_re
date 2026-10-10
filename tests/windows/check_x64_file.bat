@@ -1,6 +1,6 @@
 @echo off
 rem Per-file x64 warning check for the 64-bit migration (LP64 pointer-in-int).
-rem Usage: scripts\check_x64_file.bat render.c [more.c ...]
+rem Usage: tests\windows\check_x64_file.bat render.c [more.c ...]
 rem Compiles the given SRC files with MSVC x64, same flags/suppressions as the
 rem migration probe (pointer-mismatch warnings stay VISIBLE: they are the
 rem signal). Prints raw cl output to stdout; exit code = cl exit code.
@@ -10,7 +10,7 @@ set VCV=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Bui
 if not exist "%VCV%" (echo NO_VCVARS& exit /b 2)
 call "%VCV%" x64 >nul 2>&1
 if errorlevel 1 (echo VCVARS_FAIL& exit /b 3)
-pushd "%~dp0\..\SRC"
+pushd "%~dp0..\..\SRC"
 set SDL2=..\third_party\SDL2
 set ADLMIDI=..\third_party\libADLMIDI
 set INCLUDE=%INCLUDE%;%SDL2%\include;%ADLMIDI%\include

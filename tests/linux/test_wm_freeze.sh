@@ -5,13 +5,13 @@
 # 0 in RenderDirtyRegions, cursor gone, no repaint).
 #
 # Needs: the game already running on DISPLAY=:0 with PILOTS_DEBUG_HB=1
-# (1s heartbeat in build/PILOT_RV_debug.log) and scripts/x11ctl.py as the WM
+# (1s heartbeat in build/PILOT_RV_debug.log) and tests/linux/x11ctl.py as the WM
 # driver (no xdotool/wmctrl on the host). Run from anywhere:
-#   sh scripts/test_wm_freeze.sh
+#   sh tests/linux/test_wm_freeze.sh
 set -e
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 export DISPLAY=:0
-X="python3 scripts/x11ctl.py"
+X="python3 tests/linux/x11ctl.py"
 
 ID=$($X list | awk '/[Pp]ilot/{print $1}')
 [ -n "$ID" ] || { echo "game window not found"; exit 1; }

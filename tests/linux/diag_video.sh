@@ -2,7 +2,7 @@
 # Phase-6 smoke test: play intro+start movies through the ffmpeg MCI, then a
 # clean quit (SIGUSR1 test hook). Expects SRC/movies/{intro,start}.avi.
 # Timeline: boot ~2s -> intro ~4s -> scene -> start ~4s -> menu (~12s+).
-cd /home/ntadmin/work/pilots_re || exit 1
+cd "$(dirname "$0")/../.." || exit 1
 LOG=build/PILOT_RV_debug.log
 podman rm -f plr >/dev/null 2>&1
 : > "$LOG"

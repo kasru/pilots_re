@@ -8,7 +8,7 @@ Byte-faithful C reconstruction of the engine from the 1996 game «Братья �
 - Docs are in Russian: `SRC/docs/README.md` → per-subsystem pages (`architecture.md`, `scripting.md`, …). Trust code over docs when they disagree. They predate the SDL2 port — window/present/audio specifics live in `SRC/sdl_backend.c`.
 - SDL2 port: window, input, present and PCM sound effects go through SDL2 (`SRC/sdl_backend.c` subclasses SDL's wndproc so the game's `MainWndProc`/`VideoWndProc` still see raw Win32 messages). MIDI music renders through **libADLMIDI** (OPL3 emulation, submodule `third_party/libADLMIDI`) into its own SDL queue-audio device (`SdlMidi_*` in `sdl_backend.c`) — only the winmm 10 ms event timer (`timeSetEvent`) survives from the old midiOut path. AVI video stays on MCI.
 
-## Build (the only verification — there are no tests, linter, or CI)
+## Build (the only automated verification — there are no unit tests, linter, or CI)
 
 - Four bats, each `pushd`ing to its own dir so they work from any CWD:
   - x86 (the proven baseline): `SRC\build_sdl_debug.bat`, `SRC\build_sdl_release.bat` → `SRC\PILOT_RV.EXE` (+ `.pdb`, `.map`).
@@ -20,6 +20,19 @@ Byte-faithful C reconstruction of the engine from the 1996 game «Братья �
 - Source files are listed explicitly in each bat. **Adding a `.c` file requires editing all four bats.** The same applies to libADLMIDI: each bat has its own compile blocks (C++ core with `/TP`, C parts with `/TC`, the `ADLMIDI_OPTS` feature defines) — if the submodule update changes its source set or options, change **all four** bats the same way. `SRC\test_cast.c` and `SRC\test_wave.c` are scratch files deliberately left out of the build (`test_wave.c` is a standalone audio-harness with its own `main()`, built ad-hoc; it links the libADLMIDI objs too, so build them first).
 - Compiles with `/W3` but many warnings are suppressed and `/WX-` — warnings never fail the build; only errors do.
 - `.gitignore` covers build droppings (`*.obj`, `*.exe`, `*.pdb`, `*.map`, `*.ilk`, `*.dll`, `*_debug.log`), the whole `build/` dir, plus `*.SAV` — don't force-add them.
+
+## Tests (manual harnesses, driven by scripts — still no unit tests, linter, or CI)
+
+Everything for verifying a change lives in `tests/`, split by OS; `scripts/` now holds only `run_podman.sh` (the Linux launch helper). `tests/README.md` has the full per-script table — read it before touching a harness. Highlights:
+
+- **Run them with PowerShell 7, from a file:** `& "$env:ProgramFiles\PowerShell\7\pwsh.exe" -NoProfile -File tests\windows\<name>.ps1`. Never `pwsh -Command`, never the `pwsh` on PATH — that is PS 5.1 (no ternary, no `[UIntPtr]`, mangles embedded quotes, `Set-Content -Encoding utf8` writes a BOM).
+- Harnesses resolve `SRC` from their own location (`$PSScriptRoot\..\..`), so any checkout path works.
+- `buildall.ps1` — all four bats back to back, prints SUCCESS/FAILED only. `x86check.ps1` — builds x86 debug **last** (both arches share `SDL2.dll`, so only the last-built arch runs), plays 12 s and asserts the baseline markers `auxMainLoop: startResourceId=1`, `ENTER: GameMainLoop` ×2, zero `EXCEPTION: 0xC000` — this is how a 64-bit/LP64 change gets proven to leave 32-bit behaviour identical.
+- `pfuzz.ps1` is the workhorse: starts x64 debug, walks into scene 1, sprays clicks + keystrokes, screenshots, greps the debug log for `EXCEPTION: 0xC000`. `relfuzz.ps1` is the same against release. `play.ps1` dwells 4 s per click so animations/dialogue can settle; `realfuzz.ps1` uses real `SetCursorPos`+`mouse_event` input. `probe.ps1` = rebuild x64 debug + `pfuzz` in one go.
+- **Clicking, not driving the real cursor.** Logical 640×480 coords; `PostMessage(hwnd, 0x0200,0,LP)` → `0x0201,wp=1` → `0x0202,wp=0` with `LP(x,y) = ((uint)y<<16)|((uint)x&0xFFFF)`. It needs no focus and moves no cursor, whereas real input goes to whatever window is under the pointer and Windows refuses `SetForegroundWindow` from a background process — hence "clicks land in another window". Confirm delivery by the game's own line `SdlGameWndProc: msg=0x201 wp=0x1 lp=…`. `SetCursorPos` needs **physical** coords = logical × 1.25 (the process is DPI-aware, the game window is not).
+- **Reproduce crashes on a debug build only** — in release `DBG_*` are no-ops (`debug_log.h`), so a release crash logs neither the exception nor the register dump.
+- `check_x64_file.bat` compiles one `.c` at a time under x64 and lets the pointer-mismatch warnings through (they are the signal); `analyze_probe*.ps1` histogram the resulting `C4xxx` logs.
+- Linux side: `tests/linux/*.sh` `cd "$(dirname "$0")/../.."` (nothing is hardcoded to `/home/ntadmin/...` any more) and need `x11ctl.py` — an X11/EWMH driver over ctypes+libX11, standing in for xdotool/wmctrl, which the host does not have.
 
 ## Runtime gotchas
 
