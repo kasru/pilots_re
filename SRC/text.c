@@ -164,7 +164,10 @@ RenderObject *__stdcall RenderTextCharacter(uint16_t render_y, uint16_t *render_
   char_render_object->posY = render_y;
   char_sprite_data = (unsigned __int16 **)((char *)font_slot->fontData + 8 * (character - font_slot->baseCharOffset));
   char_render_object->spriteDataPtr = char_sprite_data;
-  *(_DWORD *)render_x_ptr += **char_sprite_data - *((__int16 *)char_sprite_data + 2);
+  /* Glyph entry in game data is 8 bytes: 32-bit pointer slot @+0, i16 @+4. The pointer load
+     must stay 32-bit on LP64, otherwise the next 4 bytes of the entry leak into the address
+     (observed as RAX=0xFFFB0000089C8CC0 -> access violation on the first formatted text). */
+  *(_DWORD *)render_x_ptr += *(unsigned __int16 *)(INT_PTR)*(unsigned int *)char_sprite_data - *((__int16 *)char_sprite_data + 2);
   AddObjectToDirtyRegions(char_render_object);
   return char_render_object;
 }
