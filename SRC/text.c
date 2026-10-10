@@ -254,7 +254,7 @@ LABEL_14:
           *g_TextInputTargetPtr = atoi(g_TextInputBuffer);
           break;
         case 1:
-          strcpy(*(char **)g_TextInputTargetPtr, g_TextInputBuffer);
+          strcpy((char *)(INT_PTR)*(unsigned int *)g_TextInputTargetPtr, g_TextInputBuffer);// target var is a 4-byte slot holding a 32-bit pointer
           break;
         case 2:
           strcpy((char *)g_TextInputTargetPtr, g_TextInputBuffer);
@@ -263,7 +263,7 @@ LABEL_14:
           *(_DWORD *)g_TextInputTargetPtr = atoi(g_TextInputBuffer);
           break;
         case 4:
-          **(_DWORD **)g_TextInputTargetPtr = atoi(g_TextInputBuffer);
+          *(_DWORD *)(INT_PTR)*(unsigned int *)g_TextInputTargetPtr = atoi(g_TextInputBuffer);// base address is a 32-bit pointer in a 4-byte slot
           break;
         default:
           break;
@@ -382,7 +382,9 @@ int __stdcall RenderFormattedText(uint16_t renderY, int renderX, int fontIndex, 
   char scriptTerminator; // [esp+15h] [ebp-FBh]
 
   LODWORD(acc) = PrepareTextDisplay(textDataPtr);
-  textPtr = (_DWORD *)acc;
+  /* PrepareTextDisplay returns int, so only the low half of the scratch is defined; on LP64 the
+     high half still holds whatever was on the stack and textPtr would pick those bits up. */
+  textPtr = (_DWORD *)(INT_PTR)(unsigned int)acc;
   while ( *(_BYTE *)textPtr )
   {
     if ( *(_BYTE *)textPtr == 15 )
@@ -412,9 +414,14 @@ int __stdcall RenderFormattedText(uint16_t renderY, int renderX, int fontIndex, 
 LABEL_10:
           if ( (acc & 0x80u) == 0LL )           // bit7=0: 1-byte offset, bit7=1: 4-byte offset
           {
+            /* The offset byte is read straight from textPtr: the original code round-tripped the
+               address through HIDWORD(acc), a 32-bit slot, which truncates textPtr on LP64. The
+               HIDWORD(acc) store itself is kept - FMT_SCRIPT_EVAL passes acc to
+               EvaluateScriptBytecode, whose OP_CALL_INDIRECT uses HIDWORD(accumulator) as an
+               offset, so that value must stay bit-identical to x86. */
             HIDWORD(acc) = (INT_PTR)textPtr;
+            varDataPtr = (const char **)((unsigned __int8)*(_BYTE *)textPtr + dataBase);// dataType = descriptor & 7: 0=sbyte, 1=strptr, 2=inline_str, 3=dword_as_int, 4=deref_dword, 5=script_eval
             textPtr = (_DWORD *)((char *)textPtr + 1);
-            varDataPtr = (const char **)((unsigned __int8)*(_BYTE *)(INT_PTR)HIDWORD(acc) + dataBase);// dataType = descriptor & 7: 0=sbyte, 1=strptr, 2=inline_str, 3=dword_as_int, 4=deref_dword, 5=script_eval
           }
           else
           {
@@ -426,16 +433,16 @@ LABEL_10:
               LODWORD(acc) = (INT_PTR)itoa(*(char *)varDataPtr, &fmtBuffer, 0xA);
               break;
             case FMT_STRPTR:
-              LODWORD(acc) = (INT_PTR)strncpy(&fmtBuffer, *varDataPtr, maxLen);
+              LODWORD(acc) = (INT_PTR)strncpy(&fmtBuffer, (const char *)(INT_PTR)*(unsigned int *)varDataPtr, maxLen);// var slot holds a 32-bit pointer
               break;
             case FMT_INLINE_STR:
               LODWORD(acc) = (INT_PTR)strncpy(&fmtBuffer, (const char *)varDataPtr, maxLen);
               break;
             case FMT_DWORD_INT:
-              LODWORD(acc) = (INT_PTR)itoa((int)(INT_PTR)*varDataPtr, &fmtBuffer, 0xA);
+              LODWORD(acc) = (INT_PTR)itoa((int)*(unsigned int *)varDataPtr, &fmtBuffer, 0xA);// 4-byte var slot (was a pointer-width read)
               break;
             case FMT_DEREF_DWORD:
-              LODWORD(acc) = (INT_PTR)itoa(*(_DWORD *)*varDataPtr, &fmtBuffer, 0xA);
+              LODWORD(acc) = (INT_PTR)itoa(*(_DWORD *)(INT_PTR)*(unsigned int *)varDataPtr, &fmtBuffer, 0xA);// base address is a 32-bit pointer in the var slot
               break;
             case FMT_SCRIPT_EVAL:
               fmtBuffer = 0x35;                 // Build inline script: [OP_CALL_INDIRECT(0x35)][varOffset][OP_RETURN(0x00)] to evaluate script function at varDataPtr

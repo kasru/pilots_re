@@ -541,8 +541,12 @@ char ProcessNormalEvent()
   RenderObject *current_object; // [esp+10h] [ebp-Ch]
   unsigned int *sprite_command_list; // [esp+14h] [ebp-8h]
 
-  current_object = *(RenderObject **)&g_InputState[3];
-  if ( !*(INT_PTR *)&g_InputState[3] )
+  // The resumption cursor is a fixed 4-byte slot at 0x1144..0x1147 (it overlaps the tail of
+  // g_InputState[4] at 0x1141). Reading/writing it with pointer width would reach 0x1148..0x114B
+  // on LP64 - the first two entries of g_RandomChoiceArray - so the cursor's high half would be
+  // filled with random choice values and the next dereference would fault. Keep it 32-bit.
+  current_object = (RenderObject *)(INT_PTR)*(unsigned int *)&g_InputState[3];
+  if ( !*(unsigned int *)&g_InputState[3] )
     current_object = g_RenderObjectsStart;
   if ( current_object <= g_RenderObjectsEnd )
     goto LABEL_15;
@@ -570,7 +574,7 @@ char ProcessNormalEvent()
                 1,
                 &g_RenderObjectsStart[-current_object->posY]) )
         {
-          if ( current_object == *(RenderObject **)&g_InputState[3] )
+          if ( current_object == (RenderObject *)(INT_PTR)*(unsigned int *)&g_InputState[3] )
             goto LABEL_15;
           goto LABEL_48;
         }
@@ -662,7 +666,7 @@ LABEL_31:
     }
     if ( v10 != 1 )
     {
-      if ( !*(INT_PTR *)&g_InputState[3] )
+      if ( !*(unsigned int *)&g_InputState[3] )
       {
         UpdateRenderObjectCache((RenderObject *)current_object);
         goto LABEL_48;
@@ -680,16 +684,16 @@ LABEL_40:
       }
       if ( !direction_index )
       {
-        *(INT_PTR *)&g_InputState[3] = (INT_PTR)current_object;
+        *(unsigned int *)&g_InputState[3] = (unsigned int)(INT_PTR)current_object;
         goto LABEL_15;
       }
     }
     break;
   }
-  if ( !*(INT_PTR *)&g_InputState[3] )
+  if ( !*(unsigned int *)&g_InputState[3] )
     goto LABEL_48;
 LABEL_53:
-  *(INT_PTR *)&g_InputState[3] = 0;
+  *(unsigned int *)&g_InputState[3] = 0;
 LABEL_15:
   g_GameFlags1 = 0;
   g_ResourceID2 = 0xFFFF;
