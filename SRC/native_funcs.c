@@ -428,6 +428,11 @@ BOOL __fastcall Native_GetSystemFlag(char a1, int a2, int a3)
 
 int __stdcall Native_SetSystemFlag(int a1)
 {
+  // The only audio-path marker kept in the engine: a1 picks both the flag and its new
+  // state (2/3 = sound off/on, 4/5 = music off/on) and tests\windows\audio.ps1 asserts
+  // that the panel buttons alternate between the two halves of each pair.
+  DBG_LOG("Native_SetSystemFlag: %d (soundFlag=%d soundVol=%d musicVol=%d)", a1, g_SoundEnabledFlag,
+          (unsigned __int8)g_PreviousScreen, BYTE1(g_PreviousScreen));
   switch ( a1 )
   {
     case 0:

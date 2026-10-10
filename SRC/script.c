@@ -134,23 +134,42 @@ static const unsigned char s_NativeArgc[57] = {
     1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 1, 0, 0, 1, 1,
     0, 1, 0, 0, 1, 1, 2, 2, 1, 1, 1, 1, 1, 1, 1,
     1, 2, 3, 1, 3, 1, 0, 1, 2, 1, 1, 1 };
+/* Calling convention per native index. Only Native_GetSystemFlag is __fastcall in the
+   original: its two leading parameters are taken from ECX/EDX and are unused, so the
+   FIRST script argument arrives on the stack as its third formal. On x86 that falls out
+   of the "push the whole VM stack and call" dance for free - the callee reads [esp+4],
+   which is the topmost push. On x64 the arguments are handed over positionally, so
+   without the shift below the native reads whatever sits three slots deeper (usually 0)
+   as its selector and answers for the wrong flag. That is exactly why the music and
+   sound buttons on the panel could turn things off but never back on, and why their
+   pictures never changed: the script asked "is music on?" and always got the error flag.
+   A __fastcall callee also cleans up only its stack formals, so it consumes two fewer
+   dwords than its declared arity. */
+static const unsigned char s_NativeFastcall[57] = {
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
 typedef intptr_t (__cdecl *pfnNativeWithArgs)(intptr_t, intptr_t, intptr_t);
 int __cdecl CallNativeWithVMStack(
     int (*func)(), g_VMStackEntry *vmStack, int vmTop)
 {
-  int i, idx, argc;
+  int i, idx, argc, shift;
   intptr_t args[3];   /* max arity in s_NativeArgc is 3 */
   int result;
   idx = -1;
   for (i = 0; i < 57; ++i)
     if (g_NativeFuncTable[i] == func) { idx = i; break; }
   argc = (idx >= 0) ? s_NativeArgc[idx] : 0;
+  shift = (idx >= 0 && s_NativeFastcall[idx]) ? 2 : 0;
   for (i = 0; i < 3; ++i) {
-    int k = vmTop - 1 - i;  /* formal #i <- vmStack[vmTop-1-i] (topmost push) */
+    /* formal #i <- vmStack[vmTop-1-i] (topmost push); a __fastcall native's stack
+       formals start at #2, so its first script argument lines up with formal #2. */
+    int k = vmTop - 1 - i + ((i >= shift) ? shift : 0);
     args[i] = (k >= 0) ? (intptr_t)vmStack[k] : 0;
   }
   result = (int)((pfnNativeWithArgs)func)(args[0], args[1], args[2]);
-  g_NativeArgsConsumed = argc;
+  g_NativeArgsConsumed = argc - shift;
   return result;
 }
 #endif

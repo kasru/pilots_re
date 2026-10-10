@@ -8,7 +8,6 @@
 param([int]$Seconds = 12)
 
 $SRC = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
-$LOG = Join-Path $SRC 'PILOT_RV_debug.log'
 
 Get-Process PILOT_RV,PILOT_RV_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
@@ -19,8 +18,16 @@ $out | Select-String -Pattern 'SUCCESS|BUILD FAILED|error [A-Z]|LNK[0-9]' | ForE
 
 if (-not (Test-Path (Join-Path $SRC 'PILOT_RV.EXE'))) { "PILOT_RV.EXE missing"; exit 1 }
 
+# Run from the scratch dir: it holds the data but not MOVIES. A 32-bit build DOES
+# find the intro AVI (WoW64 still ships the 32-bit MCI driver) and then spends the
+# whole measurement window on the roll, which shifts the baseline markers purely
+# because the videos happen to be installed. See rundir.ps1.
+. "$PSScriptRoot\rundir.ps1"
+$RUN = New-GameRunDir -ExeName 'PILOT_RV.EXE'
+$LOG = Join-Path $RUN 'PILOT_RV_debug.log'
+
 Remove-Item $LOG -ErrorAction SilentlyContinue
-$p = Start-Process -FilePath (Join-Path $SRC 'PILOT_RV.EXE') -WorkingDirectory $SRC -PassThru
+$p = Start-Process -FilePath "$RUN\PILOT_RV.EXE" -WorkingDirectory $RUN -PassThru
 Start-Sleep -Seconds $Seconds
 $alive = -not $p.HasExited
 if ($alive) { Stop-Process -Id $p.Id -Force }

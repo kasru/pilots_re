@@ -21,13 +21,19 @@ int __stdcall SwitchMusicTrack(int a1)
   if ( !byte_4162B5 )
     return 1;
   g_CurrentMusicIndex = a1;
+  DBG_LOG("SwitchMusicTrack: track=%d", a1);
   return (char)PlayMusicTrack(*((_DWORD *)&g_MusicTrackArray->trackData + a1));
 }
 
 int __stdcall TriggerSoundSlot(int a1)
 {
   if ( !g_RenderingInProgress && g_SoundEnabledFlag )
+  {
+    DBG_LOG("TriggerSoundSlot: slot=%d", a1);
     PlaySoundEffect(1, 0, -1, (int *)g_SoundSlotArray[a1].soundDataPtr);
+  }
+  else
+    DBG_LOG("TriggerSoundSlot: slot=%d muted (rendering=%d soundFlag=%d)", a1, g_RenderingInProgress, g_SoundEnabledFlag);
   return 1;
 }
 
@@ -147,6 +153,7 @@ int __stdcall GetWaveVolume(DWORD a1)
 
 int __stdcall SetWaveVolume(unsigned __int8 a1)
 {
+  DBG_LOG("SetWaveVolume: %d", a1);
   SdlWave_SetVolume(a1);
   if ( !a1 )
     ResetWave();                                // original also waveOutReset on mute
@@ -382,6 +389,7 @@ int __stdcall GetMidiVolume(DWORD a1)
 
 int __stdcall SetMidiVolume(unsigned __int8 a1)
 {
+  DBG_LOG("SetMidiVolume: %d", a1);
   g_MidiVolume = a1;
   SdlMidi_SetVolume(a1);                // was midiOutSetVolume + midiOutReset when muted
   return 1;                             // original: midiOutSetVolume(...) == 0

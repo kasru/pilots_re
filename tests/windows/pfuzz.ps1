@@ -11,15 +11,21 @@ public class G4 {
 }'
 
 $SRC  = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
-$LOG  = "$SRC\PILOT_RV_x64_debug.log"
 $SHOT = Join-Path $env:TEMP 'shots'
 New-Item -ItemType Directory -Force -Path $SHOT | Out-Null
 
 Get-Process PILOT_RV,PILOT_RV_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
+
+# Scratch dir holding the data but NOT MOVIES: the 64-bit AVI MCI driver is gone
+# from current Windows, so an available intro makes mciSendCommandA(MCI_OPEN)
+# crash the process at startup. See rundir.ps1.
+. "$PSScriptRoot\rundir.ps1"
+$RUN = New-GameRunDir -ExeName 'PILOT_RV_x64.EXE'
+$LOG = Join-Path $RUN 'PILOT_RV_x64_debug.log'
 Remove-Item $LOG -ErrorAction SilentlyContinue
 
-$p = Start-Process -FilePath "$SRC\PILOT_RV_x64.EXE" -WorkingDirectory $SRC -PassThru
+$p = Start-Process -FilePath "$RUN\PILOT_RV_x64.EXE" -WorkingDirectory $RUN -PassThru
 $h = [IntPtr]::Zero
 for ($i=0; $i -lt 150 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 200; $p.Refresh(); if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $h = $p.MainWindowHandle } }
 "window handle: $h"
