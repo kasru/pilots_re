@@ -111,8 +111,14 @@ void __stdcall CopyRectToBackbuffer(
     do
     {
       qmemcpy(v9, v10, 4 * v14);
-      v9 = &v9[4 * v14 - v11];
-      v10 += 4 * v14 + v12;
+      /* v14 is unsigned, so `4 * v14 - v11` evaluates as unsigned and normally
+         comes out as 0xFFFFFxxx ("negative") when the rect is wider than the
+         stride. x86 pointer arithmetic wrapped mod 2^32 and produced the -640
+         step the original relies on; LP64 adds the full 4G and lands ~4GB past
+         the backbuffer. Cast through int: same 32 bits on x86, proper negative
+         displacement on LP64. */
+      v9 = &v9[(int)(4 * v14 - v11)];
+      v10 += (int)(4 * v14 + v12);
       v18 = v13-- <= 1;
     }
     while ( !v18 );

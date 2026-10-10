@@ -279,7 +279,9 @@ snapshot_idx = 0;
       {                                         // If object has sprite flag (bit 1) and custom data flag (bit 3), read extra sprite data
         if ( (*obj_data_ptr & 2) != 0 && (*obj_data_ptr & 8) != 0 )
         {
-          sprite_data_size = HIBYTE(g_SpriteSlotArray[(unsigned __int8)obj_data_ptr[1]].baseData);
+          /* baseData is void*: 4 bytes on x86, 8 on LP64 - HIBYTE (sizeof-based)
+             would read byte 7 instead of the byte 3 the original reads. */
+          sprite_data_size = BYTE3(g_SpriteSlotArray[(unsigned __int8)obj_data_ptr[1]].baseData);
           sprite_alloc = (void *)AllocFromMemoryPool(sprite_data_size);
           *((_DWORD *)obj_data_ptr + 3) = (INT_PTR)sprite_alloc;
           ReadFromFile(sprite_data_size, sprite_alloc);
@@ -353,7 +355,7 @@ char __stdcall SaveSnapshotsToFile(int a1)
         do
         {
           if ( (*v4 & 2) != 0 && (*v4 & 8) != 0 )
-            WriteToFile(HIBYTE(g_SpriteSlotArray[(unsigned __int8)v4[1]].baseData), (void *)(INT_PTR)*((_DWORD *)v4 + 3));
+            WriteToFile(BYTE3(g_SpriteSlotArray[(unsigned __int8)v4[1]].baseData), (void *)(INT_PTR)*((_DWORD *)v4 + 3));
           v4 += 16;
         }
         while ( v6-- );

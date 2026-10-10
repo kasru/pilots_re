@@ -84,7 +84,7 @@ char __stdcall InitGraphicsMode(int updateDirtyRegions, int fontIndex)
     if ( v2->type == 1 )
       fontData = v2->fontData;
     else
-      fontData = *(void **)v2->fontData;
+      fontData = (void *)(INT_PTR)*(unsigned int *)v2->fontData;// first slot of font data is a 32-bit pointer in game data
     g_CursorObject.spriteDataPtr = fontData;
   }
   return 1;
@@ -380,16 +380,16 @@ char __stdcall GameOpcodeDispatcher(
         g_SpriteSlotArray[slotIdx].scriptPtr = (void *)(INT_PTR)(dataOffset + opcodeData);// OPCODE_SET_SPRITE_SCRIPT_PTR: Set sprite script pointer (base + offset)
         break;
       case OPCODE_SET_SPRITE_SUBOBJECT_ARRAY:
-        g_SpriteSlotArray[slotIdx].subObjectArray = (void **)(INT_PTR)opcodeData;// OPCODE_SET_SPRITE_SUBOBJECT_ARRAY: Set pointer to sub-object pointer array
+        g_SpriteSlotArray[slotIdx].subObjectArray = (unsigned int *)(INT_PTR)opcodeData;// OPCODE_SET_SPRITE_SUBOBJECT_ARRAY: Set pointer to sub-object pointer array
         break;
       case OPCODE_SET_SUBOBJECT_PTR:
-        g_SpriteSlotArray[slotIdx].subObjectArray[subIdx] = (void *)(INT_PTR)opcodeData;// OPCODE_SET_SUBOBJECT_PTR: Set individual sub-object pointer
+        g_SpriteSlotArray[slotIdx].subObjectArray[subIdx] = (unsigned int)opcodeData;// OPCODE_SET_SUBOBJECT_PTR: Set individual sub-object pointer (32-bit slot, see SpriteSlot.subObjectArray)
         break;
       case OPCODE_SET_SUBOBJECT_DATA_PTR:
-        *((_DWORD *)g_SpriteSlotArray[slotIdx].subObjectArray[subIdx] + 1) = dataOffset + opcodeData;// OPCODE_SET_SUBOBJECT_DATA_PTR: Set data ptr inside sub-object (field at offset +4)
+        *((_DWORD *)(INT_PTR)g_SpriteSlotArray[slotIdx].subObjectArray[subIdx] + 1) = dataOffset + opcodeData;// OPCODE_SET_SUBOBJECT_DATA_PTR: Set data ptr inside sub-object (field at offset +4)
         break;
       case OPCODE_SET_SUBOBJECT_SCRIPT_PTR:
-        subObjData = g_SpriteSlotArray[slotIdx].subObjectArray[subIdx];// OPCODE_SET_SUBOBJECT_SCRIPT_PTR: Walk past sprite flags and pattern groups to find script ptr slot, then set it
+        subObjData = (_DWORD *)(INT_PTR)g_SpriteSlotArray[slotIdx].subObjectArray[subIdx];// OPCODE_SET_SUBOBJECT_SCRIPT_PTR: Walk past sprite flags and pattern groups to find script ptr slot, then set it
         scriptOffset = 1;                       // scriptOffset starts at 1 (after header dword)
         if ( (*subObjData & 1) != 0 )           // If bit0 (precondition): skip 1 extra dword (precondition script ptr)
           scriptOffset = 2;
@@ -691,8 +691,10 @@ char __stdcall ExecuteGameLoop(char skipCapture, int snapIdx)
     {
       do
       {
-        srcObjPtr = objDataPtr++;               // Point to source object in snapshot (16 bytes)
+        srcObjPtr = objDataPtr;               // Point to source object in snapshot (16 bytes)
+        objDataPtr = (RenderObject *)((char *)objDataPtr + 16);// Snapshot objects are packed 16 bytes on every arch (RenderObject is 20 bytes on LP64)
         destObjPtr = AllocRenderObject();       // Allocate new render object slot
+        *(INT_PTR *)&destObjPtr->spriteDataPtr = 0;// Zero spriteDataPtr incl. its high half on LP64 (the DWORD copy below overwrites the low 32 bits)
         *(_DWORD *)&destObjPtr->flags = *(_DWORD *)&srcObjPtr->flags;// Copy object data: 4 DWORDs (16 bytes) from snapshot to allocated slot
         srcObjPtr = (RenderObject *)((char *)srcObjPtr + 4);
         *(_DWORD *)&destObjPtr->animLink = *(_DWORD *)&srcObjPtr->flags;

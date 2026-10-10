@@ -160,8 +160,13 @@ char *v1;
 
 int SetupMemoryContext()
 {
-  g_RenderObjectsStart = (RenderObject *)(g_MemoryPoolCurrent + 4 * g_MemoryPoolAvailable - 16);
-  return UpdateRenderObjectBounds((RenderObject *)(g_MemoryPoolCurrent + 4 * g_MemoryPoolAvailable - 16));
+  /* The literal 16 below is sizeof(RenderObject) on x86. RenderObject carries a void*
+     (spriteDataPtr), so on LP64 it is 20 bytes: pinning the top object 16 bytes below
+     the pool end would let it straddle the boundary and, combined with the /16 index
+     math in render.c, walk the descending render-object region into foreign memory.
+     (int)sizeof(RenderObject) == 16 on x86, so this stays byte-identical there. */
+  g_RenderObjectsStart = (RenderObject *)(g_MemoryPoolCurrent + 4 * g_MemoryPoolAvailable - (int)sizeof(RenderObject));
+  return UpdateRenderObjectBounds((RenderObject *)(g_MemoryPoolCurrent + 4 * g_MemoryPoolAvailable - (int)sizeof(RenderObject)));
 }
 
 RenderObject *AllocRenderObject()

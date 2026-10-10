@@ -184,7 +184,9 @@ int __stdcall DeleteTextCharacters(int char_count)
   do
   {
     char_object = g_TextCharacterObjects[--g_TextInputLength];
-    g_TextRenderX -= ***(unsigned __int16 ***)(char_object + 12) - *(__int16 *)(*(INT_PTR *)(char_object + 12) + 4);
+    /* First term: header pointer is a 32-bit slot at the start of the sprite data
+       (was "***(u16***)(char_object+12)", i.e. a pointer-width read on LP64). */
+    g_TextRenderX -= *(unsigned __int16 *)(INT_PTR)*(unsigned int *)*(INT_PTR *)(char_object + 12) - *(__int16 *)(*(INT_PTR *)(char_object + 12) + 4);
     result = RemoveAndFreeRenderObject((RenderObject *)char_object);
     --char_count;
   }

@@ -26,7 +26,14 @@ typedef int                _UNKNOWN;
 
 /* Low/high word of a value */
 #define LOWORD(x)   (*((_WORD*)&(x)))
-#define HIWORD(x)   (*(((_WORD*)&(x)) + (sizeof(x)/sizeof(_WORD)) - 1))
+/* Win32 HIWORD semantics: bits 16..31 of the LOW DWORD. The IDA-style
+   *((_WORD*)&x) + sizeof(x)/2 - 1 picked the top word of whatever width x is,
+   which is fine for the 32-bit int/short args but silently broke on LP64 for
+   the 64-bit ones (LPARAM lParam -> bits 48..63 == 0, so every WM_SIZE/WM_*Y
+   read 0; BYTE* tileEntry -> the packed tile value's high word was lost).
+   Casting through unsigned int first truncates to the low DWORD, which on x86
+   yields exactly the bits 16..31 the old macro returned. */
+#define HIWORD(x)   ((unsigned int)(((unsigned int)(x) >> 16) & 0xFFFF))
 
 /* Low/high dword of a 64-bit value */
 #define LODWORD(x)  (*((_DWORD*)&(x)))

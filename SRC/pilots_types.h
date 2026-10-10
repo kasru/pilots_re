@@ -60,7 +60,9 @@ struct SpriteSlot
 {
     void *baseData;
     void *dataPtr;
-    void **subObjectArray;
+    unsigned int *subObjectArray;   /* Sub-object pointer table: fixed 32-bit slots (game-data layout)
+                                       located right before the first sub-object record; indexing it as
+                                       void** would step 8 bytes on LP64 and clobber that record. */
     void *scriptPtr;
 };
 

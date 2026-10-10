@@ -2,6 +2,30 @@
 
 #pragma pack(push, 2)
 
+/* Snapshot object record: a fixed 16 bytes on every arch — flags/dword, animLink+parentIndex,
+   posX+posY and the low half of spriteDataPtr. RenderObject is 20 bytes on LP64 because its
+   spriteDataPtr widens to 8 bytes, so copying whole RenderObject values into the snapshot
+   would stride 20 through a buffer sized and written to disk as 16*objectCount. */
+struct SnapshotObjectRecord
+{
+  _DWORD f0;
+  _DWORD f1;
+  _DWORD f2;
+  _DWORD f3;
+};
+
+/* LP64 pool-layout scaling for the slot arrays.
+   AllocMemoryChunk() reserves its size argument and returns the cursor AFTER the
+   reserved block, so the array assigned right before a call gets its usable bytes
+   from that NEXT call — i.e. the literal multiplier in each argument is the size of
+   the PRECEDING array's element on x86. On LP64 those elements grew (pointers went
+   4->8 bytes) while the byte budgets stayed x86-identical, so the slots walked off
+   their region and into whatever was allocated after it.
+   `bytesX86 * (int)sizeof(T) / x86StructSize` multiplies by the LP64/x86 size ratio;
+   on x86 the multiply and divide cancel exactly, so the reserved byte count is
+   unchanged there and only LP64 layouts shift. */
+#define POOL_SLOTS(bytesX86, x86StructSize, T) ((bytesX86) * (int)sizeof(T) / (x86StructSize))
+
 /* ---- resource module ---- */
 
 void *__stdcall InitFileReadBuffer(void *buffer)
@@ -247,8 +271,8 @@ int __stdcall CaptureScreenSnapshot(int snapIdx)
   int i; // ebx
   RenderObject *currentObjPtr; // [esp+10h] [ebp-14h]
   RenderObject *objScanAddr; // [esp+10h] [ebp-14h]
-  RenderObject *objDataPtr; // [esp+14h] [ebp-10h]
-  RenderObject *objDataPtr2; // [esp+14h] [ebp-10h]
+  struct SnapshotObjectRecord *objDataPtr; // [esp+14h] [ebp-10h]
+  struct SnapshotObjectRecord *objDataPtr2; // [esp+14h] [ebp-10h]
   unsigned __int16 savedIndex; // [esp+18h] [ebp-Ch]
   int objectFlags; // [esp+20h] [ebp-4h]
   int snapshotIndexa; // [esp+28h] [ebp+4h]
@@ -291,7 +315,7 @@ LABEL_8:
   }
   while ( snapshotIndexa < g_ScreenHeight );
   decompressedData = (INT_PTR)snapshot->decompressedData;
-  objDataPtr = (RenderObject *)(decompressedData + 2 * g_ScreenPixelCount);// objDataPtr (uint32_t*) - Pointer to write render objects as DWORDs. Each object = 4 DWORDs (16 bytes). Points to position after screen data in snapshot buffer.
+  objDataPtr = (struct SnapshotObjectRecord *)(decompressedData + 2 * g_ScreenPixelCount);// objDataPtr - Pointer to write render objects as DWORDs. Each object = 4 DWORDs (16 bytes). Points to position after screen data in snapshot buffer.
   snapshotIndexb = 0;
   for ( objScanAddr = g_RenderObjectsStart; objScanAddr > g_RenderObjectsEnd; --objScanAddr )// Iterate through all render objects from start to end
   {
@@ -304,7 +328,7 @@ LABEL_8:
       savedIndex = snapshotIndexb;
       if ( objScanAddr->posX == 0xFFFF )        // Check if root object: prevLink == 0xFFFF means no parent above this
       {
-        *objDataPtr++ = *objScanAddr;
+        *objDataPtr++ = *(struct SnapshotObjectRecord *)objScanAddr;
         objScanAddr->flags = 0;
       }
       else
@@ -312,13 +336,13 @@ LABEL_8:
         parentObjAddr = &g_RenderObjectsStart[-objScanAddr->posX];// Has parent reference: calculate parent address from index stored in prevLink
         objScanAddr->posX = snapshotIndexb + 1; // Update link indices: convert from array indices to snapshot indices
         objScanAddr->posY = snapshotIndexb + 1;
-        *objDataPtr = *objScanAddr;             // Copy object data: 4 DWORDs = 16 bytes
+        *objDataPtr = *(struct SnapshotObjectRecord *)objScanAddr; // Copy object data: 4 DWORDs = 16 bytes
         objDataPtr2 = objDataPtr + 1;           // objDataPtr2 (uint32_t*) - Secondary pointer for writing parent object data when handling hierarchies.
         objScanAddr->flags = 0;                 // Mark as free: set flags to 0 (object now saved to snapshot)
         ++snapshotIndexb;
         parentObjAddr->parentIndex = savedIndex;// Update parent's child index to point to this saved position
         parentObjAddr->flags |= 0x80u;          // Set bit 7 on parent: flag that child has been saved
-        *objDataPtr2 = *parentObjAddr;
+        *objDataPtr2 = *(struct SnapshotObjectRecord *)parentObjAddr;
         objDataPtr = objDataPtr2 + 1;
         parentObjAddr->flags = 0;
       }
@@ -330,7 +354,7 @@ LABEL_8:
         if ( (childScanAddr->flags & 7) == 1 && childScanAddr->parentIndex == i )
         {
           childScanAddr->parentIndex = savedIndex;// Update child's parent index to snapshot position
-          *objDataPtr++ = *childScanAddr;
+          *objDataPtr++ = *(struct SnapshotObjectRecord *)childScanAddr;
           childScanAddr->flags = 0;
           ++snapshotIndexb;
         }
@@ -341,7 +365,7 @@ LABEL_8:
       decompressedData = objectFlags;
       if ( (objectFlags & 4) == 0 )             // Check skip flag (bit 2): only save if flag is clear
       {
-        *objDataPtr++ = *objScanAddr;
+        *objDataPtr++ = *(struct SnapshotObjectRecord *)objScanAddr;
         objScanAddr->flags = 0;
         ++snapshotIndexb;
       }
@@ -364,7 +388,13 @@ char ProcessSpriteData()
   DBG_LOG("ProcessSpriteData: magic=0x%08X (expect 0x80000016)", (unsigned int)dword_4161F0);
   if ( dword_4161F0 != -2147483626 )
     return ShowFileError();
-  *((_BYTE *)&g_SnapshotBasePtr + g_TemplateDataSize + 3) = 0;
+  /* Was "&g_SnapshotBasePtr + g_TemplateDataSize + 3". g_SnapshotBasePtr sits right
+     before dword_4161F0, so on x86 (4-byte INT_PTR) that equals
+     "&dword_4161F0 + g_TemplateDataSize - 1" -- the terminating NUL of the byte just
+     read into the config block (index 132 == the NUL after the window title). On LP64
+     g_SnapshotBasePtr is 8 bytes wide, which shifts the target 4 bytes back and pokes
+     a NUL into the middle of the title instead. */
+  *((_BYTE *)&dword_4161F0 + g_TemplateDataSize - 1) = 0;
   g_MemoryPool.poolSizeBytes = dword_4161F4 << 10;
   g_MemoryPool.frameDataSize = dword_416200 * dword_4161FC;
   DBG_LOG("ProcessSpriteData: pool.poolSizeBytes=%d pool.frameDataSize=%d",
@@ -423,24 +453,26 @@ void *InitializeFrameBuffers()
   g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(g_ScreenHeight << (g_TileMapShift + 1));
   v2 = (_BYTE *)g_TemplateDataBuffer;
   g_ScreenSnapshotArray = (ScreenSnapshot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(16 * dword_4161E4);
+  /* Slot-array byte budgets: see POOL_SLOTS(). Each argument sizes the array that was
+     assigned on the line above, so the element type there is the one to scale by. */
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(16 * dword_4161E4, 16, ScreenSnapshot));
   g_TileMapPtr = (INT_PTR)g_TemplateDataBuffer;
   g_MapMaxX = g_ScreenWidth - 1;
   g_NegScreenWidth = -g_ScreenWidth;
   g_MapMaxY = g_ScreenHeight - 1;
   g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(g_ScreenPixelCount);
   g_SpriteSlotArray = (SpriteSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(16 * dword_41617C);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(16 * dword_41617C, 16, SpriteSlot));
   g_AnimationSlotArray = (AnimationSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(16 * dword_416180);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(16 * dword_416180, 16, AnimationSlot));
   g_FontSlotArray = (FontSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(8 * dword_416184);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(8 * dword_416184, 8, FontSlot));
   g_SoundSlotArray = (SoundSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(8 * dword_416188);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(8 * dword_416188, 8, SoundSlot));
   g_MusicTrackArray = (MusicTrackSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(4 * dword_41618C);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(4 * dword_41618C, 8, MusicTrackSlot));
   g_OverlaySlotArray = (OverlaySlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(8 * dword_416190);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(8 * dword_416190, 8, OverlaySlot));
   result = ClearBuffer((_BYTE *)g_TemplateDataBuffer - v2, v2);
   opcodeDataPtr = (INT_PTR)g_TemplateDataBuffer;
   g_GlobalVarsPtr = (INT_PTR)g_TemplateDataBuffer;
@@ -478,7 +510,7 @@ void ReallocFrameBuffers(void)
      GameMainLoop call because ResetMemoryPool only moves the cursor,
      not zeroing memory, and InitializeFrameBuffers is not called again.
      We just advance the pool cursor past them. */
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(16 * dword_4161E4);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(16 * dword_4161E4, 16, ScreenSnapshot));
   g_TileMapPtr = (INT_PTR)g_TemplateDataBuffer;
   g_MapMaxX = g_ScreenWidth - 1;
   g_NegScreenWidth = -g_ScreenWidth;
@@ -487,17 +519,17 @@ void ReallocFrameBuffers(void)
   /* Slot arrays start here — these MUST be zeroed to prevent stale pointers */
   slotStart = (_BYTE *)g_TemplateDataBuffer;
   g_SpriteSlotArray = (SpriteSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(16 * dword_41617C);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(16 * dword_41617C, 16, SpriteSlot));
   g_AnimationSlotArray = (AnimationSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(16 * dword_416180);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(16 * dword_416180, 16, AnimationSlot));
   g_FontSlotArray = (FontSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(8 * dword_416184);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(8 * dword_416184, 8, FontSlot));
   g_SoundSlotArray = (SoundSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(8 * dword_416188);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(8 * dword_416188, 8, SoundSlot));
   g_MusicTrackArray = (MusicTrackSlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(4 * dword_41618C);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(4 * dword_41618C, 8, MusicTrackSlot));
   g_OverlaySlotArray = (OverlaySlot *)g_TemplateDataBuffer;
-  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(8 * dword_416190);
+  g_TemplateDataBuffer = (INT_PTR)AllocMemoryChunk(POOL_SLOTS(8 * dword_416190, 8, OverlaySlot));
   /* Only clear the slot arrays, NOT the snapshot/tilemap data above */
   ClearBuffer((_BYTE *)g_TemplateDataBuffer - slotStart, slotStart);
   opcodeDataPtr = (INT_PTR)g_TemplateDataBuffer;

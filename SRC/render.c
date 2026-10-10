@@ -20,7 +20,9 @@ int __stdcall RemoveChildTextObjects(INT_PTR parent_object_addr)
   if ( (*(_BYTE *)(parent_object_addr + 3) & 2) != 0 )
   {
     *(_BYTE *)(parent_object_addr + 3) &= ~2u;
-    result = ((INT_PTR)g_RenderObjectsStart - parent_object_addr) / 16;
+    /* byte offset -> render-object index. 16 is sizeof(RenderObject) on x86; LP64 makes
+       it 20 (spriteDataPtr), so the division must follow the struct, not the literal. */
+    result = ((INT_PTR)g_RenderObjectsStart - parent_object_addr) / (int)sizeof(RenderObject);
     parent_index = result;
     for ( current_object = g_RenderObjectsStart; current_object > g_RenderObjectsEnd; --current_object )
     {
@@ -265,7 +267,8 @@ __int16 __stdcall CreateTileObject(int a1, int a2, __int16 a3)
       ClearBuffer(Size, v9);
       *(_BYTE *)v8 |= 8u;
     }
-    v14 = ((INT_PTR)g_RenderObjectsStart - v8) / 16;
+    /* byte offset -> render-object index; 16 is sizeof(RenderObject) on x86 (see above) */
+    v14 = ((INT_PTR)g_RenderObjectsStart - v8) / (int)sizeof(RenderObject);
     if ( LOBYTE(v7->baseData) == 3 && !g_LastCheckedRenderObject )
       g_LastCheckedRenderObject = (RenderObject *)v8;
   }
@@ -536,7 +539,7 @@ char ProcessNormalEvent()
   unsigned int direction_index; // esi
   int v10; // eax
   RenderObject *current_object; // [esp+10h] [ebp-Ch]
-  int **sprite_command_list; // [esp+14h] [ebp-8h]
+  unsigned int *sprite_command_list; // [esp+14h] [ebp-8h]
 
   current_object = *(RenderObject **)&g_InputState[3];
   if ( !*(INT_PTR *)&g_InputState[3] )
@@ -613,7 +616,7 @@ char ProcessNormalEvent()
          ? *(INT_PTR *)&current_object->spriteDataPtr
          : (INT_PTR)&current_object->spriteDataPtr;
       g_CurrentObjectData = v7;
-      sprite_command_list = (int **)sprite_slot->subObjectArray;
+      sprite_command_list = sprite_slot->subObjectArray;
       g_RenderComplete = 0;
       if ( sprite_command_list )
         break;
@@ -650,7 +653,7 @@ LABEL_31:
           g_SpriteDirectionIndex += 4;
         g_TileProcessor = g_SpriteTransformTable[g_SpriteDirectionIndex];
         g_ContinueRendering = 0;
-        v10 = RenderSprite(0, *sprite_command_list);
+        v10 = RenderSprite(0, (int *)(INT_PTR)*sprite_command_list);
         if ( v10 )
           break;
       }
@@ -670,7 +673,7 @@ LABEL_31:
     {
       direction_index = 0;
 LABEL_40:
-      if ( *(char *)*sprite_command_list >= 0 )
+      if ( *(char *)(INT_PTR)*sprite_command_list >= 0 )
       {
         ++sprite_command_list;
         continue;
@@ -898,7 +901,7 @@ char RenderDirtyRegions()
             {
               v7 = (char *)*current_object_ptr;
               v8 = *(INT_PTR *)(*current_object_ptr + 12);
-              sprite_header = *(unsigned __int16 **)v8;
+              sprite_header = (unsigned __int16 *)(INT_PTR)*(unsigned int *)v8;// 32-bit pointer slot in game data
               v9 = *((__int16 *)v7 + 4) - g_CameraOffsetX;
               v10 = *((__int16 *)v7 + 5) - g_CameraOffsetY;
               render_flags = *v7;
@@ -1118,11 +1121,14 @@ LABEL_9:
     g_TileProcessor((INT_PTR)&tileEntry);                // Transform tile coordinates (absolute or relative)
     if ( useAbsoluteCoords )                    // Read tile map value at computed coords
     {
-      tileMapValue = *(_WORD *)(INT_PTR)(g_TileMapBuffer + 2 * (BYTE2(tileEntry) + (HIBYTE(tileEntry) << g_TileMapShift)));
+      /* tileEntry holds a packed 32-bit value zero-extended into a pointer-width
+         local. HIBYTE/SHIBYTE pick sizeof(x)-1, which is byte 3 of the value on
+         x86 but byte 7 (always 0 here) on LP64 - use the fixed byte index. */
+      tileMapValue = *(_WORD *)(INT_PTR)(g_TileMapBuffer + 2 * (BYTE2(tileEntry) + (BYTE3(tileEntry) << g_TileMapShift)));
     }
     else
     {
-      HIDWORD(v2) = (((g_ScreenHeight + g_CurrentTileY_Wrapped + SHIBYTE(tileEntry)) % g_ScreenHeight) << g_TileMapShift)
+      HIDWORD(v2) = (((g_ScreenHeight + g_CurrentTileY_Wrapped + SBYTEn(tileEntry, 3)) % g_ScreenHeight) << g_TileMapShift)
                   + (g_ScreenWidth + g_CurrentTileX_Wrapped + SBYTE2(tileEntry)) % g_ScreenWidth;
       tileMapValue = *(_WORD *)(INT_PTR)(g_TileMapBuffer + 2 * HIDWORD(v2));
     }
@@ -1466,7 +1472,7 @@ int __stdcall CalculateObjectPosition(RenderObject *object)
   int animLink_high; // [esp+24h] [ebp-4h]
 
   spriteDataPtr = (__int16 *)object->spriteDataPtr;
-  v9 = *(unsigned __int16 **)spriteDataPtr;
+  v9 = (unsigned __int16 *)(INT_PTR)*(unsigned int *)spriteDataPtr;// 32-bit pointer slot in game data
   animLink_low = LOBYTE(object->animLink);
   v10 = g_TileWidth * animLink_low;
   animLink_high = HIBYTE(object->animLink);
@@ -1516,8 +1522,8 @@ int __stdcall AddObjectToDirtyRegions(RenderObject *object)
     nextLink -= v1[3];
   }
   return AddDirtyRegion(
-           nextLink + *(unsigned __int16 *)(*(INT_PTR *)v1 + 2),
-           prevLink + **(unsigned __int16 **)v1,
+           nextLink + *(unsigned __int16 *)((INT_PTR)*(unsigned int *)v1 + 2),
+           prevLink + *(unsigned __int16 *)(INT_PTR)*(unsigned int *)v1,
            nextLink,
            prevLink);
 }
@@ -1562,7 +1568,7 @@ int __stdcall SetObjectSpriteByDirection(char a1, RenderObject *object, INT_PTR 
         if ( (*(_BYTE *)(a3 + 1) & 8) == 0 || g_CurrentTileX_Wrapped != g_PreviousTileX )
         {
 LABEL_42:
-          object->spriteDataPtr = *(void **)(*(INT_PTR *)(a3 + 4) + 4 * v3);
+          object->spriteDataPtr = (void *)(INT_PTR)*(unsigned int *)(*(INT_PTR *)(a3 + 4) + 4 * v3);// Frame table slot is a 32-bit pointer in game data
           goto LABEL_43;
         }
         break;
@@ -1659,7 +1665,7 @@ FontSlot *__stdcall FindFontSlotByPointer(INT_PTR a1)
     p_fontData = &result->fontData;
     do
     {
-      p_fontData -= 2;
+      p_fontData = (void **)((char *)p_fontData - sizeof(FontSlot));// was "-= 2" pointer slots == one FontSlot on x86
       --result;
     }
     while ( *p_fontData > v1 );
@@ -1702,7 +1708,7 @@ int __stdcall CheckObjectHitTest(int y, int x, RenderObject *object)
     v4 = &g_RenderObjectsStart[-posY];
     if ( (__int16)v4->posX <= x && (__int16)v4->posY <= y )
     {
-      v5 = *(unsigned __int16 **)v4->spriteDataPtr;
+      v5 = (unsigned __int16 *)(INT_PTR)*(unsigned int *)v4->spriteDataPtr;// 32-bit pointer slot in game data
       if ( *v5 + (__int16)v4->posX >= x && v5[1] + (__int16)v4->posY >= y )
         return 1;
     }
