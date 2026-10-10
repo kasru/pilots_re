@@ -17,9 +17,8 @@ New-Item -ItemType Directory -Force -Path $SHOT | Out-Null
 Get-Process PILOT_RV,PILOT_RV_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
-# Scratch dir holding the data but NOT MOVIES: the 64-bit AVI MCI driver is gone
-# from current Windows, so an available intro makes mciSendCommandA(MCI_OPEN)
-# crash the process at startup. See rundir.ps1.
+# Scratch dir holding the data but NOT MOVIES: keeps the run deterministic
+# instead of depending on whether the videos are installed (see rundir.ps1).
 . "$PSScriptRoot\rundir.ps1"
 $RUN = New-GameRunDir -ExeName 'PILOT_RV_x64.EXE'
 $LOG = Join-Path $RUN 'PILOT_RV_x64_debug.log'

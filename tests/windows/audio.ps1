@@ -65,11 +65,9 @@ if ($Build) {
   cmd /c "`"$SRC\build_sdl_x64_debug.bat`"" 2>&1 | Select-String -Pattern 'SUCCESS|BUILD FAILED| error ' | ForEach-Object { $_.Line }
 }
 
-# Scratch dir holding the data but NOT MOVIES - see rundir.ps1 for why the videos
-# have to stay out of reach (the 64-bit AVI MCI driver is gone from current
-# Windows, so an available intro makes OpenMCIVideoDevice crash the process
-# instead of skipping playback). Build first, so the hardlink picks up the
-# freshly built exe.
+# Scratch dir holding the data but NOT MOVIES: keeps the run deterministic
+# instead of depending on whether the videos are installed (see rundir.ps1).
+# Build first, so the hardlink picks up the freshly built exe.
 . "$PSScriptRoot\rundir.ps1"
 $RUN = New-GameRunDir -ExeName 'PILOT_RV_x64.EXE'
 $LOG = Join-Path $RUN 'PILOT_RV_x64_debug.log'

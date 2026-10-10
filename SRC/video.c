@@ -405,6 +405,37 @@ int __stdcall ExecuteVideoPlayback(int videoIndex)
   return commandResult;
 }
 
+/* Every mciSendCommandA call in this file goes through MciSendCommandGuarded.
+   mciSendCommandA can fault INSIDE winmm instead of returning an MCIERROR. On
+   64-bit Windows the AVI MCI path is broken: mciavi32.dll is on disk, but
+   MCI_OPEN of any existing .AVI kills the process - Windows Error Reporting
+   names WINMM.dll as the faulting module (offset 0x176fa), while the very same
+   call from a 32-bit process opens the very same file through SysWOW64 just
+   fine. Since no error code ever comes back, "skip the video" is only reachable
+   by catching the fault; once one is caught, MCI counts as unusable for the
+   rest of the run and every video is skipped. The original binary had no such
+   path - a broken MCI simply meant a dead process. */
+static volatile int s_MciUnavailable;
+
+static MCIERROR MciSendCommandGuarded(MCIDEVICEID idDevice, UINT uMsg, DWORD dwFlags, DWORD_PTR dwParam)
+{
+  MCIERROR mcierr; // eax
+
+  if ( s_MciUnavailable )
+    return (MCIERROR)-1;                              // never reach winmm again
+  __try
+  {
+    mcierr = mciSendCommandA(idDevice, uMsg, dwFlags, dwParam);
+  }
+  __except ( EXCEPTION_EXECUTE_HANDLER )
+  {
+    DBG_LOG("MciSendCommandGuarded: uMsg=0x%X faulted inside winmm, video playback disabled", uMsg);
+    s_MciUnavailable = 1;
+    mcierr = (MCIERROR)-1;
+  }
+  return mcierr;
+}
+
 char __stdcall CheckMCIError(MCIERROR mcierr)
 {
   CHAR pszText[256]; // [esp+0h] [ebp-100h] BYREF
@@ -423,7 +454,9 @@ int __stdcall SendMCICommand(DWORD_PTR dwParam2, DWORD_PTR dwParam1, UINT uMsg)
 
   if ( !g_MCIDeviceID )
     return 0;
-  v3 = mciSendCommandA(g_MCIDeviceID, uMsg, dwParam1, dwParam2);
+  v3 = MciSendCommandGuarded((MCIDEVICEID)g_MCIDeviceID, uMsg, (DWORD)dwParam1, dwParam2);
+  if ( v3 == (MCIERROR)-1 )
+    return 0;                                         // winmm faulted: skip, no error dialog
   return CheckMCIError(v3);
 }
 
@@ -778,8 +811,15 @@ char OpenMCIVideoDevice()
     dwParam2[3] = (DWORD_PTR)FileName;
     dwParam2[5] = 0x40000000;
     dwParam2[6] = (DWORD_PTR)g_MainWindow;
-    v1 = mciSendCommandA(0, 0x803u, 0x30200u, (DWORD_PTR)dwParam2);
+    v1 = MciSendCommandGuarded(0, 0x803u, 0x30200u, (DWORD_PTR)dwParam2);
     DBG_LOG("OpenMCIVideoDevice: mciSendCommandA returned %d, dwParam2[1]=%u", v1, (unsigned)dwParam2[1]);
+    if ( v1 == (MCIERROR)-1 )
+    {
+      // winmm faulted instead of answering. g_MCIDeviceID stays 0, so every
+      // caller - PlayIntroVideo and the whole SendMCICommand path - skips.
+      DBG_LOG("OpenMCIVideoDevice: MCI unusable, skipping video playback");
+      return 0;
+    }
     result = CheckMCIError(v1);
     DBG_LOG("OpenMCIVideoDevice: CheckMCIError returned %d", (int)result);
     if ( result )

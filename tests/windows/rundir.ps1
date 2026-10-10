@@ -9,18 +9,17 @@
 # Why a scratch dir at all. main.c resolves .\PILOTS.EXE (the game's own data file)
 # and the .\movies\... video lookup against the process CWD, so the exe has to be
 # started from a directory that holds the game data. That directory deliberately
-# does NOT hold MOVIES, because:
+# does NOT hold MOVIES, so the intro is skipped and the run is deterministic:
 #
-#  - on current Windows the AVI MCI driver (avivideo) exists only in the 32-bit
-#    flavour. The 64-bit build therefore crashes inside mciSendCommandA(MCI_OPEN)
-#    as soon as movies\intro.AVI is present - it faults even with a zeroed
-#    parameter block, which an isolated P/Invoke probe confirmed outside the game.
-#    A test about the toolbar toggles must not depend on that.
+#  - on 64-bit Windows the AVI MCI path faults inside winmm (see video.c,
+#    MciSendCommandGuarded). video.c now catches that and skips every video, so
+#    this is no longer about surviving the startup - but a test that has to
+#    measure timing should not depend on whether the videos happen to be
+#    installed either way.
 #
 #  - a 32-bit build DOES play the intro, and then spends its whole measurement
 #    window on the roll, so x86check's timing markers (auxMainLoop, GameMainLoop)
-#    shift purely because the videos happen to be installed. Skipping the intro
-#    keeps the baseline independent of optional game data.
+#    shift purely because the videos are present.
 #
 # Files are hardlinked, not copied: the data file is ~15 MB and the directory is
 # rebuilt on every run. mklink /H needs no elevation (only symlinks do).
