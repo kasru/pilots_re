@@ -502,6 +502,18 @@ int PlayMCIVideo()
   DWORD_PTR dwParam2[3]; // [esp+0h] [ebp-Ch] BYREF
 
   dwParam2[0] = (unsigned __int16)g_MainWindow;
+#if defined(_WIN64)
+  /* MCI_PLAY_PARMS.dwCallback is where mciavi32 posts MM_MCINOTIFY (VideoWndProc
+     case 0x3B9), and that message is the ONLY thing that clears g_VideoPlaying
+     and so ends PlayIntroVideo's wait loop. The 16-bit truncation above assumes
+     an HWND fits in a word - true on Win9x, where mciavi32 also fell back to the
+     AVI window's parent, so x86 keeps working with it. On 64-bit Windows handles
+     are far wider than 16 bits (0x802F0 truncated to 0x2F0), the truncated value
+     names no window, MM_MCINOTIFY never arrives and the game hangs on the last
+     frame forever. Pass the whole handle instead - dwCallback is DWORD_PTR on
+     both arches, so this is lossless, and x86 is left byte-identical. */
+  dwParam2[0] = (DWORD_PTR)g_MainWindow;
+#endif
   return SendMCICommand((DWORD_PTR)dwParam2, 1u, 0x806u);
 }
 
@@ -1003,7 +1015,7 @@ char __stdcall PlayIntroVideo(int windowHeight, int windowWidth, int windowY, in
           Sleep(5);
         }
       }
-      while ( g_VideoPlaying );
+      while ( g_VideoPlaying );                     // ONLY MM_MCINOTIFY (VideoWndProc 0x3B9) ends this - see PlayMCIVideo's dwCallback
     }
     SendMCICommandSimple(v9, 0, 0x804u);
     DestroyWindow((HWND)g_VideoWindowHandle);
