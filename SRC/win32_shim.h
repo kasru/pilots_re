@@ -502,6 +502,8 @@ MMRESULT timeBeginPeriod(UINT);
 MMRESULT timeEndPeriod(UINT);
 MMRESULT timeGetDevCaps(LPTIMECAPS, UINT);
 MMRESULT mciSendCommandA(MCIDEVICEID, UINT, DWORD, DWORD_PTR);
+MCIERROR mciSendStringA(LPCSTR, LPSTR, UINT, HWND);
+MCIDEVICEID mciGetDeviceIDA(LPCSTR);
 int      mciGetErrorStringA(MCIERROR, LPSTR, UINT);
 
 /* msvcrt/io.h names */

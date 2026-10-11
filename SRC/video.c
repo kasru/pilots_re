@@ -405,36 +405,61 @@ int __stdcall ExecuteVideoPlayback(int videoIndex)
   return commandResult;
 }
 
-/* Every mciSendCommandA call in this file goes through MciSendCommandGuarded.
-   mciSendCommandA can fault INSIDE winmm instead of returning an MCIERROR. On
-   64-bit Windows the AVI MCI path is broken: mciavi32.dll is on disk, but
-   MCI_OPEN of any existing .AVI kills the process - Windows Error Reporting
-   names WINMM.dll as the faulting module (offset 0x176fa), while the very same
-   call from a 32-bit process opens the very same file through SysWOW64 just
-   fine. Since no error code ever comes back, "skip the video" is only reachable
-   by catching the fault; once one is caught, MCI counts as unusable for the
-   rest of the run and every video is skipped. The original binary had no such
-   path - a broken MCI simply meant a dead process. */
-static volatile int s_MciUnavailable;
+/* 64-bit Windows MCI workaround.
+   mciSendCommandA(MCI_OPEN) faults INSIDE winmm.dll instead of returning an
+   MCIERROR - Windows Error Reporting names WINMM.dll as the faulting module,
+   offset 0x176fa - and kills the process. Measured on this OS, call by call:
+   only that ONE call is broken. mciSendCommandA on an already-open device
+   answers normally (MCI_STATUS/MCI_PLAY/MCI_CLOSE all come back), and the
+   STRING interface opens the very same device with no trouble at all, because
+   it builds the parameter block winmm wants internally. So the device is opened
+   with mciSendStringA("open <file> type avivideo alias <n>") and everything
+   else keeps going through mciSendCommandA, exactly as the original does.
+   A 32-bit build never takes this path - there MCI_OPEN works - and neither
+   does Linux, where MCI is mci_ffmpeg.c, so it is compiled only for _WIN64. */
+#if defined(_WIN64)
+
+static volatile int s_MciOpenViaString;               /* command-interface MCI_OPEN is broken here */
+static volatile int s_MciFaulted;                     /* the last guarded call faulted */
 
 static MCIERROR MciSendCommandGuarded(MCIDEVICEID idDevice, UINT uMsg, DWORD dwFlags, DWORD_PTR dwParam)
 {
   MCIERROR mcierr; // eax
 
-  if ( s_MciUnavailable )
-    return (MCIERROR)-1;                              // never reach winmm again
+  s_MciFaulted = 0;
   __try
   {
     mcierr = mciSendCommandA(idDevice, uMsg, dwFlags, dwParam);
   }
   __except ( EXCEPTION_EXECUTE_HANDLER )
   {
-    DBG_LOG("MciSendCommandGuarded: uMsg=0x%X faulted inside winmm, video playback disabled", uMsg);
-    s_MciUnavailable = 1;
+    DBG_LOG("MciSendCommandGuarded: uMsg=0x%X faulted inside winmm", uMsg);
+    s_MciFaulted = 1;
     mcierr = (MCIERROR)-1;
   }
   return mcierr;
 }
+
+static MCIDEVICEID OpenMCIByString(const char *FileName)
+{
+  char cmd[320];
+  MCIERROR err;
+  MCIDEVICEID id;
+
+  wsprintfA(cmd, "open \"%s\" type avivideo alias pilotvid", FileName);
+  err = mciSendStringA(cmd, 0, 0, 0);
+  id = err ? 0 : mciGetDeviceIDA("pilotvid");
+  DBG_LOG("OpenMCIByString: err=%lu id=%lu", (unsigned long)err, (unsigned long)id);
+  return id;
+}
+
+#define MCI_SEND(id, msg, flags, param)  MciSendCommandGuarded(id, msg, flags, param)
+
+#else
+
+#define MCI_SEND(id, msg, flags, param)  mciSendCommandA(id, msg, flags, param)
+
+#endif
 
 char __stdcall CheckMCIError(MCIERROR mcierr)
 {
@@ -454,9 +479,11 @@ int __stdcall SendMCICommand(DWORD_PTR dwParam2, DWORD_PTR dwParam1, UINT uMsg)
 
   if ( !g_MCIDeviceID )
     return 0;
-  v3 = MciSendCommandGuarded((MCIDEVICEID)g_MCIDeviceID, uMsg, (DWORD)dwParam1, dwParam2);
+  v3 = MCI_SEND((MCIDEVICEID)g_MCIDeviceID, uMsg, (DWORD)dwParam1, dwParam2);
+#if defined(_WIN64)
   if ( v3 == (MCIERROR)-1 )
     return 0;                                         // winmm faulted: skip, no error dialog
+#endif
   return CheckMCIError(v3);
 }
 
@@ -811,14 +838,25 @@ char OpenMCIVideoDevice()
     dwParam2[3] = (DWORD_PTR)FileName;
     dwParam2[5] = 0x40000000;
     dwParam2[6] = (DWORD_PTR)g_MainWindow;
-    v1 = MciSendCommandGuarded(0, 0x803u, 0x30200u, (DWORD_PTR)dwParam2);
-    DBG_LOG("OpenMCIVideoDevice: mciSendCommandA returned %d, dwParam2[1]=%u", v1, (unsigned)dwParam2[1]);
-    if ( v1 == (MCIERROR)-1 )
+#if defined(_WIN64)
+    if ( s_MciOpenViaString )                        // known-bad call: go straight to the string api
     {
-      // winmm faulted instead of answering. g_MCIDeviceID stays 0, so every
-      // caller - PlayIntroVideo and the whole SendMCICommand path - skips.
-      DBG_LOG("OpenMCIVideoDevice: MCI unusable, skipping video playback");
-      return 0;
+      dwParam2[1] = OpenMCIByString(FileName);
+      v1 = 0;                                        // a zero device id below still skips the video
+    }
+    else
+#endif
+    {
+      v1 = MCI_SEND(0, 0x803u, 0x30200u, (DWORD_PTR)dwParam2);
+      DBG_LOG("OpenMCIVideoDevice: mciSendCommandA returned %d, dwParam2[1]=%u", v1, (unsigned)dwParam2[1]);
+#if defined(_WIN64)
+      if ( s_MciFaulted )
+      {                                              // command-interface MCI_OPEN died here; open by
+        s_MciOpenViaString = 1;                      // string instead, and remember it for good
+        dwParam2[1] = OpenMCIByString(FileName);
+        v1 = 0;
+      }
+#endif
     }
     result = CheckMCIError(v1);
     DBG_LOG("OpenMCIVideoDevice: CheckMCIError returned %d", (int)result);
@@ -826,9 +864,38 @@ char OpenMCIVideoDevice()
     {
       g_MCIDeviceID = dwParam2[1];
       DBG_LOG("OpenMCIVideoDevice: g_MCIDeviceID set to %d", g_MCIDeviceID);
+#if defined(_WIN64)
+      // x86: the dwParam2[5]/[6] stores above are NOT past-the-end garbage - with a 4-byte DWORD_PTR
+      // they land exactly on _mciWndParms.dwCallback/.hWnd (adjacent stack slots), and that hWnd=g_MainWindow
+      // is what makes mciavi32 create its AVIWnd32 window as a CHILD of the game window (video renders
+      // inside the application window, as in the original game).  On x64 DWORD_PTR is 8 bytes, so those
+      // stores fall past MCI_OPEN_PARMS, hWnd stays uninitialized and mciavi32 falls back to a separate
+      // top-level window.  Behaviour change for the 64-bit port only: restore the values the x86 layout
+      // delivered implicitly.
+      v5 = 0x40000000;
+      hWnd = (HWND)g_MainWindow;
+#endif
       v7 = 16385;
       SendMCICommand((DWORD_PTR)&v5, 0x100u, 0x814u);
       DBG_LOG("OpenMCIVideoDevice: MCI_WINDOW returned hWnd=0x%X", (unsigned)(INT_PTR)hWnd);
+#if defined(_WIN64)
+      // The x64 mciavi32 ignores every parent hint: a probe over MCI_OWN_WINDOW + hWnd, + dwCallback,
+      // MCI_ANIM_WINDOW_HWND and both together all produce the same captioned top-level AVIWnd32
+      // (style 0x06CE0000, WS_CHILD never set), while on x86 the very same call ends up with a
+      // WS_CHILD of the game window.  Reparent it here so the video renders inside the application
+      // window like the original game - and since a child window carries neither a caption nor a
+      // taskbar entry, the separate-window symptom goes away with it.
+      if ( hWnd && g_MainWindow )
+      {
+        LONG style = GetWindowLongA(hWnd, GWL_STYLE);
+        style &= ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+        style |= WS_CHILD | WS_CLIPSIBLINGS;
+        SetWindowLongA(hWnd, GWL_STYLE, style);
+        SetParent(hWnd, (HWND)g_MainWindow);
+        DBG_LOG("OpenMCIVideoDevice: reparented 0x%X under game window 0x%X",
+          (unsigned)(INT_PTR)hWnd, (unsigned)g_MainWindow);
+      }
+#endif
       g_VideoWindowHandle = (INT_PTR)hWnd;
       DBG_LOG("OpenMCIVideoDevice: MoveWindow(0x%X, %d, %d, 0, 0)",
         (unsigned)(INT_PTR)hWnd, g_VideoWindowX, g_VideoWindowY);
