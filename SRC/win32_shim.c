@@ -914,12 +914,47 @@ LRESULT DispatchMessageA(const MSG *lpMsg)
   return r;
 }
 
+/* mciavi32 owns a palette of its own, and on 8bpp Windows it reacts to the game
+   changing its by *sending* WM_PALETTECHANGED (0x311) up the owner chain - here:
+   at g_MainWindow - from inside the SendMessage the game makes at it. That
+   synchronous round trip is the only thing that ever arms g_VideoFlags[2]: the
+   flag VideoWndProc's WM_PAINT tests before calling BlitDirtyRegion, i.e. the
+   one and only path by which a movie's background BMP reaches the screen (and
+   SetPalette has already blacked the presented frame over before loading it).
+   Without a real AVI window to answer, the game's own 0x30F cleared the flag and
+   every movie played over black.
+
+   It has to be synchronous and it has to happen inside that SendMessage: posted
+   instead, it lands after the 0x30F PlayIntroVideo queues as soon as
+   PlayMCIVideo returns, which clears the flag again - the trace reads
+   0x30F -> 0x311 (flag=1) -> 0x30F (flag=0) -> WM_PAINT over black. Once per
+   actually-new palette, since LABEL_40 forwards 0x311 back at the child too and
+   an unconditional answer would ping-pong. */
+static unsigned s_PaletteGen;               /* bumped by CreatePalette */
+static unsigned s_PaletteNotified;          /* last generation the child answered */
+
 LRESULT SendMessageA(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
   if ( !hWnd )
     return 0;                              /* e.g. SendMessageA to the not-created MCI child */
   if ( hWnd == g_MainWindow )
     return DispatchMessageA(&(MSG){ hWnd, message, wParam, lParam, 0, { 0, 0 } });
+  if ( hWnd == (HWND)g_VideoWindowHandle
+    && (message == 0x30Fu || message == 0x311u)
+    && s_PaletteGen != s_PaletteNotified )
+  {
+    MSG m;
+    s_PaletteNotified = s_PaletteGen;
+    m.hwnd = (HWND)g_MainWindow;
+    m.message = 0x311u;                    /* WM_PALETTECHANGED */
+    m.wParam = hWnd;                       /* from the child, so case 0x311's wParam == hWnd guard lets it through */
+    m.lParam = 0;
+    m.time = 0;
+    m.pt.x = 0;
+    m.pt.y = 0;
+    DBG_LOG("SendMessageA: palette msg 0x%X -> WM_PALETTECHANGED from 0x%X", message, (unsigned)(INT_PTR)hWnd);
+    DispatchMessageA(&m);
+  }
   return DefWindowProcA(hWnd, message, wParam, lParam);
 }
 
@@ -1166,6 +1201,7 @@ HPALETTE CreatePalette(LPLOGPALETTE pgpal)
   if ( !mem )
     return 0;
   memcpy(mem, pgpal, bytes);
+  ++s_PaletteGen;
   return (HPALETTE)mem;
 }
 

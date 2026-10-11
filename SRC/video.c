@@ -589,6 +589,9 @@ LABEL_40:
       return 1;
     case 0xFu:
       BeginPaint(hWnd, &Paint);
+      DBG_LOG("VideoWndProc: WM_PAINT g_VideoFlags[2]=%d rcPaint=(%d,%d)-(%d,%d)",
+        g_VideoFlags[2], Paint.rcPaint.left, Paint.rcPaint.top,
+        Paint.rcPaint.right, Paint.rcPaint.bottom);
       if ( g_VideoFlags[2] )
       {
         if ( !g_VideoFlag3 )
