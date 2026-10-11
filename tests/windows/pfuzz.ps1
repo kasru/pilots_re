@@ -27,8 +27,13 @@ Remove-Item $LOG -ErrorAction SilentlyContinue
 $p = Start-Process -FilePath "$RUN\PILOT_RV_x64.EXE" -WorkingDirectory $RUN -PassThru
 $h = [IntPtr]::Zero
 for ($i=0; $i -lt 150 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 200; $p.Refresh(); if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $h = $p.MainWindowHandle } }
+# When the exe cannot load, the OS box IS the process' only window, so
+# MainWindowHandle hands us a #32770 dialog instead of the SDL game window.
+if ($h -ne [IntPtr]::Zero -and (Get-WindowClass $h) -eq '#32770') {
+  Report-StartupFailure $p (Get-StartupDialog $p); if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }; exit 1
+}
 "window handle: $h"
-if ($h -eq [IntPtr]::Zero) { "no window"; exit }
+if ($h -eq [IntPtr]::Zero) { Report-StartupFailure $p; if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }; exit 1 }
 
 # best-effort focus, purely cosmetic: PostMessage does not depend on it
 function FocusWin {

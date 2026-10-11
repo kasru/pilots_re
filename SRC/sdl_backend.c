@@ -1234,6 +1234,13 @@ void SdlMidi_Reset(void)
     SDL_ClearQueuedAudio(s_MidiDev);
   if ( s_MidiMsgCount )
   {
+    /* A timing-dependent diagnostic, NOT an invariant: this prints only when the
+       10 ms MidiTimerCallback happened to run at least once since the previous
+       reset, so between a back-to-back Stop/Start pair x86 may log nothing where
+       x64 catches one tick (or the other way round). Measured under the SAME
+       click script, both arches issue the identical reset sequence and the
+       identical message counts per playback period - only the tick that lands
+       inside a short stop/start gap differs. Do not treat it as an arch check. */
     DBG_LOG("SdlMidi_Reset: %u messages processed", s_MidiMsgCount);
     s_MidiMsgCount = 0;
   }
@@ -1342,6 +1349,12 @@ void SdlMidi_Pump(void)
     }
     if ( !s_MidiFirstAudioLogged )
     {
+      /* Also timing-dependent, not an arch check: the count of nonzero samples in
+         the FIRST rendered chunk depends on how many MIDI events had reached the
+         synth by then, which in turn depends on when the 10 ms timer first fired.
+         The same arch produces 937 or 941 across runs; an idle 10 s start gives
+         937 on BOTH arches. The arch-invariant values are in SdlMidi_Open
+         (emu / bank / rate) and in the first message's status byte. */
       int nonzero = 0;
       for ( i = 0; i < generated; ++i )
       {

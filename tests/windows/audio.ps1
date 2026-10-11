@@ -25,13 +25,28 @@
 #   3. MIDI and sound effects really are audibly gated by them.
 #
 # Usage:
-#   pwsh -NoProfile -File tests\windows\audio.ps1            # run the test
-#   pwsh -NoProfile -File tests\windows\audio.ps1 -Build     # rebuild x64 debug first
+#   pwsh -NoProfile -File tests\windows\audio.ps1            # run the test (x64)
+#   pwsh -NoProfile -File tests\windows\audio.ps1 -Arch x86  # same script on x86
+#   pwsh -NoProfile -File tests\windows\audio.ps1 -Build     # rebuild that arch's debug first
 #   pwsh -NoProfile -File tests\windows\audio.ps1 -Scan      # UI timeline capture only
+#
+# -Arch exists to compare the two builds under the SAME scenario: several MIDI
+# values the log prints look arch-specific but are really scenario/timing
+# specific, and only an identical click script on both arches can tell them apart.
 #
 # Exit code 0 = every check passed. Reproduce on a debug build only: in release
 # DBG_* are no-ops (debug_log.h), so there is nothing to assert against.
-param([switch]$Build, [int]$DwellMs = 900, [switch]$Scan, [int]$ScanSec = 20)
+param(
+    [switch]$Build,
+    [int]$DwellMs = 900,
+    [switch]$Scan,
+    [int]$ScanSec = 20,
+    [ValidateSet('x86','x64')][string]$Arch = 'x64'
+)
+
+$ExeName = if ($Arch -eq 'x86') { 'PILOT_RV.EXE' } else { 'PILOT_RV_x64.EXE' }
+$BatFile = if ($Arch -eq 'x86') { 'build_sdl_debug.bat' } else { 'build_sdl_x64_debug.bat' }
+$LogName = $ExeName -replace '\.EXE$', '_debug.log'
 
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
 Add-Type 'using System; using System.Runtime.InteropServices;
@@ -61,19 +76,19 @@ Get-Process PILOT_RV,PILOT_RV_x64 -ErrorAction SilentlyContinue | Stop-Process -
 Start-Sleep -Seconds 1
 
 if ($Build) {
-  "=== building x64 DEBUG ==="
-  cmd /c "`"$SRC\build_sdl_x64_debug.bat`"" 2>&1 | Select-String -Pattern 'SUCCESS|BUILD FAILED| error ' | ForEach-Object { $_.Line }
+  "=== building $Arch DEBUG ==="
+  cmd /c "`"$SRC\$BatFile`"" 2>&1 | Select-String -Pattern 'SUCCESS|BUILD FAILED| error ' | ForEach-Object { $_.Line }
 }
 
 # Scratch dir holding the data but NOT MOVIES: keeps the run deterministic
 # instead of depending on whether the videos are installed (see rundir.ps1).
 # Build first, so the hardlink picks up the freshly built exe.
 . "$PSScriptRoot\rundir.ps1"
-$RUN = New-GameRunDir -ExeName 'PILOT_RV_x64.EXE'
-$LOG = Join-Path $RUN 'PILOT_RV_x64_debug.log'
+$RUN = New-GameRunDir -ExeName $ExeName
+$LOG = Join-Path $RUN $LogName
 
 Remove-Item $LOG -ErrorAction SilentlyContinue
-$p = Start-Process -FilePath "$RUN\PILOT_RV_x64.EXE" -WorkingDirectory $RUN -PassThru
+$p = Start-Process -FilePath "$RUN\$ExeName" -WorkingDirectory $RUN -PassThru
 $h = [IntPtr]::Zero
 # The handle only becomes valid once SDL has created and painted the window;
 # grabbing it at the first non-zero poll returns a half-made window and every
@@ -86,6 +101,7 @@ for ($i = 0; $i -lt 200 -and $stable -lt 3; $i++) {
   if ($cur -ne [IntPtr]::Zero -and $cur -eq $prev) { $stable++ } else { $stable = 0 }
   $prev = $cur; $h = $cur
 }
+if ($h -eq [IntPtr]::Zero) { Report-StartupFailure $p; if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }; exit 1 }
 "window: $h"
 
 function FocusWin() {

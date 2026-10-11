@@ -28,12 +28,17 @@ $LOG = Join-Path $RUN 'PILOT_RV_debug.log'
 
 Remove-Item $LOG -ErrorAction SilentlyContinue
 $p = Start-Process -FilePath "$RUN\PILOT_RV.EXE" -WorkingDirectory $RUN -PassThru
+# a loader failure (wrong SDL2.dll arch) puts up a modal box before main() runs;
+# catch it while the process is still alive instead of reporting a silent NO LOG
+$dlg = $null
+for ($i = 0; $i -lt 15 -and -not $dlg; $i++) { Start-Sleep -Milliseconds 200; $dlg = Get-StartupDialog $p }
+if ($dlg) { Report-StartupFailure $p $dlg; if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }; exit 1 }
 Start-Sleep -Seconds $Seconds
 $alive = -not $p.HasExited
 if ($alive) { Stop-Process -Id $p.Id -Force }
 Start-Sleep -Milliseconds 500
 
-if (-not (Test-Path $LOG)) { "NO LOG - exe did not start (wrong SDL2.dll arch?)"; exit 1 }
+if (-not (Test-Path $LOG)) { Report-StartupFailure $p; exit 1 }
 $l = Get-Content $LOG
 
 ""
