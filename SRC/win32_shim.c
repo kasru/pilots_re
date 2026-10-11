@@ -48,6 +48,7 @@
 extern int remove(const char *path);
 
 #include <dirent.h>   /* case-insensitive path walk below (Win9x semantics) */
+#include <sys/mman.h> /* low memory pool below (GlobalAlloc), see the note there */
 
 /* Side setjmp buffer: pilots_globals.h routes setjmp/longjmp here (the
    generated 64-byte g_JumpBuffer field is too small for glibc's jmp_buf). */
@@ -561,21 +562,82 @@ int FreeLibrary(HMODULE hModule)
 /* memory                                                                */
 /* ===================================================================== */
 
+/* The game hands pointers that live in its memory pool through 32-bit fields and
+   `int` parameters everywhere: (int)g_TemplateDataBuffer is what every opcode
+   receives as its payload pointer, dword_4115C8 keeps the opcode buffer, and the
+   opcode handlers read their data back out with (INT_PTR) on a 32-bit int. On x86
+   that round trip is lossless because the entire heap sits below 4 GB. On LP64 a
+   plain malloc block lands at 0x5555.../0x7fff..., the truncated low half gets
+   sign-extended into a pointer again and the very first opcode that touches its
+   data dies on 0xFFFFFFFF........ - which is what the 64-bit build did at
+   gameloop.c:338 the moment it hit opcode 0x92.
+
+   So every GlobalAlloc block goes into the first 2 GB instead: the truncation the
+   decompiled code performs stays lossless and sign-extends back to the same
+   address, which is byte-identical on x86 and avoids rewriting ~240 (INT_PTR)
+   call sites - the memory pool is a GlobalAlloc block (InitializeVideoSystem).
+
+   MAP_32BIT is Linux/x86 only; the aarch64 (Switch) build takes the second path,
+   which asks for a low address and rejects anything the kernel put higher.
+
+   munmap needs the mapping length and GlobalFree is given no size, so each block
+   carries it in a 16-byte header (keeps the payload 16-byte aligned, like malloc). */
+
+#define SHIM_LOWMEM_HDR 16u
+
+static void *Shim_AllocLow(size_t bytes)
+{
+  size_t total = bytes + SHIM_LOWMEM_HDR;
+  void *p;
+
+#ifdef MAP_32BIT
+  p = mmap(0, total, PROT_READ | PROT_WRITE,
+           MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
+  if ( p != MAP_FAILED )
+    return p;
+#endif
+  /* No MAP_32BIT: hint at a low address (not MAP_FIXED - if something already
+     owns it the kernel may pick another spot, and the check rejects that). */
+  p = mmap((void *)(UINT_PTR)0x10000000, total, PROT_READ | PROT_WRITE,
+           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if ( p == MAP_FAILED )
+    return 0;
+  if ( (UINT_PTR)p > 0x7FFFFFFFu )
+  {
+    munmap(p, total);                     /* too high: the int round trip would not survive it */
+    return 0;
+  }
+  return p;
+}
+
 HGLOBAL GlobalAlloc(UINT uFlags, size_t dwBytes)
 {
+  unsigned char *p;
+
   (void)uFlags;
-  return (HGLOBAL)malloc(dwBytes ? dwBytes : 1);
+  if ( !dwBytes )
+    dwBytes = 1;
+  p = (unsigned char *)Shim_AllocLow(dwBytes);
+  if ( !p )
+    return 0;
+  *(size_t *)p = dwBytes + SHIM_LOWMEM_HDR;
+  return p + SHIM_LOWMEM_HDR;
 }
 
 HGLOBAL GlobalFree(HGLOBAL hMem)
 {
-  free(hMem);
+  unsigned char *p;
+
+  if ( !hMem )
+    return 0;
+  p = (unsigned char *)hMem - SHIM_LOWMEM_HDR;
+  munmap(p, *(size_t *)p);
   return 0;
 }
 
 HGLOBAL GlobalLock(HGLOBAL hMem)
 {
-  return hMem;                             /* malloc block: handle == pointer */
+  return hMem;                             /* low block: handle == payload (payload keeps 16-byte alignment) */
 }
 
 int GlobalUnlock(HGLOBAL hMem)

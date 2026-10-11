@@ -14,10 +14,13 @@
  *    MM_MCINOTIFY to the MCI_PLAY callback window - that is what makes
  *    VideoWndProc clear g_VideoPlaying (video.c:544) and unblock the wait loop.
  *
- * Struct offsets match what video.c writes: MCI_OPEN_PARMS wDeviceID at +4,
- * lpstrElementName at +12; MCI_WINDOW_PARMS hWnd at +4 (video.c pack(1));
- * MCI_PLAY_PARMS dwCallback at +0 (PlayMCIVideo truncates g_MainWindow to a
- * word - Win9x handles were word-sized, so resolve it back to the full handle).
+ * Offsets follow what video.c writes, and it writes through DWORD_PTR arrays -
+ * pointer-width indexing, which is also the real MCI_*_PARMS layout on Win64:
+ * MCI_OPEN_PARMS wDeviceID at dwParam2[1], lpstrElementName at dwParam2[3];
+ * MCI_WINDOW_PARMS hWnd at dwParam[1] (video.c hands over &_mciWndParms);
+ * MCI_PLAY_PARMS dwCallback at dwParam2[0] (PlayMCIVideo truncates g_MainWindow
+ * to a word - Win9x handles were word-sized, so resolve it back to the full
+ * handle). On x86 those indices are exactly the old byte offsets (+4/+12).
  *
  * Empty TU on Windows (real winmm provides mciSendCommandA).
  */
@@ -398,12 +401,18 @@ MMRESULT mciSendCommandA(MCIDEVICEID idDevice, UINT uMsg, DWORD dwFlags, DWORD_P
 
       if ( !dwParam )
         return MCIERR_MISSING_PARAMETER;
-      elem = (const char *)(uintptr_t)*(DWORD_PTR *)((char *)(uintptr_t)dwParam + 12);
+      /* video.c fills these through "DWORD_PTR dwParam2[7]" - pointer-width
+         indexing, which is also the real MCI_OPEN_PARMS layout on Win64, where
+         dwCallback is 8 bytes and lpstrElementName therefore lands at +24 =
+         dwParam2[3], wDeviceID at +8 = dwParam2[1]. Indexing by element gives
+         the same result on x86 (3*4 == 12, 1*4 == 4, the old struct offsets),
+         so that build is unchanged; the fixed byte offsets were wrong here. */
+      elem = (const char *)(uintptr_t)((DWORD_PTR *)(uintptr_t)dwParam)[3];
       err = elem ? MciOpenElement(elem) : MCIERR_MISSING_PARAMETER;
       if ( err )
         return (MMRESULT)err;
       m->id = s_NextDeviceId++;
-      *(DWORD *)((char *)(uintptr_t)dwParam + 4) = m->id;  /* MCI_OPEN_PARMS.wDeviceID */
+      ((DWORD_PTR *)(uintptr_t)dwParam)[1] = (DWORD_PTR)m->id;  /* MCI_OPEN_PARMS.wDeviceID */
       DBG_LOG("MciFfmpeg: device id %u", m->id);
       return 0;
     }
@@ -412,8 +421,16 @@ MMRESULT mciSendCommandA(MCIDEVICEID idDevice, UINT uMsg, DWORD dwFlags, DWORD_P
       if ( !dwParam )
         return MCIERR_MISSING_PARAMETER;
       m->child = SHIM_MCI_CHILD_HWND;
-      *(HWND *)((char *)(uintptr_t)dwParam + 4) = m->child; /* MCI_WINDOW_PARMS.hWnd */
-      DBG_LOG("MciFfmpeg: MCI_WINDOW child=0x%08X", (unsigned)(uintptr_t)m->child);
+      /* The caller hands over &_mciWndParms.dwCallback (video.c:894), so hWnd is
+         the NEXT pointer-width field: +4 on x86 where DWORD_PTR is 4 bytes and
+         dwCallback/hWnd are adjacent stack slots, +8 on LP64 where dwCallback
+         alone takes 8. A fixed +4 wrote into the high half of dwCallback here and
+         video.c:895 then read an uninitialised hWnd. Element indexing gives the
+         right slot on both arches and is byte-identical on x86. */
+      ((DWORD_PTR *)(uintptr_t)dwParam)[1] = (DWORD_PTR)m->child; /* MCI_WINDOW_PARMS.hWnd */
+      DBG_LOG("MciFfmpeg: MCI_WINDOW child=0x%08X dwParam=%p slot1=%p",
+              (unsigned)(uintptr_t)m->child, (void *)(uintptr_t)dwParam,
+              (void *)&((DWORD_PTR *)(uintptr_t)dwParam)[1]);
       return 0;
 
     case MCI_SHIM_PLAY:

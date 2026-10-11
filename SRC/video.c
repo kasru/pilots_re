@@ -575,11 +575,14 @@ LABEL_21:
       goto LABEL_40;
     case 0x30Fu:
 LABEL_40:
+      DBG_LOG("VideoWndProc LABEL_40: Msg=0x%X wParam=0x%X hPalette=0x%X flag=%d",
+        Msg, (unsigned)(INT_PTR)wParam, (unsigned)(INT_PTR)g_VideoConfig.hPalette, g_VideoFlags[2]);
       if ( !g_VideoConfig.hPalette )
         return 0;
       if ( Msg == 783 || wParam != (HWND)g_VideoWindowHandle )
         g_VideoFlags[2] = 0;
       SendMessageA((HWND)g_VideoWindowHandle, Msg, (WPARAM)wParam, (LPARAM)lParam);
+      DBG_LOG("VideoWndProc LABEL_40: after forward flag=%d", g_VideoFlags[2]);
       if ( g_VideoFlags[3] || Msg == 785 )
         g_VideoFlags[2] = 1;
       SelectPalette(g_VideoConfig.hDC, (HPALETTE)(INT_PTR)g_VideoConfig.hPalette, Msg == 785);
@@ -891,6 +894,8 @@ char OpenMCIVideoDevice()
       hWnd = (HWND)g_MainWindow;
 #endif
       v7 = 16385;
+      DBG_LOG("OpenMCIVideoDevice: &v5=%p &hWnd=%p sizeof(DWORD_PTR)=%u",
+        (void *)&v5, (void *)&hWnd, (unsigned)sizeof(DWORD_PTR));
       SendMCICommand((DWORD_PTR)&v5, 0x100u, 0x814u);
       DBG_LOG("OpenMCIVideoDevice: MCI_WINDOW returned hWnd=0x%X", (unsigned)(INT_PTR)hWnd);
 #if defined(_WIN64)
@@ -1000,9 +1005,16 @@ char __stdcall PlayIntroVideo(int windowHeight, int windowWidth, int windowY, in
       if ( !g_VideoFlags[2] )
       {
         if ( (GetDeviceCaps(g_VideoConfig.hDC, 38) & 0x100) != 0 )
+        {
+          DBG_LOG("PlayIntroVideo: palette device -> post 0x30F (hPalette=0x%X cap38=0x%X)",
+            (unsigned)(INT_PTR)g_VideoConfig.hPalette, (unsigned)GetDeviceCaps(g_VideoConfig.hDC, 38));
           PostMessageA((HWND)g_MainWindow, 0x30Fu, 0, 0);
+        }
         else
+        {
+          DBG_LOG("PlayIntroVideo: no palette device -> arm flag directly");
           g_VideoFlags[2] = 1;
+        }
       }
       g_VideoPlaying = 1;
       do
