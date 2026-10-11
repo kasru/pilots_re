@@ -17,6 +17,7 @@ build/
 # original game data and saves - never commit
 *.SAV
 *.avi
+*.AVI
 FINAL.BMP
 INTRO.BMP
 START.BMP

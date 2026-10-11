@@ -1,26 +1,42 @@
 # Linux build for the "Братья Пилоты" reconstruction.
 # Windows builds keep using SRC/build_sdl_release.bat + build_sdl_debug.bat (untouched).
 #
-# 32-bit only (-m32): game_globals_struct.h stores pointers in 32-bit fields byte-for-byte
-# like the original PILOTS.EXE data section - a native x86_64 build would corrupt the layout.
+# Two flavours, both driven by the same CMakeLists:
+#
+#   cmake -S . -B build32 -DPILOTS_M32=ON    32-bit (-m32) - byte-comparable with
+#                                             the original PILOTS.EXE data section
+#   cmake -S . -B build64                    native (x86_64, and aarch64 for the
+#                                             Switch) - the LP64 migration moved
+#                                             every decompiled pointer-width field
+#                                             to INT_PTR, so the generated headers
+#                                             lay out correctly on both
+#
+# Keeping the two in separate build dirs matters for another reason: SDL2,
+# libavcodec and friends must come from the matching architecture, so a build
+# dir is tied to one of them for good.
 cmake_minimum_required(VERSION 3.16)
 project(PILOT_RV C CXX)
 
 # Debug logging on by default: DBG_* macros are our only diagnostics on Linux
 # (writes PILOT_RV_debug.log next to the exe, backtrace on crash).
 option(PILOTS_DEBUG_LOG "Define _DEBUG (debug log + crash handlers)" ON)
+option(PILOTS_M32 "Build 32-bit (-m32) instead of native" OFF)
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Debug)
 endif()
 
-# pkg-config must pick the i386 .pc files (multiarch), not the amd64 host ones
-set(ENV{PKG_CONFIG_PATH}
-    "/usr/lib/i386-linux-gnu/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig:$ENV{PKG_CONFIG_PATH}")
-
 # -fno-strict-aliasing: the decompiled code type-puns through IDA macros (bmi/pwh overlays)
-add_compile_options(-m32 -fno-strict-aliasing -fcommon)
-add_link_options(-m32 -rdynamic)   # -rdynamic: symbol names in crash backtraces
+add_compile_options(-fno-strict-aliasing -fcommon)
+add_link_options(-rdynamic)   # -rdynamic: symbol names in crash backtraces
+
+if(PILOTS_M32)
+  # pkg-config must pick the i386 .pc files (multiarch), not the amd64 host ones
+  set(ENV{PKG_CONFIG_PATH}
+      "/usr/lib/i386-linux-gnu/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+  add_compile_options(-m32)
+  add_link_options(-m32)
+endif()
 
 if(PILOTS_DEBUG_LOG)
   add_compile_definitions(_DEBUG)
@@ -111,3 +127,10 @@ target_compile_definitions(adlmidi PRIVATE ${ADLMIDI_OPTS})
 target_compile_options(adlmidi PRIVATE -O2)   # the .bat builds libADLMIDI with /O2, game with /Od
 
 target_link_libraries(PILOT_RV PRIVATE adlmidi)
+
+if(PILOTS_M32)
+  message(STATUS "PILOT_RV: 32-bit (-m32), build dir ${CMAKE_BINARY_DIR}")
+else()
+  message(STATUS "PILOT_RV: native ${CMAKE_SYSTEM_PROCESSOR}, build dir ${CMAKE_BINARY_DIR}")
+endif()
+message(STATUS "PILOT_RV: debug log ${PILOTS_DEBUG_LOG}, run with CWD = SRC (the game opens .\\PILOTS.EXE)")

@@ -6,9 +6,24 @@
  *
  * Design notes:
  *  - paths: the game builds "\"-separated paths everywhere (g_ExecutablePath is
- *    literally ".\\PILOTS.EXE"); _open()/CreateFileA()/GetFileAttributesA() translate
- *    '\' -> '/', everything else keeps Win semantics so GetFullPathNameA's strrchr('\\')
- *    logic in fileio.c/video.c keeps working byte-for-byte.
+ *    literally ".\\PILOTS.EXE"); everything below translates '\' -> '/', everything
+ *    else keeps Win semantics so GetFullPathNameA's strrchr('\\') logic in
+ *    fileio.c/video.c keeps working byte-for-byte.
+ *  - case: ONE rule for every file the game opens - the lookup is case-insensitive,
+ *    because that is what the original ran on (Win9x ISO9660/FAT) and the engine
+ *    derives the names from its own data section, not from what is on disk. The
+ *    data asks for ".\\movies\\intro.AVI" (vidBase + lowercase name from the script,
+ *    + aAvi/aAvi-style uppercase extension) while the CD ships "MOVIES\\INTRO.AVI";
+ *    on Windows that mismatch is invisible, on a case-sensitive FS it is fatal. So
+ *    WinShim_ResolvePath()/ShimOpenWin() walk the path component by component
+ *    against the real directory and every entry point funnels through them:
+ *      _open()      -> ShimOpenWin()          fileio.c data + save files, video.c BMP
+ *      CreateFileA()-> ShimOpenWin()
+ *      GetFileAttributesA()                   video.c AVI/BMP existence probes
+ *      remove()     -> WinShim_ResolvePath()  save deletion
+ *      mci_ffmpeg.c -> WinShim_ResolvePath()  avformat_open_input
+ *    Adding a new file open? Route it through the same two functions, or the
+ *    original resources stop working the moment they are copied verbatim.
  *  - messages: there is no Win32 queue here. sdl_backend.c translates SDL events and
  *    posts WM_* messages via PostMessageA(); PeekMessageA() drains the queue (pumping
  *    SDL when empty) and DispatchMessageA() calls the game's MainWndProc directly -
@@ -379,10 +394,13 @@ int _chsize(int fd, long size)
   return ftruncate(fd, size);
 }
 
+/* Delete with the very same case-insensitive lookup every other entry point
+   uses: a save written under one case has to be removable under the other
+   (BuildSaveFilePath strupr()s the base path, the file on disk may not be). */
 int WinShim_remove(const char *path)
 {
   char up[MAX_PATH * 2];
-  ShimPathToUnix(path, up, sizeof up);
+  WinShim_ResolvePath(path, up, sizeof up);
   return remove(up);
 }
 

@@ -26,15 +26,21 @@
 # Ctrl+C or SIGTERM asks the game to quit cleanly (SIGUSR1 test hook of the
 # port); a second Ctrl+C force-stops the container. The container's
 # stdout/stderr is relayed live; the game's own log is
-# build/PILOT_RV_debug.log (host path).
+# $BUILDDIR/PILOT_RV_debug.log (host path).
 #
 # Prerequisites: podman, the pilots-build image (see Containerfile), a built
-# build/PILOT_RV and the original game data SRC/PILOTS.EXE.
+# $BUILDDIR/PILOT_RV (cmake -S . -B $BUILDDIR -DPILOTS_M32=ON, built INSIDE the
+# image - the host has no i386 toolchain) and the original game data
+# SRC/PILOTS.EXE.
 
 set -eu
 
 REPO=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 IMAGE=${PILOTS_IMAGE:-pilots-build}
+# Where the 32-bit binary lives, relative to the repo root. The native 64-bit
+# build uses build64/, so the container one gets its own dir and the two never
+# overwrite each other's SDL2/ffmpeg-linked objects.
+BUILDDIR=${PILOTS_BUILDDIR:-build32}
 NAME=plr-run
 MODE=run
 PULSE=0
@@ -51,7 +57,8 @@ Launch PILOT_RV inside the pilots-build podman container.
   sh scripts/run_podman.sh --pulse   host PulseAudio sound (with any of the above)
 
 Ctrl+C / SIGTERM = clean quit via the game's SIGUSR1 hook; a second
-Ctrl+C force-stops the container. Game log: build/PILOT_RV_debug.log.
+Ctrl+C force-stops the container. Game log: $PILOTS_BUILDDIR/PILOT_RV_debug.log
+(default build32; both that env var and PILOTS_IMAGE select the build).
 EOF
 }
 
@@ -75,8 +82,8 @@ done
 command -v podman >/dev/null 2>&1 || die "podman not found"
 podman image exists "$IMAGE" 2>/dev/null \
   || die "image '$IMAGE' not found (podman build -t $IMAGE . on the Containerfile)"
-[ -f "$REPO/build/PILOT_RV" ] \
-  || die "build/PILOT_RV not found (cmake --build build inside the image)"
+[ -f "$REPO/$BUILDDIR/PILOT_RV" ] \
+  || die "$BUILDDIR/PILOT_RV not found (cmake -S . -B $BUILDDIR -DPILOTS_M32=ON && cmake --build $BUILDDIR, run inside the image)"
 [ -f "$REPO/SRC/PILOTS.EXE" ] \
   || die "SRC/PILOTS.EXE (original game data) not found - the game cannot start"
 
@@ -199,9 +206,9 @@ if [ "$MODE" = xvfb ]; then
       fi
       sleep 0.1
     done
-    DISPLAY=:99 exec /w/build/PILOT_RV'
+    DISPLAY=:99 exec "/w/$1/PILOT_RV"' plr-xvfb "$BUILDDIR"
 else
-  set -- "$@" /w/build/PILOT_RV
+  set -- "$@" "/w/$BUILDDIR/PILOT_RV"
 fi
 
 podman rm -f "$NAME" >/dev/null 2>&1 || true
@@ -214,7 +221,7 @@ podman logs -f "$NAME" 2>&1 &      # live relay (background jobs ignore Ctrl+C)
 LOGS_PID=$!
 
 echo "run_podman: '$NAME' started in image '$IMAGE' (video=$VIDEODRV audio=$AUDIODRV)"
-echo "run_podman: Ctrl+C for a clean quit, game log: build/PILOT_RV_debug.log"
+echo "run_podman: Ctrl+C for a clean quit, game log: $BUILDDIR/PILOT_RV_debug.log"
 
 # Poll instead of a blocking `podman wait`: POSIX shells defer traps until the
 # foreground command returns, and a lone TERM would never interrupt podman
@@ -247,6 +254,6 @@ wait "$LOGS_PID" 2>/dev/null || true
 
 echo "run_podman: game exited with code $EXIT_CODE"
 if [ "$EXIT_CODE" != 0 ]; then
-  echo "run_podman: check build/PILOT_RV_debug.log (backtrace on stderr is in podman logs)" >&2
+  echo "run_podman: check $BUILDDIR/PILOT_RV_debug.log (backtrace on stderr is in podman logs)" >&2
 fi
 exit "$EXIT_CODE"
