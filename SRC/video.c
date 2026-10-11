@@ -554,6 +554,7 @@ LRESULT __stdcall VideoWndProc(HWND hWnd, UINT Msg, HWND wParam, _DWORD *lParam)
     case 0x201u:
     case 0x204u:
 LABEL_21:
+      DBG_LOG("VideoWndProc: skip request (Msg=0x%X wParam=0x%X)", Msg, (unsigned)(INT_PTR)wParam);
       SendMCICommandSimple(v4, 0, 0x808u);
       return 0;
     case 0x102u:
@@ -828,6 +829,65 @@ int __stdcall LoadVideoBitmap(char *FileName)
 #undef v16
 #undef v17
 
+/* A click ON the movie never reached the game window.
+   The skip path is VideoWndProc's own: 0x201/0x204 (button down, or a space/enter
+   WM_CHAR) -> LABEL_21 -> MCI_STOP -> mciavi32 posts MM_MCINOTIFY (0x3B9) ->
+   VideoWndProc clears g_VideoPlaying and PlayIntroVideo's wait loop ends. But
+   mciavi32 draws into a real AVIWnd32 window that sits over the movie as a WS_CHILD
+   of the game window, so a click there is swallowed by that child and never arrives
+   - and it sends no WM_PARENTNOTIFY either, so VideoWndProc's 0x210 branch cannot
+   catch it (verified: the case never fires even with a probe). A click NEXT TO the
+   movie always worked, nothing swallowed it.
+   Subclass that child and relay the three skip messages to the game window by hand;
+   everything else still goes to mciavi32's own window proc through CallWindowProcA.
+   Windows only: on Linux MCI is mci_ffmpeg.c, there is no child window at all -
+   SDL posts every click straight at g_MainWindow, so both positions already worked. */
+#if defined(_WIN32)
+
+static HWND s_MciChildSubclassed;                     /* mciavi32 keeps one AVIWnd32; subclass it once */
+static WNDPROC s_MciChildOldProc;
+
+static LRESULT __stdcall MciChildForwardProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
+{
+  if ( Msg == 0x201u || Msg == 0x204u || Msg == 0x102u )
+  {
+    RECT childRect; // [esp+0h] [ebp-10h] BYREF
+
+    if ( GetClientRect(hWnd, &childRect) )
+      DBG_LOG("MciChildForwardProc: Msg=0x%X child rect=(%d,%d)-(%d,%d)",
+        Msg, childRect.left, childRect.top, childRect.right, childRect.bottom);
+    else
+      DBG_LOG("MciChildForwardProc: Msg=0x%X", Msg);
+    if ( g_MainWindow )
+      SendMessageA((HWND)g_MainWindow, Msg, wParam, lParam);
+    return 0;                                          // the child must not act on it a second time
+  }
+  return CallWindowProcA(s_MciChildOldProc, hWnd, Msg, wParam, lParam);
+}
+
+static void MciChildForwardClicks(HWND hWndVideo)
+{
+  if ( !hWndVideo || hWndVideo == (HWND)g_MainWindow )
+    return;
+  if ( s_MciChildSubclassed == hWndVideo )
+    return;                                            // AVIWnd32 is reused between videos
+  s_MciChildOldProc = (WNDPROC)SetWindowLongPtrA(hWndVideo, GWLP_WNDPROC, (LONG_PTR)MciChildForwardProc);
+  if ( !s_MciChildOldProc )
+  {
+    DBG_LOG("MciChildForwardClicks: SetWindowLongPtrA failed on 0x%X", (unsigned)(INT_PTR)hWndVideo);
+    return;
+  }
+  s_MciChildSubclassed = hWndVideo;
+  DBG_LOG("MciChildForwardClicks: subclassed 0x%X, skip clicks relay to 0x%X",
+    (unsigned)(INT_PTR)hWndVideo, (unsigned)g_MainWindow);
+}
+
+#else
+
+#define MciChildForwardClicks(hWndVideo)  ((void)0)
+
+#endif
+
 char OpenMCIVideoDevice()
 {
   char result; // al
@@ -917,6 +977,7 @@ char OpenMCIVideoDevice()
       }
 #endif
       g_VideoWindowHandle = (INT_PTR)hWnd;
+      MciChildForwardClicks(hWnd);                      // a click on the movie must skip it too
       DBG_LOG("OpenMCIVideoDevice: MoveWindow(0x%X, %d, %d, 0, 0)",
         (unsigned)(INT_PTR)hWnd, g_VideoWindowX, g_VideoWindowY);
       MoveWindow(hWnd, g_VideoWindowX, g_VideoWindowY, 0, 0, 0);
@@ -1031,6 +1092,7 @@ char __stdcall PlayIntroVideo(int windowHeight, int windowWidth, int windowY, in
         }
       }
       while ( g_VideoPlaying );                     // ONLY MM_MCINOTIFY (VideoWndProc 0x3B9) ends this - see PlayMCIVideo's dwCallback
+      DBG_LOG("PlayIntroVideo: wait loop ended, closing the device");   // a click on the movie lands here within a frame
     }
     SendMCICommandSimple(v9, 0, 0x804u);
     DestroyWindow((HWND)g_VideoWindowHandle);

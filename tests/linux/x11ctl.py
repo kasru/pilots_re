@@ -173,6 +173,31 @@ def main():
                     name = g[1][0].decode("utf-8", "replace") if isinstance(g[1][0], bytes) else str(g[1][0])
                     break
             print("0x%x %s" % (w & 0xFFFFFFFF, name))
+    elif cmd == "tree":
+        # direct children of the root, with their names. Unlike "list" this needs no
+        # WM: _NET_CLIENT_LIST is populated by a window manager, and under a bare
+        # Xvfb there is none - while the game window is exactly a root child.
+        lib.XQueryTree.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
+                                   ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong),
+                                   ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_uint)]
+        lib.XQueryTree.restype = ctypes.c_int
+        rootw = lib.XDefaultRootWindow(dpy)
+        r = ctypes.c_ulong(); par = ctypes.c_ulong()
+        ch = ctypes.c_void_p(); n = ctypes.c_uint()
+        if not lib.XQueryTree(dpy, rootw, ctypes.byref(r), ctypes.byref(par),
+                              ctypes.byref(ch), ctypes.byref(n)) or not n.value:
+            return
+        arr = ctypes.cast(ch, ctypes.POINTER(ctypes.c_ulong))
+        for i in range(n.value):
+            w = arr[i]
+            name = ""
+            for prop in ("_NET_WM_NAME", "WM_NAME"):
+                g = get_prop(dpy, w, prop)
+                if g:
+                    name = g[1][0].decode("utf-8", "replace") if isinstance(g[1][0], bytes) else str(g[1][0])
+                    break
+            print("0x%x %s" % (w & 0xFFFFFFFF, name))
+        lib.XFree(ch)
     elif cmd == "state":
         win = int(sys.argv[2], 0)
         act = sys.argv[3]
