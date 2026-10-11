@@ -17,6 +17,9 @@ build/
 # original game data and saves - never commit
 *.SAV
 *.avi
+FINAL.BMP
+INTRO.BMP
+START.BMP 
 PILOTS.iso
 PILOTS0
 PILOTS0.*
