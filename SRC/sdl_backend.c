@@ -1505,6 +1505,9 @@ int SdlWave_Queue(const void *data, unsigned int len)
   static unsigned int s_ScaledCap;
   unsigned int i;
 
+  static unsigned int s_WaveQueueCalls;           /* diagnostics: throttles the per-buffer PCM log */
+  unsigned int nonzero;
+
   if ( !s_WaveDev || !data )
     return 0;
   if ( s_WaveVolume != 255 )
@@ -1524,19 +1527,52 @@ int SdlWave_Queue(const void *data, unsigned int len)
     }
     src = s_Scaled;
   }
+  /* Diagnostics (debug builds only, throttled): is the game handing us audible PCM, and does
+     the device keep draining it? U8 silence is 0x80 - a paused device or an all-silent sound
+     slot looks identical in the TriggerSoundSlot log, this line tells them apart. */
+  if ( s_WaveQueueCalls < 8 || (s_WaveQueueCalls & 63) == 0 )
+  {
+    nonzero = 0;
+    for ( i = 0; i < len; ++i )
+    {
+      if ( src[i] != 0x80 )
+        ++nonzero;
+    }
+    DBG_LOG("SdlWave_Queue: #%u len=%u nonzero=%u stillQueued=%u vol=%d",
+            s_WaveQueueCalls, len, nonzero, (int)SdlWave_Queued(), s_WaveVolume);
+  }
+  ++s_WaveQueueCalls;
   return SDL_QueueAudio(s_WaveDev, src, len) == 0;
 }
 
 void SdlWave_Clear(void)
 {
+  static int s_WaveFirstClearLogged;              /* one-shot: means headers ran out (device stopped draining) */
+
   if ( s_WaveDev )
+  {
+    if ( !s_WaveFirstClearLogged )
+    {
+      s_WaveFirstClearLogged = 1;
+      DBG_LOG("SdlWave_Clear: queued audio dropped (waveOutReset path - device fell behind)");
+    }
     SDL_ClearQueuedAudio(s_WaveDev);
+  }
 }
 
 void SdlWave_Pause(int pause)
 {
+  static int s_WavePaused = -1;                   /* log the transition only, not every call */
+
   if ( s_WaveDev )
+  {
+    if ( s_WavePaused != (pause ? 1 : 0) )
+    {
+      s_WavePaused = pause ? 1 : 0;
+      DBG_LOG("SdlWave_Pause: %d", s_WavePaused);
+    }
     SDL_PauseAudioDevice(s_WaveDev, pause ? 1 : 0);
+  }
 }
 
 unsigned int SdlWave_Queued(void)
