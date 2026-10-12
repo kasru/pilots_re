@@ -117,12 +117,28 @@ static LRESULT CALLBACK SdlGameWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
     case WM_QUERYNEWPALETTE:
     case WM_PALETTECHANGED:
     case WM_KEYDOWN:                            /* VK codes from game data match wParam natively */
-    case WM_WINDOWPOSCHANGED:                   /* VideoWndProc repaint path; WM_SIZE/WM_MOVE are re-dispatched from it */
     case WM_MOUSEACTIVATE:
     case MM_MCINOTIFY:                          /* MCI movie callbacks */
     case MM_WOM_DONE:                           /* legacy waveOut callback (dead with SDL, kept faithful) */
     case WM_CLOSE:                              /* game destroys the window -> WM_DESTROY -> SDL_QUIT */
       return MainWndProc(hWnd, uMsg, wParam, lParam);
+
+    case WM_WINDOWPOSCHANGED:                   /* VideoWndProc repaint path; WM_SIZE/WM_MOVE are re-dispatched from it */
+      {
+        /* The game first (it repaints from this message), then SDL's own proc. SDL has to see
+           this one: it is the ONLY message from which SDL 2.30 learns a window's new size - its
+           WM_SIZE handler sends just RESTORED/MINIMIZED/MAXIMIZED, while the RESIZED event that
+           reaches the renderer (SDL_OnWindowResized -> WINDOWEVENT_SIZE_CHANGED ->
+           D3D11_WindowEvent -> IDXGISwapChain_ResizeBuffers) is generated from
+           WM_WINDOWPOSCHANGED alone. Skipping it leaves the swap chain at the size the window
+           was CREATED with, while SDL_GetRendererOutputSize answers with the live client size -
+           so the picture is drawn into a 640x480 backbuffer that DXGI stretches over the whole
+           1920x1080 client: magnified 2.4x horizontally / 1.8x vertically and cut at the
+           backbuffer's edge, which is what "-fullscreen" used to show. */
+        LRESULT gameResult = MainWndProc(hWnd, uMsg, wParam, lParam);
+        CallWindowProc(s_OrigWndProc, hWnd, uMsg, wParam, lParam);
+        return gameResult;
+      }
 
     case WM_LBUTTONDOWN:                        /* mouse: window client px -> game px (identity while windowed) */
     case WM_LBUTTONUP:
@@ -1037,27 +1053,38 @@ static void SdlDrawGameFrame(void)              /* clear + game texture; no pres
   if ( !s_Texture || !s_Renderer )
     return;
   SdlUpdateLayout();                            /* layout follows the window, not events */
-  /* The renderer viewport is only re-applied by SDL from its own window events - and on
-     Windows WM_WINDOWPOSCHANGED goes to MainWndProc alone (SDL's proc never sees it), so
-     the viewport keeps the 640x480 the window was created with while the backbuffer grew to
-     the real size. SDL_RenderClear and every SDL_RenderCopy are clipped to that stale box,
-     which is exactly "only the top-left part of the picture is drawn" in fullscreen.
-     Forcing it to the whole output every frame is what makes the copy match the layout. */
+  /* The renderer's viewport is only re-applied by SDL from its own window events - and on
+     Windows SDL learns a window's new size ONLY from WM_WINDOWPOSCHANGED, which we routed to
+     MainWndProc alone (see SdlGameWndProc). Then the viewport keeps the 640x480 the window
+     was created with while SDL_GetRendererOutputSize answers with the live client size, and
+     SDL_RenderClear and every SDL_RenderCopy are clipped to that stale box - which is exactly
+     "only the top-left part of the picture is drawn" in fullscreen. The message now goes to
+     SDL too, which is what resizes the D3D swap chain; forcing the viewport to the whole
+     output every frame keeps the copy matching the layout even if some other path misses an
+     event. */
   SDL_RenderSetViewport(s_Renderer, NULL);
 #ifdef _DEBUG
   /* Draw-time truth: the layout above is computed from the client rect (the mouse space),
-     but SDL_RenderCopy works in the renderer's output/viewport space - on Windows those two
-     differ whenever DPI scaling is in play (the game is DPI-unaware: its GetClientRect says
-     1536x864 for a 1920x1080 window), and a copy into a mismatched space is exactly what
-     crops the picture. Log every change of any of them, windowed and fullscreen alike. */
+     while SDL_RenderCopy works in the renderer's own space - output size, viewport, scale,
+     logical size. Any of those going stale is invisible to the layout lines and to the
+     viewport line, and it did crop the picture once (swap chain stuck at the creation size
+     while output said 1536x864). So log all of them on every change, windowed and
+     fullscreen alike - without scale/logical the numbers alone never add up. */
   {
     static int s_LgOw, s_LgOh, s_LgPx, s_LgPy, s_LgPw, s_LgPh, s_LgIw, s_LgIh;
     int ow = 0, oh = 0, iw = 0, ih = 0, ww = 0, wh = 0;
+    int lgw = 0, lgh = 0;
+    int scx1000 = 1000, scy1000 = 1000;
+    float scx = 1.0f, scy = 1.0f;
     SDL_Rect vp;
     SDL_GetRendererOutputSize(s_Renderer, &ow, &oh);
     SDL_GetWindowSizeInPixels(s_SdlWindow, &iw, &ih);
     SDL_GetWindowSize(s_SdlWindow, &ww, &wh);
     SDL_RenderGetViewport(s_Renderer, &vp);
+    SDL_RenderGetScale(s_Renderer, &scx, &scy);
+    SDL_RenderGetLogicalSize(s_Renderer, &lgw, &lgh);
+    scx1000 = (int)(scx * 1000.0f + 0.5f);
+    scy1000 = (int)(scy * 1000.0f + 0.5f);
     if ( ow != s_LgOw || oh != s_LgOh || vp.x != s_LgPx || vp.y != s_LgPy
       || vp.w != s_LgPw || vp.h != s_LgPh || iw != s_LgIw || ih != s_LgIh )
     {
@@ -1065,9 +1092,11 @@ static void SdlDrawGameFrame(void)              /* clear + game texture; no pres
       s_LgPx = vp.x; s_LgPy = vp.y; s_LgPw = vp.w; s_LgPh = vp.h;
       s_LgIw = iw; s_LgIh = ih;
       DBG_LOG("SdlDrawGameFrame: window %dx%d pixels %dx%d output %dx%d "
-              "viewport (%d,%d %dx%d) picture %dx%d at (%d,%d) tex %dx%d",
+              "viewport (%d,%d %dx%d) scale %d.%03dx%d.%03d logical %dx%d "
+              "picture %dx%d at (%d,%d) tex %dx%d",
               ww, wh, iw, ih, ow, oh, vp.x, vp.y, vp.w, vp.h,
-              s_PicW, s_PicH, s_PicX, s_PicY, s_TexWidth, s_TexHeight);
+              scx1000 / 1000, scx1000 % 1000, scy1000 / 1000, scy1000 % 1000,
+              lgw, lgh, s_PicW, s_PicH, s_PicX, s_PicY, s_TexWidth, s_TexHeight);
     }
   }
 #endif
