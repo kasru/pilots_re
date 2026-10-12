@@ -408,6 +408,7 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
     ShowErrorDialog("SDL initialization failed.");
     return 1;
   }
+  SdlBackendParseCmdLine(lpCmdLine);            // -fullscreen: borderless desktop fullscreen (port feature)
   DBG_LOG("hInstance=0x%08X nShowCmd=%d", (unsigned int)(INT_PTR)hInstance, nShowCmd);
   int v4; // esi
   char *v5; // eax
@@ -476,6 +477,12 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
       {
         GetCursorPos(&Point);
         ScreenToClient((HWND)g_MainWindow, &Point);
+        {                                       // fullscreen: the picture is a rect of the window, the game is not
+          int gx = (int)Point.x, gy = (int)Point.y;
+          SdlBackendClientToGame(&gx, &gy);
+          Point.x = gx;
+          Point.y = gy;
+        }
         if ( Point.x < 0 || Point.x >= g_VideoConfig.clientWidth || Point.y < 0 || Point.y >= g_VideoConfig.clientHeight )
           inputState[0] = 0;
       }

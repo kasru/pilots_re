@@ -375,6 +375,13 @@ void SdlBackendClearBlack(void);
 void SdlBackendDrawGrid(unsigned int colorRef);
 void SdlBackendUpdatePalette(const PALETTEENTRY *entries, int count);
 int SdlBackendPumpEvents(void);
+/* borderless fullscreen (port feature: -fullscreen at startup, Alt+Enter to toggle) */
+int SdlBackendParseCmdLine(const char *cmdLine);   /* applies the options it recognises */
+void SdlBackendSetFullscreen(int on);
+int SdlBackendToggleFullscreen(void);              /* returns the new state */
+void SdlBackendSetNativeMovie(int on);             /* Windows: keep the picture natural while mciavi32 draws */
+void SdlBackendClientToGame(int *x, int *y);       /* window client px -> game client px (identity windowed) */
+void SdlBackendGameToClient(int *x, int *y);       /* game client px -> window client px */
 int SdlWave_Open(void);
 void SdlWave_Close(void);
 int SdlWave_Queue(const void *data, unsigned int len);

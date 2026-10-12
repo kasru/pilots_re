@@ -60,6 +60,36 @@ static int s_GameClientH;                       /* - see SdlHandleResize: g_Vide
 static unsigned s_EvMotion;                     /* SDL mouse events seen (diagnostics) */
 static unsigned s_EvEnter;                      /* SDL window ENTER events seen */
 
+/* ---- borderless fullscreen (port feature: -fullscreen / Alt+Enter) ----
+   Windowed - the original behavior - the picture IS the window: every transform here is
+   the identity and nothing in the game sees a difference.
+   Fullscreen (SDL_WINDOW_FULLSCREEN_DESKTOP) the window covers the desktop, so the game
+   picture is scaled to fit it (aspect preserved) and centered: s_PicX/Y/W/H is where it
+   lands in window client pixels, and mouse coordinates are mapped through it, so the game
+   keeps working in its own 640x480 space - the letterbox around the picture behaves
+   exactly like "the mouse left the window" in the original (no message is forwarded).
+   Native movie mode: Windows plays a movie in a real mciavi32 child window which draws
+   1:1 and cannot be scaled (video.c), so while one plays the picture keeps its natural
+   size and only the centering offset applies - background and child stay aligned. */
+static int s_Fullscreen;                         /* SDL_WINDOW_FULLSCREEN_DESKTOP requested */
+static int s_NativeMovie;                        /* keep the picture at its natural size (Windows movie) */
+static int s_PicX;                               /* picture origin, window client px */
+static int s_PicY;
+static int s_PicW;                               /* picture size, window client px */
+static int s_PicH;
+
+static void SdlUpdateLayout(void);               /* where the picture goes */
+static void SdlApplyFullscreen(void);            /* SDL side of s_Fullscreen (no-op pre-window) */
+static int SdlMapMousePoint(int *x, int *y);     /* client px -> game px; 0 = outside the picture */
+static int SdlPictureTransformed(void);
+static int SdlFloorDiv(int a, int b);
+
+/* client coordinates packed the Win32 way: LOWORD = x, HIWORD = y (both platform halves) */
+static LPARAM SdlPackPoint(int x, int y)
+{
+  return (LPARAM)(((unsigned int)(y & 0xFFFF) << 16) | (unsigned int)(x & 0xFFFF));
+}
+
 #ifdef _DEBUG
 static unsigned s_RectBlits;                    /* PILOTS_DEBUG_DISSOLVE statistics */
 static unsigned s_Presents;
@@ -87,17 +117,45 @@ static LRESULT CALLBACK SdlGameWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
     case WM_QUERYNEWPALETTE:
     case WM_PALETTECHANGED:
     case WM_KEYDOWN:                            /* VK codes from game data match wParam natively */
-    case WM_LBUTTONDOWN:
-    case WM_LBUTTONUP:
-    case WM_RBUTTONDOWN:
-    case WM_RBUTTONUP:
-    case WM_MOUSEMOVE:
     case WM_WINDOWPOSCHANGED:                   /* VideoWndProc repaint path; WM_SIZE/WM_MOVE are re-dispatched from it */
     case WM_MOUSEACTIVATE:
     case MM_MCINOTIFY:                          /* MCI movie callbacks */
     case MM_WOM_DONE:                           /* legacy waveOut callback (dead with SDL, kept faithful) */
     case WM_CLOSE:                              /* game destroys the window -> WM_DESTROY -> SDL_QUIT */
       return MainWndProc(hWnd, uMsg, wParam, lParam);
+
+    case WM_LBUTTONDOWN:                        /* mouse: window client px -> game px (identity while windowed) */
+    case WM_LBUTTONUP:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_MOUSEMOVE:
+      {
+        int cx = (int)(short)LOWORD(lParam);
+        int cy = (int)(short)HIWORD(lParam);
+        int mx = cx;
+        int my = cy;
+        if ( !SdlMapMousePoint(&mx, &my) )
+          return 0;                             /* letterbox: as if the mouse had left the window */
+#ifdef _DEBUG
+        if ( (uMsg == WM_LBUTTONDOWN || uMsg == WM_RBUTTONDOWN) && (mx != cx || my != cy) )
+          DBG_LOG("SdlGameWndProc: 0x%X client (%d,%d) -> game (%d,%d)",
+                  uMsg, cx, cy, mx, my);        /* only interesting while the picture is transformed */
+#endif
+        return MainWndProc(hWnd, uMsg, wParam, SdlPackPoint(mx, my));
+      }
+
+    case WM_SYSKEYDOWN:                         /* Alt+Enter: borderless fullscreen toggle (port feature) */
+      if ( wParam == VK_RETURN )
+      {
+        SdlBackendToggleFullscreen();
+        return 0;                               /* swallowed: the game must not see the Enter */
+      }
+      return CallWindowProc(s_OrigWndProc, hWnd, uMsg, wParam, lParam);
+
+    case WM_SYSCHAR:                            /* TranslateMessage turns the swallowed Alt+Enter into this */
+      if ( wParam == 13 )
+        return 0;
+      return CallWindowProc(s_OrigWndProc, hWnd, uMsg, wParam, lParam);
 
     case WM_CHAR:
       if ( (unsigned int)wParam > 255 )
@@ -116,8 +174,24 @@ static LRESULT CALLBACK SdlGameWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPAR
       return CallWindowProc(s_OrigWndProc, hWnd, uMsg, wParam, lParam);
 
     case WM_GETMINMAXINFO:                      /* game clamps min size to the game resolution, SDL adds its own */
+      /* fullscreen: nothing may pin the window to the game size, or the resize SDL is about
+         to make (and every later one) gets clamped back to it */
+      if ( !s_Fullscreen )
+        MainWndProc(hWnd, uMsg, wParam, lParam);
+      return CallWindowProc(s_OrigWndProc, hWnd, uMsg, wParam, lParam);
+
     case WM_SIZE:                               /* game records client size, SDL tracks it too */
-      MainWndProc(hWnd, uMsg, wParam, lParam);
+#ifdef _DEBUG
+      DBG_LOG("SdlGameWndProc: WM_SIZE wp=0x%X lp=%dx%d fs=%d", (unsigned)wParam,
+              (int)(unsigned short)LOWORD(lParam), (int)(unsigned short)HIWORD(lParam), s_Fullscreen);
+#endif
+      /* fullscreen: the window size is the desktop's - the game keeps its own logical size,
+         or clientWidth/Height becomes the clip bound past the fixed backbuffer */
+      if ( s_Fullscreen )
+        MainWndProc(hWnd, uMsg, wParam, SdlPackPoint(s_GameClientW, s_GameClientH));
+      else
+        MainWndProc(hWnd, uMsg, wParam, lParam);
+      SdlUpdateLayout();                        /* the window is the fullscreen size now */
       return CallWindowProc(s_OrigWndProc, hWnd, uMsg, wParam, lParam);
 
     case WM_DESTROY:                            /* game PostQuitMessage(0); push SDL_QUIT so the poll loop exits too */
@@ -227,12 +301,6 @@ static char SdlTextToCp1251(const char *s)
   return '?';
 }
 
-/* client coordinates packed the Win32 way: LOWORD = x, HIWORD = y */
-static LPARAM SdlPackPoint(int x, int y)
-{
-  return (LPARAM)(((unsigned int)(y & 0xFFFF) << 16) | (unsigned int)(x & 0xFFFF));
-}
-
 static void SdlPostChar(HWND hwnd, char ch)
 {
   PostMessageA(hwnd, WM_CHAR, (WPARAM)(unsigned char)ch, 0);
@@ -282,6 +350,7 @@ static void SdlHandleResize(HWND hwnd, int w, int h)
 {
   DBG_LOG("SdlHandleResize: window %dx%d, game keeps %dx%d", w, h,
           s_GameClientW, s_GameClientH);
+  SdlUpdateLayout();                           /* fullscreen: where the picture goes now */
   PostMessageA(hwnd, WM_WINDOWPOSCHANGED, 0, 0);
   PostMessageA(hwnd, WM_SIZE, 0, SdlPackPoint(s_GameClientW, s_GameClientH));
   InvalidateRect(hwnd, 0, 0);
@@ -304,6 +373,14 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
         unsigned int vk;
         if ( !hwnd )
           break;
+        if ( ev->type == SDL_KEYDOWN
+          && (ev->key.keysym.scancode == SDL_SCANCODE_RETURN
+           || ev->key.keysym.scancode == SDL_SCANCODE_KP_ENTER)
+          && (ev->key.keysym.mod & (KMOD_LALT | KMOD_RALT)) )
+        {
+          SdlBackendToggleFullscreen();         /* Alt+Enter: the game never sees the Enter */
+          break;
+        }
         vk = SdlScancodeToVK(ev->key.keysym.scancode);
         if ( !vk )
           break;
@@ -331,8 +408,14 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
       ++s_EvMotion;
       if ( !hwnd )
         break;
-      PostMessageA(hwnd, WM_SETCURSOR, (WPARAM)hwnd, HTCLIENT); /* LOWORD(lParam) == HTCLIENT */
-      PostMessageA(hwnd, WM_MOUSEMOVE, 0, SdlPackPoint(ev->motion.x, ev->motion.y));
+      {
+        int mx = ev->motion.x;
+        int my = ev->motion.y;
+        if ( !SdlMapMousePoint(&mx, &my) )
+          break;                            /* letterbox: as if the mouse had left the window */
+        PostMessageA(hwnd, WM_SETCURSOR, (WPARAM)hwnd, HTCLIENT); /* LOWORD(lParam) == HTCLIENT */
+        PostMessageA(hwnd, WM_MOUSEMOVE, 0, SdlPackPoint(mx, my));
+      }
       break;
 
     case SDL_MOUSEBUTTONDOWN:
@@ -347,8 +430,21 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
           msg = (ev->type == SDL_MOUSEBUTTONDOWN) ? WM_RBUTTONDOWN : WM_RBUTTONUP;
         else
           break;                          /* middle button: unhandled by the game, skip */
-        PostMessageA(hwnd, WM_SETCURSOR, (WPARAM)hwnd, HTCLIENT);
-        PostMessageA(hwnd, msg, 0, SdlPackPoint(ev->button.x, ev->button.y));
+        {
+          int bx = ev->button.x;
+          int by = ev->button.y;
+          int cx = bx;
+          int cy = by;
+          if ( !SdlMapMousePoint(&bx, &by) )
+            break;                        /* click on the letterbox: nothing to hit, drop it */
+#ifdef _DEBUG
+          if ( ev->type == SDL_MOUSEBUTTONDOWN && (bx != cx || by != cy) )
+            DBG_LOG("SdlDispatchSdlEvent: 0x%X client (%d,%d) -> game (%d,%d)",
+                    msg, cx, cy, bx, by); /* only interesting while the picture is transformed */
+#endif
+          PostMessageA(hwnd, WM_SETCURSOR, (WPARAM)hwnd, HTCLIENT);
+          PostMessageA(hwnd, msg, 0, SdlPackPoint(bx, by));
+        }
         break;
       }
 
@@ -493,6 +589,284 @@ int SdlBackendStartup(void)
   return 1;
 }
 
+/* ---- borderless fullscreen (-fullscreen / Alt+Enter); see the statics at the top ---- */
+#define SDL_FS_MAX_PIN 16384                     /* stands in for the window's max-size pin while fullscreen */
+
+/* Signed division toward -inf: a mouse point left/above the picture must map to a negative
+   game coordinate, not to 0 - the main loop tests it against the client rect. */
+static int SdlFloorDiv(int a, int b)
+{
+  int q = a / b;
+  if ( (a % b) != 0 && (a < 0) != (b < 0) )
+    --q;
+  return q;
+}
+
+static int SdlPictureTransformed(void)
+{
+  return s_PicW > 0 && s_PicH > 0
+      && (s_PicX != 0 || s_PicY != 0 || s_PicW != s_GameClientW || s_PicH != s_GameClientH);
+}
+
+/* Where the picture goes. Windowed it is the window itself (identity - the original
+   behavior). Fullscreen: a letterboxed box of the window, aspect preserved, centered; while
+   a Windows movie plays, the picture's natural size centered instead - mciavi32 draws its
+   child 1:1 and cannot follow a scaled background. */
+static void SdlUpdateLayout(void)
+{
+  int w = s_GameClientW;
+  int h = s_GameClientH;
+  int ww, wh;
+  int picW, picH;
+  int newX, newY;
+  int changed;
+
+  if ( w <= 0 || h <= 0 )
+    return;
+  if ( !s_Fullscreen || !s_SdlWindow )
+  {
+    s_PicX = 0;
+    s_PicY = 0;
+    s_PicW = w;
+    s_PicH = h;
+    return;
+  }
+  /* The client rect, not SDL_GetWindowSize: on Windows SDL only learns the new size on
+     WM_WINDOWPOSCHANGED, which arrives AFTER WM_SIZE - the layout is recomputed inside the
+     WM_SIZE handler, where SDL still has the old size (and at startup the window is still
+     hidden when -fullscreen is applied, so no size message has arrived at all). The client
+     rect is also the space the mouse coordinates come in. */
+  ww = wh = 0;
+#ifdef _WIN32
+  {
+    RECT rc;
+    if ( g_MainWindow && GetClientRect((HWND)g_MainWindow, &rc) )
+    {
+      ww = rc.right;
+      wh = rc.bottom;
+    }
+  }
+#endif
+  if ( ww <= 0 || wh <= 0 )
+    SDL_GetWindowSize(s_SdlWindow, &ww, &wh);
+  if ( ww <= 0 || wh <= 0 )
+    return;                                     /* minimized: keep the last layout */
+  if ( s_NativeMovie )
+  {
+    picW = w;
+    picH = h;
+  }
+  else if ( (long long)ww * h <= (long long)wh * w )
+  {
+    picW = ww;                                  /* window is the wider one: fit the width */
+    picH = (int)((long long)ww * h / w);
+    if ( picH < 1 )
+      picH = 1;
+  }
+  else
+  {
+    picH = wh;                                  /* window is the taller one: fit the height */
+    picW = (int)((long long)wh * w / h);
+    if ( picW < 1 )
+      picW = 1;
+  }
+  newX = (ww - picW) / 2;
+  newY = (wh - picH) / 2;
+  changed = (newX != s_PicX || newY != s_PicY || picW != s_PicW || picH != s_PicH);
+  s_PicX = newX;
+  s_PicY = newY;
+  s_PicW = picW;
+  s_PicH = picH;
+  if ( changed )
+  {
+    /* The renderer output is the space SDL_RenderCopy actually draws in - on Windows it is
+       NOT guaranteed to equal the client rect (DPI scaling, a backbuffer SDL has not resized
+       yet). When it is smaller than ww/wh the copy gets clipped and the window shows only the
+       top-left corner of the scaled picture, so log it next to the rect it must match. */
+    int outW = 0, outH = 0;
+    if ( s_Renderer && SDL_GetRendererOutputSize(s_Renderer, &outW, &outH) != 0 )
+      outW = outH = 0;
+    DBG_LOG("SdlUpdateLayout: window %dx%d -> picture %dx%d at (%d,%d)%s (renderer output %dx%d)",
+            ww, wh, s_PicW, s_PicH, s_PicX, s_PicY,
+            s_NativeMovie ? " (native movie)" : "", outW, outH);
+#ifdef _WIN32
+    VideoRealignMciChild();                     /* the movie child follows the picture rect */
+#endif
+  }
+}
+
+/* window client px -> game client px (identity while the picture is the window) */
+void SdlBackendClientToGame(int *x, int *y)
+{
+  if ( !SdlPictureTransformed() )
+    return;
+  *x = SdlFloorDiv((*x - s_PicX) * s_GameClientW, s_PicW);
+  *y = SdlFloorDiv((*y - s_PicY) * s_GameClientH, s_PicH);
+}
+
+/* game client px -> window client px (position of the MCI movie child on Windows) */
+void SdlBackendGameToClient(int *x, int *y)
+{
+  if ( !SdlPictureTransformed() )
+    return;
+  *x = s_PicX + (int)((long long)*x * s_PicW / s_GameClientW);
+  *y = s_PicY + (int)((long long)*y * s_PicH / s_GameClientH);
+}
+
+/* Mouse point for the game; returns 0 when it lands outside the picture, so the letterbox is
+   dropped instead of sent - the game then behaves exactly as when the mouse left its window
+   in the original (no message at all, input flag off in the main loop). */
+static int SdlMapMousePoint(int *x, int *y)
+{
+  if ( !SdlPictureTransformed() )
+    return 1;
+  SdlBackendClientToGame(x, y);
+  return *x >= 0 && *x < s_GameClientW && *y >= 0 && *y < s_GameClientH;
+}
+
+/* SDL side of s_Fullscreen. Idempotent, and a no-op while the window does not exist yet:
+   WinMain records -fullscreen early, SdlBackendCreateVideoTargets applies it after
+   CreateMainWindow's SetWindowPos (which would undo an earlier call). */
+static void SdlApplyFullscreen(void)
+{
+  int want = s_Fullscreen ? 1 : 0;
+  int isFs;
+
+  if ( !s_SdlWindow )
+    return;
+  isFs = (SDL_GetWindowFlags(s_SdlWindow) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+  if ( want != isFs )
+  {
+    if ( want )
+    {
+      /* Both size pins have to go first: SDL's own max size (set when the window was created)
+         and the game's WM_GETMINMAXINFO pin would clamp the fullscreen resize back to the game. */
+      SDL_SetWindowMaximumSize(s_SdlWindow, SDL_FS_MAX_PIN, SDL_FS_MAX_PIN);
+#ifndef _WIN32
+      /* On X11 SDL's desktop fullscreen only ASKS the window manager
+         (_NET_WM_STATE_FULLSCREEN ClientMessage) and then bumps its own idea of the window
+         to the display bounds - it never resizes the window itself. With a WM that is
+         enough; without one (bare Xvfb, which is every harness in tests/linux) the X window
+         stays 640x480 at (320,120) while SDL reports 1280x720, so every picture rect and
+         every mouse mapping is computed for a window that does not exist - proven against
+         X by a standalone SDL probe with no game code in it. So push the geometry ourselves,
+         and while the window is still windowed: SDL ignores SetWindowSize once the
+         fullscreen flag is up. Borderless fullscreen IS "a display-sized window at (0,0)",
+         with or without a WM; setfs below then only adds the hint and the flag. */
+      {
+        SDL_DisplayMode dm;
+        int di = SDL_GetWindowDisplayIndex(s_SdlWindow);
+        if ( di < 0 )
+          di = 0;
+        if ( SDL_GetDesktopDisplayMode(di, &dm) == 0 && dm.w > 0 && dm.h > 0 )
+        {
+          SDL_SetWindowPosition(s_SdlWindow, 0, 0);     /* SDL centers windows without a WM */
+          SDL_SetWindowSize(s_SdlWindow, dm.w, dm.h);
+          DBG_LOG("SdlApplyFullscreen: forced X geometry %dx%d at (0,0)", dm.w, dm.h);
+        }
+      }
+#endif
+      if ( SDL_SetWindowFullscreen(s_SdlWindow, SDL_WINDOW_FULLSCREEN_DESKTOP) != 0 )
+        DBG_LOG("SdlApplyFullscreen: SDL_SetWindowFullscreen(DESKTOP) failed: %s", SDL_GetError());
+    }
+    else
+    {
+      SDL_SetWindowFullscreen(s_SdlWindow, 0);
+#ifndef _WIN32
+      /* Mirror of the enter path: SDL restored the flag, but the windowed size it remembers
+         is the full-screen one we forced - put the game's own window back. */
+      if ( s_GameClientW > 0 && s_GameClientH > 0 )
+      {
+        SDL_SetWindowSize(s_SdlWindow, s_GameClientW, s_GameClientH);
+        SDL_SetWindowPosition(s_SdlWindow, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+      }
+#endif
+      if ( s_GameClientW > 0 && s_GameClientH > 0 )
+        SDL_SetWindowMaximumSize(s_SdlWindow, s_GameClientW, s_GameClientH);
+    }
+    SdlUpdateLayout();
+    DBG_LOG("SdlApplyFullscreen: %s -> picture %dx%d at (%d,%d)",
+            want ? "on" : "off", s_PicW, s_PicH, s_PicX, s_PicY);
+    if ( g_MainWindow )
+      InvalidateRect((HWND)g_MainWindow, 0, 1); /* whole-window repaint at the new geometry */
+  }
+  SdlUpdateLayout();
+}
+
+void SdlBackendSetFullscreen(int on)
+{
+  int was = s_Fullscreen ? 1 : 0;
+
+  on = on ? 1 : 0;
+  if ( on == was && s_SdlWindow )
+    return;
+  s_Fullscreen = on;
+  SdlApplyFullscreen();
+}
+
+int SdlBackendToggleFullscreen(void)
+{
+  SdlBackendSetFullscreen(!s_Fullscreen);
+  return s_Fullscreen;
+}
+
+/* Windows movie: the mciavi32 child window draws 1:1 and cannot scale with the picture, so
+   the picture drops to its natural size for the duration and only keeps the centering offset. */
+void SdlBackendSetNativeMovie(int on)
+{
+  on = on ? 1 : 0;
+  if ( on == (s_NativeMovie != 0) )
+    return;
+  s_NativeMovie = on;
+  SdlUpdateLayout();
+  DBG_LOG("SdlBackendSetNativeMovie: %d -> picture %dx%d at (%d,%d)",
+          on, s_PicW, s_PicH, s_PicX, s_PicY);
+}
+
+/* -fullscreen / /fullscreen on the command line (port option, case-insensitive).
+   Windows passes WinMain's lpCmdLine, win32_shim joins argv[1..] into the same string. */
+int SdlBackendParseCmdLine(const char *cmdLine)
+{
+  const char *p = cmdLine;
+  int found = 0;
+
+  if ( !p )
+    return 0;
+  while ( *p )
+  {
+    const char *tok;
+    int len;
+    while ( *p == ' ' || *p == '\t' )
+      ++p;
+    tok = p;
+    while ( *p && *p != ' ' && *p != '\t' )
+      ++p;
+    len = (int)(p - tok);
+    if ( len > 1 && (tok[0] == '-' || tok[0] == '/') )
+    {
+      const char *s = tok + 1;
+      const char *o = "fullscreen";
+      int i;
+      for ( i = 0; o[i]; ++i )
+      {
+        char a = (i + 1 < len) ? s[i] : 0;
+        if ( a >= 'A' && a <= 'Z' )
+          a += 32;
+        if ( a != o[i] )
+          break;
+      }
+      if ( o[i] == 0 && len == i + 1 )
+        found = 1;
+    }
+  }
+  if ( found )
+  {
+    DBG_LOG("SdlBackendParseCmdLine: -fullscreen -> borderless desktop fullscreen, Alt+Enter toggles");
+    SdlBackendSetFullscreen(1);
+  }
+  return found;
+}
+
 void SdlBackendShutdown(void)
 {
   if ( s_VideoTex )
@@ -544,6 +918,20 @@ HWND SdlBackendCreateWindow(int x, int y, int clientW, int clientH, int resizabl
 {
   Uint32 flags = SDL_WINDOW_HIDDEN;
   HWND hwnd;
+  int px = x == (int)CW_USEDEFAULT ? SDL_WINDOWPOS_UNDEFINED : x;
+  int py = y == (int)CW_USEDEFAULT ? SDL_WINDOWPOS_UNDEFINED : y;
+
+#ifndef _WIN32
+  /* -fullscreen from the command line: the window is created hidden, and SDL defers an
+     explicit SetWindowPosition while the window is hidden - with the fullscreen flag already
+     up it never replays it, so X is left with the creation position (SDL centres an
+     UNDEFINED one: 320,120 for 640x480 on a 1280x720 screen) and the "fullscreen" window
+     then hangs half off-screen. Verified against X directly. Nothing moves the window
+     between creation and map, so asking X for (0,0) right here is what sticks; on Windows
+     SDL's own fullscreen path positions the window and the proven path stays untouched. */
+  if ( s_Fullscreen )
+    px = py = 0;
+#endif
 
   if ( !s_SdlWindow )
   {
@@ -551,8 +939,7 @@ HWND SdlBackendCreateWindow(int x, int y, int clientW, int clientH, int resizabl
       flags |= SDL_WINDOW_RESIZABLE;
     s_SdlWindow = SDL_CreateWindow(
         title ? title : "",
-        x == (int)CW_USEDEFAULT ? SDL_WINDOWPOS_UNDEFINED : x,
-        y == (int)CW_USEDEFAULT ? SDL_WINDOWPOS_UNDEFINED : y,
+        px, py,
         clientW, clientH, flags);
     if ( !s_SdlWindow )
     {
@@ -606,6 +993,7 @@ int SdlBackendCreateVideoTargets(int clientW, int clientH)
 {
   if ( !s_SdlWindow || clientW <= 0 || clientH <= 0 )
     return 0;
+  SdlApplyFullscreen();                          /* -fullscreen recorded before the window existed */
   if ( !s_Renderer )
   {
     /* No vsync: the present cadence is ours - coalesced bursts on Linux
@@ -638,20 +1026,57 @@ int SdlBackendCreateVideoTargets(int clientW, int clientH)
   return 1;
 }
 
-/* Show the current texture (1:1, top-left - mirrors the original BitBlt which never scaled).
-   Outside the texture the renderer is cleared to black, like the window background. */
+/* Show the current texture. Windowed it lands 1:1 at the top-left - mirrors the original
+   BitBlt which never scaled - fullscreen it fills the letterboxed picture rect instead
+   (see the fullscreen block). Outside the texture the renderer is cleared to black, like
+   the window background. */
 static void SdlDrawGameFrame(void)              /* clear + game texture; no present */
 {
   SDL_Rect dst;
 
   if ( !s_Texture || !s_Renderer )
     return;
+  SdlUpdateLayout();                            /* layout follows the window, not events */
+  /* The renderer viewport is only re-applied by SDL from its own window events - and on
+     Windows WM_WINDOWPOSCHANGED goes to MainWndProc alone (SDL's proc never sees it), so
+     the viewport keeps the 640x480 the window was created with while the backbuffer grew to
+     the real size. SDL_RenderClear and every SDL_RenderCopy are clipped to that stale box,
+     which is exactly "only the top-left part of the picture is drawn" in fullscreen.
+     Forcing it to the whole output every frame is what makes the copy match the layout. */
+  SDL_RenderSetViewport(s_Renderer, NULL);
+#ifdef _DEBUG
+  /* Draw-time truth: the layout above is computed from the client rect (the mouse space),
+     but SDL_RenderCopy works in the renderer's output/viewport space - on Windows those two
+     differ whenever DPI scaling is in play (the game is DPI-unaware: its GetClientRect says
+     1536x864 for a 1920x1080 window), and a copy into a mismatched space is exactly what
+     crops the picture. Log every change of any of them, windowed and fullscreen alike. */
+  {
+    static int s_LgOw, s_LgOh, s_LgPx, s_LgPy, s_LgPw, s_LgPh, s_LgIw, s_LgIh;
+    int ow = 0, oh = 0, iw = 0, ih = 0, ww = 0, wh = 0;
+    SDL_Rect vp;
+    SDL_GetRendererOutputSize(s_Renderer, &ow, &oh);
+    SDL_GetWindowSizeInPixels(s_SdlWindow, &iw, &ih);
+    SDL_GetWindowSize(s_SdlWindow, &ww, &wh);
+    SDL_RenderGetViewport(s_Renderer, &vp);
+    if ( ow != s_LgOw || oh != s_LgOh || vp.x != s_LgPx || vp.y != s_LgPy
+      || vp.w != s_LgPw || vp.h != s_LgPh || iw != s_LgIw || ih != s_LgIh )
+    {
+      s_LgOw = ow; s_LgOh = oh;
+      s_LgPx = vp.x; s_LgPy = vp.y; s_LgPw = vp.w; s_LgPh = vp.h;
+      s_LgIw = iw; s_LgIh = ih;
+      DBG_LOG("SdlDrawGameFrame: window %dx%d pixels %dx%d output %dx%d "
+              "viewport (%d,%d %dx%d) picture %dx%d at (%d,%d) tex %dx%d",
+              ww, wh, iw, ih, ow, oh, vp.x, vp.y, vp.w, vp.h,
+              s_PicW, s_PicH, s_PicX, s_PicY, s_TexWidth, s_TexHeight);
+    }
+  }
+#endif
   SDL_SetRenderDrawColor(s_Renderer, 0, 0, 0, 255);
   SDL_RenderClear(s_Renderer);
-  dst.x = 0;
-  dst.y = 0;
-  dst.w = s_TexWidth;
-  dst.h = s_TexHeight;
+  dst.x = s_PicX;
+  dst.y = s_PicY;
+  dst.w = s_PicW > 0 ? s_PicW : s_TexWidth;
+  dst.h = s_PicH > 0 ? s_PicH : s_TexHeight;
   SDL_RenderCopy(s_Renderer, s_Texture, 0, &dst);
 }
 
@@ -715,10 +1140,16 @@ void SdlBackendVideoFrame(const void *bgra, int srcw, int srch, int x, int y, in
   }
   SDL_UpdateTexture(s_VideoTex, NULL, bgra, srcw * 4);
   SdlDrawGameFrame();
-  dst.x = x;
-  dst.y = y;
-  dst.w = w;
-  dst.h = h;
+  {                                                 /* child rect: game px -> window px (identity windowed) */
+    int x2 = x + w;
+    int y2 = y + h;
+    SdlBackendGameToClient(&x, &y);
+    SdlBackendGameToClient(&x2, &y2);
+    dst.x = x;
+    dst.y = y;
+    dst.w = x2 - x;
+    dst.h = y2 - y;
+  }
   SDL_RenderCopy(s_Renderer, s_VideoTex, NULL, &dst);
   SDL_RenderPresent(s_Renderer);
   s_PresentPending = 0;                         /* the movie frame showed the game texture too */
@@ -834,9 +1265,19 @@ void SdlBackendDrawGrid(unsigned int colorRef)
       (unsigned)((colorRef >> 8) & 0xFF),
       (unsigned)((colorRef >> 16) & 0xFF), 255);
   for ( i = 0; i < s_TexWidth; i += 8 )
-    SDL_RenderDrawLine(s_Renderer, i, 0, i, s_TexHeight - 1);
+  {
+    int x0 = i, y0 = 0, x1 = i, y1 = s_TexHeight - 1;
+    SdlBackendGameToClient(&x0, &y0);
+    SdlBackendGameToClient(&x1, &y1);
+    SDL_RenderDrawLine(s_Renderer, x0, y0, x1, y1);
+  }
   for ( i = 0; i < s_TexHeight; i += 8 )
-    SDL_RenderDrawLine(s_Renderer, 0, i, s_TexWidth - 1, i);
+  {
+    int x0 = 0, y0 = i, x1 = s_TexWidth - 1, y1 = i;
+    SdlBackendGameToClient(&x0, &y0);
+    SdlBackendGameToClient(&x1, &y1);
+    SDL_RenderDrawLine(s_Renderer, x0, y0, x1, y1);
+  }
   SDL_RenderPresent(s_Renderer);
 }
 

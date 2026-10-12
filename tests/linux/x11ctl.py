@@ -12,6 +12,9 @@ Usage:
   x11ctl.py warp <id> <x> <y>        - pointer into window (relative)
   x11ctl.py xtest-motion <rx> <ry>   - hardware-like motion, root coords (libXtst)
   x11ctl.py xtest-click [button]     - hardware-like button press+release (libXtst)
+  x11ctl.py xtest-key <keysym> <down|up> - hardware-like key press/release (libXtst),
+                                       e.g. xtest-key Alt_L down / xtest-key Return down
+                                       to compose Alt+Enter
   x11ctl.py fake-motion <id> <x> <y> - synthetic MotionNotify straight to the window
                                        (bypasses covering overlays like the screen locker;
                                         delivered only if a client - SDL - selected it there)
@@ -323,6 +326,28 @@ def main():
         xt.XTestFakeMotionEvent(dpy, scr, rx, ry, 0)
         lib.XFlush(dpy)
         print("xtest motion -> (%d,%d)" % (rx, ry))
+    elif cmd == "xtest-key":
+        # hardware-like key press/release through XTEST (libXtst): <keysym> <down|up>
+        # SDL tracks the modifier state itself, so Alt+Enter is sent as
+        #   xtest-key Alt_L down; xtest-key Return down; xtest-key Return up; xtest-key Alt_L up
+        xt = ctypes.CDLL("libXtst.so.6")
+        xt.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                         ctypes.c_int, ctypes.c_ulong]
+        xt.XTestFakeKeyEvent.restype = ctypes.c_int
+        lib.XStringToKeysym.argtypes = [ctypes.c_char_p]
+        lib.XStringToKeysym.restype = ctypes.c_ulong
+        lib.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        lib.XKeysymToKeycode.restype = ctypes.c_ubyte
+        keysym = lib.XStringToKeysym(sys.argv[2].encode())
+        if not keysym:
+            sys.exit("unknown keysym: " + sys.argv[2])
+        code = lib.XKeysymToKeycode(dpy, keysym)
+        if not code:
+            sys.exit("no keycode for keysym: " + sys.argv[2])
+        press = 1 if sys.argv[3] in ("down", "press", "1") else 0
+        xt.XTestFakeKeyEvent(dpy, code, press, 0)
+        lib.XFlush(dpy)
+        print("xtest key %s %s -> keycode %d" % (sys.argv[2], sys.argv[3], code))
     elif cmd == "fake-motion":
         # synthetic MotionNotify sent straight to the window (bypasses overlays;
         # delivered only if a client selected PointerMotionMask there - i.e. SDL did)

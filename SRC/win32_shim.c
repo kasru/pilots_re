@@ -1199,6 +1199,7 @@ int GetCursorPos(LPPOINT lpPoint)
   if ( !lpPoint )
     return 0;
   SDL_GetMouseState(&x, &y);               /* window coords == client coords here */
+  SdlBackendClientToGame(&x, &y);          /* fullscreen: client px -> the game's own coords */
   lpPoint->x = x;
   lpPoint->y = y;
   return 1;
@@ -1415,9 +1416,23 @@ MMRESULT timeKillEvent(MMRESULT uTimerID)
 
 int main(int argc, char **argv)
 {
-  (void)argc;
-  (void)argv;
-  return WinMain(0, 0, "", 1);
+  static char s_Args[1024];                   /* lpCmdLine for WinMain: argv[1..] joined with spaces */
+  int i;
+  size_t n = 0;
+
+  s_Args[0] = 0;
+  for ( i = 1; i < argc; ++i )
+  {
+    size_t len = strlen(argv[i]);
+    if ( n + len + 2 >= sizeof s_Args )
+      break;
+    if ( n )
+      s_Args[n++] = ' ';
+    memcpy(s_Args + n, argv[i], len);
+    n += len;
+    s_Args[n] = 0;
+  }
+  return WinMain(0, 0, s_Args, 1);
 }
 
 #endif /* !_WIN32 */

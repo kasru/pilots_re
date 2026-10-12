@@ -608,7 +608,14 @@ LABEL_40:
           v9 = g_VideoWindowWidth;
           if ( !g_VideoWindowWidth )
             v9 = 320;
-          MoveWindow((HWND)g_VideoWindowHandle, g_VideoWindowX, g_VideoWindowY, v9, v11, 1);
+          {
+            int wx = g_VideoWindowX;
+            int wy = g_VideoWindowY;
+#if defined(_WIN32)
+            SdlBackendGameToClient(&wx, &wy); /* fullscreen: the child lives in window px */
+#endif
+            MoveWindow((HWND)g_VideoWindowHandle, wx, wy, v9, v11, 1);
+          }
         }
         BlitDirtyRegion(
           g_VideoFlags[0],
@@ -621,6 +628,8 @@ LABEL_40:
       EndPaint(hWnd, &Paint);
       return 0;
     case 0x3B9u:
+      DBG_LOG("VideoWndProc: MM_MCINOTIFY reason=%u (1=success 2=aborted 3=superseded 4=failure)",
+        (unsigned)wParam);
       g_VideoPlaying = 0;
       return 0;
     case 0x10u:
@@ -859,10 +868,48 @@ static LRESULT __stdcall MciChildForwardProc(HWND hWnd, UINT Msg, WPARAM wParam,
     else
       DBG_LOG("MciChildForwardProc: Msg=0x%X", Msg);
     if ( g_MainWindow )
+    {
+      if ( Msg != 0x102u )                       // clicks: lParam is the CHILD's client px
+      {
+        /* The game window works in its own client px (and the game behind it in its own
+           coordinate space, which fullscreen maps onto the picture) - a point relative to
+           the movie would be mapped as if it were relative to the window and land outside
+           the picture, dropping the click that has to skip the video. */
+        POINT pt;
+        pt.x = (int)(short)LOWORD(lParam);
+        pt.y = (int)(short)HIWORD(lParam);
+        if ( ClientToScreen(hWnd, &pt) && ScreenToClient((HWND)g_MainWindow, &pt) )
+        {
+          DBG_LOG("MciChildForwardProc: %X child (%d,%d) -> window client (%d,%d)",
+            (unsigned)Msg, (int)(short)LOWORD(lParam), (int)(short)HIWORD(lParam), pt.x, pt.y);
+          lParam = MAKELPARAM(pt.x, pt.y);
+        }
+      }
       SendMessageA((HWND)g_MainWindow, Msg, wParam, lParam);
+    }
     return 0;                                          // the child must not act on it a second time
   }
   return CallWindowProcA(s_MciChildOldProc, hWnd, Msg, wParam, lParam);
+}
+
+/* Fullscreen puts the picture rect somewhere else in the window; the mciavi32 child is a real
+   window placed in game coordinates (g_VideoWindowX/Y), so it has to follow - otherwise the
+   movie plays in the corner of a letterboxed picture that no longer contains it. Linux has no
+   child at all (mci_ffmpeg draws into the picture), so there is nothing to realign. */
+void VideoRealignMciChild(void)
+{
+#if defined(_WIN32)
+  int wx = g_VideoWindowX;
+  int wy = g_VideoWindowY;
+  int ww = g_VideoWindowWidth ? g_VideoWindowWidth : 320;   /* same defaults the WM_PAINT path uses */
+  int wh = g_VideoWindowHeight ? g_VideoWindowHeight : 240;
+
+  if ( !g_VideoWindowHandle || !g_MainWindow )
+    return;
+  SdlBackendGameToClient(&wx, &wy);
+  DBG_LOG("VideoRealignMciChild: 0x%X -> (%d,%d) %dx%d", (unsigned)g_VideoWindowHandle, wx, wy, ww, wh);
+  MoveWindow((HWND)g_VideoWindowHandle, wx, wy, ww, wh, 1);
+#endif
 }
 
 static void MciChildForwardClicks(HWND hWndVideo)
@@ -978,9 +1025,21 @@ char OpenMCIVideoDevice()
 #endif
       g_VideoWindowHandle = (INT_PTR)hWnd;
       MciChildForwardClicks(hWnd);                      // a click on the movie must skip it too
-      DBG_LOG("OpenMCIVideoDevice: MoveWindow(0x%X, %d, %d, 0, 0)",
-        (unsigned)(INT_PTR)hWnd, g_VideoWindowX, g_VideoWindowY);
-      MoveWindow(hWnd, g_VideoWindowX, g_VideoWindowY, 0, 0, 0);
+      {
+        int wx = g_VideoWindowX;
+        int wy = g_VideoWindowY;
+#if defined(_WIN32)
+        /* mciavi32 draws its child 1:1 and cannot follow a scaled picture: drop the picture to
+           its natural size (centering offset only) while the movie runs, and put the child in
+           window pixels - the game keeps working in its own coordinate space. Linux has no child
+           at all: mci_ffmpeg records the game coordinates and SdlBackendVideoFrame maps them. */
+        SdlBackendSetNativeMovie(1);
+        SdlBackendGameToClient(&wx, &wy);
+#endif
+        DBG_LOG("OpenMCIVideoDevice: MoveWindow(0x%X, %d, %d, 0, 0)",
+          (unsigned)(INT_PTR)hWnd, wx, wy);
+        MoveWindow(hWnd, wx, wy, 0, 0, 0);
+      }
       return LoadVideoBitmap(Destination);
     }
   }
@@ -1057,6 +1116,7 @@ char __stdcall PlayIntroVideo(int windowHeight, int windowWidth, int windowY, in
   if ( g_MCIDeviceID )
   {
     v9 = PlayMCIVideo();
+    DBG_LOG("PlayIntroVideo: PlayMCIVideo -> %d", (int)v9);
     if ( (_BYTE)v9 )
     {
       if ( videoPath )
@@ -1095,6 +1155,9 @@ char __stdcall PlayIntroVideo(int windowHeight, int windowWidth, int windowY, in
       DBG_LOG("PlayIntroVideo: wait loop ended, closing the device");   // a click on the movie lands here within a frame
     }
     SendMCICommandSimple(v9, 0, 0x804u);
+#if defined(_WIN32)
+    SdlBackendSetNativeMovie(0);              // the picture may be scaled again from here on
+#endif
     DestroyWindow((HWND)g_VideoWindowHandle);
     g_VideoWindowHandle = 0;
     g_VideoFlags[1] = 0;
