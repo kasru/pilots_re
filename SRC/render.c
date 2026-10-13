@@ -253,11 +253,16 @@ __int16 __stdcall CreateTileObject(int a1, int a2, __int16 a3)
     v10->renderInfo = *v3;
     if ( (UINT_PTR)v10 < (UINT_PTR)g_GameFlags1 )
       HIBYTE(v10->renderInfo) |= 1u;
-    v11 = HIBYTE(v7->baseData) + 1;
+    /* BYTE3, not HIBYTE: baseData is a void*, so HIBYTE took byte sizeof(ptr)-1 --
+       byte 3 on x86 (the slot template's high byte: 7 -> Size 8 -> pool branch),
+       byte 7 on LP64 (the template's high half, which is 0 -> Size 1 -> inline
+       branch, no flags&8). BYTE3 reads byte 3 on both, which is byte-identical to
+       the original x86 HIBYTE. */
+    v11 = BYTE3(v7->baseData) + 1;
     Size = v11;
     if ( v11 <= 4 )
     {
-      *(_DWORD *)&v10->spriteDataPtr = 0;
+      *(INT_PTR *)&v10->spriteDataPtr = 0; // Zero spriteDataPtr incl. its high half on LP64 (the DWORD form left garbage there, and inline data lives in the field itself)
       v9 = &v10->spriteDataPtr;
     }
     else

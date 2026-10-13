@@ -34,6 +34,17 @@ function New-GameRunDir {
   $RUN = Join-Path $env:TEMP 'pilots_rundir'
   New-Item -ItemType Directory -Force -Path $RUN | Out-Null
 
+  # This directory's contract is "no movies" (see the header), but it is never
+  # actually emptied - clickskip.ps1 drops MOVIES here and removes them in a
+  # finally, so a killed run leaves loose .AVI/.BMP behind. Those are exactly the
+  # names the engine looks for relative to the CWD (.\intro.AVI, case aside), and
+  # a 32-bit build then spends x86check's whole measurement window on the intro,
+  # which shows up as a bogus auxMainLoop/GameMainLoop FAIL rather than as
+  # leftover files. Enforce the contract on every run.
+  Get-ChildItem $RUN -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -ieq '.avi' -or $_.Extension -ieq '.bmp' } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
   # SDL2.dll is arch-shared, so whatever the last build left in SRC is the right one.
   foreach ($f in @($ExeName, 'SDL2.dll', 'PILOTS.EXE')) {
     $s = Join-Path $FromDir $f
