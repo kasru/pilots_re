@@ -78,11 +78,33 @@ static int s_PicY;
 static int s_PicW;                               /* picture size, window client px */
 static int s_PicH;
 
+/* ---- debug overlay: interactive-object markers (port feature: hold Ctrl) ----
+   Marks every object the engine's own click hit test would accept, so "where can I click
+   here" is visible on any scene instead of guessed. It is a read-only walk over the live
+   render stack, taken from the engine's own selection pass - the game is never asked to
+   do anything differently, so the 32-bit byte-identical baseline is untouched.
+   Ctrl was picked because it is free on both OSes: the game reads Shift as a key modifier
+   (main.c: GetAsyncKeyState(16) adds 8 to keyIndex) and Alt+Enter is already the fullscreen
+   toggle, plus a real window manager may swallow Alt before the game sees it. GetAsyncKeyState
+   itself is the one keyboard call that answers the same way on both platforms - a real
+   user32 on Windows, a SDL_GetModState shim on Linux (win32_shim.c) - which matters because
+   on Windows the wndproc subclass hands WM_KEYDOWN straight to the game and SDL never
+   updates its own modifier state there. */
+#define HOTSPOT_MAX 128
+static int s_HotspotHeld;                        /* Ctrl down at the last pump */
+static int s_HotspotPrev;                        /* ... and at the pump before that */
+static int s_HotspotCount;                       /* markers queued for the next draw */
+static int s_HotspotX[HOTSPOT_MAX];              /* game client px, screen space */
+static int s_HotspotY[HOTSPOT_MAX];
+
 static void SdlUpdateLayout(void);               /* where the picture goes */
 static void SdlApplyFullscreen(void);            /* SDL side of s_Fullscreen (no-op pre-window) */
 static int SdlMapMousePoint(int *x, int *y);     /* client px -> game px; 0 = outside the picture */
 static int SdlPictureTransformed(void);
 static int SdlFloorDiv(int a, int b);
+static void SdlCollectHotspots(void);            /* fill s_HotspotX/Y from the render stack */
+static void SdlDrawHotspots(void);               /* white markers over the copied frame */
+static void SdlUpdateHotspots(void);             /* sample Ctrl once per pump */
 
 /* client coordinates packed the Win32 way: LOWORD = x, HIWORD = y (both platform halves) */
 static LPARAM SdlPackPoint(int x, int y)
@@ -1042,6 +1064,104 @@ int SdlBackendCreateVideoTargets(int clientW, int clientH)
   return 1;
 }
 
+/* Where the interactive objects are. Replicates the engine's own selection pass
+   (ProcessInputAndRender, render.c:402-438, plus CheckObjectHitTest, render.c:1706) but
+   keeps every candidate instead of the single winner it resolves to - the whole point of
+   the overlay is to show all of them at once:
+     - walk the live render stack downward, Start down to just past End (the engine's range);
+     - keep the composites, (flags & 3) == 3: their posX/posY are CHILD INDEXES, not pixels;
+     - keep the ones the sprite channel calls 2 (hover/click UI) or 3 (focus objects);
+     - the pixel position is on the child, the size is the first two u16 of the sprite
+       header its first DWORD points at; both are world space, so the camera offset comes
+       off to land in screen space.
+   Read-only and side-effect free: unlike the real pass nothing is written into animLink,
+   so the game cannot tell this ever ran. */
+static void SdlCollectHotspots(void)
+{
+  RenderObject *obj;
+
+  s_HotspotCount = 0;
+  if ( !g_RenderObjectsStart || !g_RenderObjectsEnd || !g_SpriteSlotArray )
+    return;                                     /* nothing loaded yet */
+  if ( g_RenderObjectsStart <= g_RenderObjectsEnd )
+    return;
+  for ( obj = g_RenderObjectsStart; obj > g_RenderObjectsEnd; --obj )
+  {
+    RenderObject *child;
+    const unsigned short *hdr;
+    int type, x, y, w, h;
+
+    if ( (obj->flags & 3) != 3 )
+      continue;
+    type = LOBYTE(g_SpriteSlotArray[obj->slotIndex].baseData);
+    if ( type != 2 && type != 3 )
+      continue;
+    if ( obj->posY == 0xFFFF )
+      continue;                                 /* composite without a child */
+    child = &g_RenderObjectsStart[-obj->posY];
+    if ( child > g_RenderObjectsStart || child < g_RenderObjectsEnd )
+      continue;                                 /* index outside the allocated stack */
+    if ( !child->spriteDataPtr )
+      continue;
+    /* 32-bit pointer slot in game data - the read CheckObjectHitTest does (render.c:1720).
+       On LP64 it only survives because the pool is kept below 2 GB, see docs/lp64.md; the
+       same expression is used deliberately instead of "fixing" the truncation, so the
+       overlay can never disagree with the hit test it is meant to mirror. */
+    hdr = (const unsigned short *)(INT_PTR)*(unsigned int *)child->spriteDataPtr;
+    w = hdr[0];
+    h = hdr[1];
+    if ( w <= 0 || h <= 0 || w > 4096 || h > 4096 )
+      continue;                                 /* not a sprite header: skip rather than mark junk */
+    x = (int)(__int16)child->posX - g_CameraOffsetX;
+    y = (int)(__int16)child->posY - g_CameraOffsetY;
+    if ( x >= s_GameClientW || y >= s_GameClientH || x + w <= 0 || y + h <= 0 )
+      continue;                                 /* fully off-screen: nothing to mark */
+    if ( s_HotspotCount >= HOTSPOT_MAX )
+      break;
+    s_HotspotX[s_HotspotCount] = x + w / 2;     /* centre: lands inside whatever is clickable */
+    s_HotspotY[s_HotspotCount] = y + h / 2;
+    ++s_HotspotCount;
+  }
+}
+
+/* White markers over the copied frame, in WINDOW client px: a game-space radius would be
+   scaled differently along X and Y in fullscreen and come out an ellipse, while one radius
+   in window space stays a circle and still grows with the picture. SDL2 has no circle
+   primitive, so the disc is filled scanline by scanline like SdlBackendDrawGrid does with
+   lines. Nothing here reaches the 8-bit backbuffer, the palette or the dirty regions -
+   the renderer is cleared and recopied on every present, so the markers vanish by simply
+   not being drawn again (see SdlUpdateHotspots for the forced present that makes that
+   visible on a static screen). */
+static void SdlDrawHotspots(void)
+{
+  int r, r2, i;
+
+  if ( !s_HotspotCount )
+    return;
+  /* ~3 game px, so the marker scales with the picture; clamped because the extremes are
+     either invisible or a blob. One radius for X and Y keeps it round. */
+  r = s_GameClientH > 0 ? (3 * s_PicH) / s_GameClientH : 3;
+  if ( r < 2 )
+    r = 2;
+  if ( r > 16 )
+    r = 16;
+  r2 = r * r;
+  SDL_SetRenderDrawColor(s_Renderer, 255, 255, 255, 255);
+  for ( i = 0; i < s_HotspotCount; ++i )
+  {
+    int cx = s_HotspotX[i], cy = s_HotspotY[i];
+    int dy;
+    SdlBackendGameToClient(&cx, &cy);
+    for ( dy = -r; dy <= r; ++dy )
+    {
+      int half = 0;
+      while ( (half + 1) * (half + 1) + dy * dy <= r2 )
+        ++half;
+      SDL_RenderDrawLine(s_Renderer, cx - half, cy + dy, cx + half, cy + dy);
+    }
+  }
+}
+
 /* Show the current texture. Windowed it lands 1:1 at the top-left - mirrors the original
    BitBlt which never scaled - fullscreen it fills the letterboxed picture rect instead
    (see the fullscreen block). Outside the texture the renderer is cleared to black, like
@@ -1107,6 +1227,8 @@ static void SdlDrawGameFrame(void)              /* clear + game texture; no pres
   dst.w = s_PicW > 0 ? s_PicW : s_TexWidth;
   dst.h = s_PicH > 0 ? s_PicH : s_TexHeight;
   SDL_RenderCopy(s_Renderer, s_Texture, 0, &dst);
+  if ( s_HotspotHeld && s_HotspotCount )         /* hold Ctrl: mark the interactive objects */
+    SdlDrawHotspots();
 }
 
 static void SdlPresentCurrent(void)
@@ -1134,6 +1256,30 @@ static void SdlPresentCurrent(void)
 static void SdlFlushPresent(void)
 {
   if ( s_PresentPending )
+    SdlPresentCurrent();
+}
+
+/* Sample Ctrl and refresh the marker list, once per pump. The forced present on the state
+   change is the part that actually makes the feature usable: Windows presents per blit and
+   SdlFlushPresent only presents when something was blitted, so on a resting screen nothing
+   would ever redraw and the markers would either never appear or never go away. Both edges
+   need it - down to show them, up to erase them. */
+static void SdlUpdateHotspots(void)
+{
+  int held = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+  int prevCount = s_HotspotCount;
+  int toggled = held != s_HotspotPrev;
+
+  s_HotspotHeld = held;
+  if ( held )
+    SdlCollectHotspots();
+  else
+    s_HotspotCount = 0;
+  if ( toggled || s_HotspotCount != prevCount )
+    DBG_LOG("SdlUpdateHotspots: Ctrl %s, %d interactive object(s)",
+            held ? "down" : "up", s_HotspotCount);
+  s_HotspotPrev = held;
+  if ( toggled && s_Texture && s_Renderer )
     SdlPresentCurrent();
 }
 
@@ -1329,6 +1475,7 @@ void SdlBackendUpdatePalette(const PALETTEENTRY *entries, int count)
    (original: WM_QUIT, Msg.message == 18). */
 int SdlBackendPumpEvents(void)
 {
+  SdlUpdateHotspots();                          /* hold Ctrl to mark interactive objects */
 #ifdef _WIN32
   /* SDL_PollEvent pumps the Win32 queue (SDL internally does PeekMessage/
      TranslateMessage/DispatchMessage, so our wndproc subclass sees every message);
