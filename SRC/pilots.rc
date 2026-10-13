@@ -1,10 +1,51 @@
-/* Application icon for the rebuilt engine.
+/* Application resources for the rebuilt engine.
    pilots.ico itself is NOT in the repo: it is carved out of the original
    PILOTS.EXE by ..\scripts\extract_icon.ps1, because game data - and
    anything taken from it - is never committed. The build bats run that
    script when the file is missing and skip the icon if it still is not
-   there (a fresh checkout without the game data still has to link). */
+   there (a fresh checkout without the game data still has to link).
+
+   One .rc serves both arches, but the two produce differently named
+   exes, so the x64 bats pass /d PILOTS_X64 to select the right pair of
+   file names below. */
 
 #include <windows.h>
 
+#ifdef PILOTS_X64
+#define ORIGINAL_FILENAME "PILOT_RV_x64.EXE"
+#define INTERNAL_NAME     "PILOT_RV_x64"
+#else
+#define ORIGINAL_FILENAME "PILOT_RV.EXE"
+#define INTERNAL_NAME     "PILOT_RV"
+#endif
+
 IDI_PILOTS ICON "pilots.ico"
+
+/* No LegalCopyright / CompanyName: this is a reconstruction, not a
+   product, and the original's author is not ours to name. */
+1 VERSIONINFO
+ FILEVERSION    1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"    /* U.S. English, Unicode */
+        BEGIN
+            VALUE "FileDescription",    "Pilots - reconstructed engine (SDL2 port)"
+            VALUE "FileVersion",        "1.0"
+            VALUE "InternalName",       INTERNAL_NAME
+            VALUE "OriginalFilename",   ORIGINAL_FILENAME
+            VALUE "ProductName",        "Pilots"
+            VALUE "ProductVersion",     "1.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

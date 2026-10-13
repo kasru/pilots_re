@@ -92,7 +92,7 @@ rem extract_icon.ps1. Without it the exe still links - it just gets the
 rem linker's default icon - so a checkout without the game data still builds.
 if not exist pilots.ico powershell.exe -NoProfile -ExecutionPolicy Bypass -File ..\scripts\extract_icon.ps1
 if exist pilots.ico (
-  rc.exe /nologo /fo "%OBJDIR%\pilots.res" pilots.rc
+  rc.exe /nologo /d PILOTS_X64 /fo "%OBJDIR%\pilots.res" pilots.rc
   if errorlevel 1 goto :fail
   set ICONRES=%OBJDIR%\pilots.res
 ) else (
