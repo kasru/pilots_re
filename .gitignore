@@ -24,3 +24,9 @@ START.BMP
 PILOTS.iso
 PILOTS0
 PILOTS0.*
+
+# the exe's icon is carved out of PILOTS.EXE by scripts/extract_icon.ps1, so it
+# is original game data just like the source file and must not be committed.
+# The bats regenerate it on demand; *.res is its compiled intermediate.
+SRC/pilots.ico
+*.res

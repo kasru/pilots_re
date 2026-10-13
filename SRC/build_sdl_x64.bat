@@ -88,13 +88,28 @@ cl.exe /c /TC /W3 /WX- /O2 /MT %ADLMIDI_OPTS% %ADLMIDI_WD% /Fo%OBJDIR%\ ^
   %ADLMIDI%\src\chips\nuked_cqm\cqm.c
 if errorlevel 1 goto :fail
 
+rem ---- application icon, carved out of the original PILOTS.EXE ----
+rem pilots.ico is deliberately NOT in the repo: it is original game data, like
+rem PILOTS.EXE itself, so it is regenerated on demand by ..\scripts\
+rem extract_icon.ps1. Without it the exe still links - it just gets the
+rem linker's default icon - so a checkout without the game data still builds.
+if not exist pilots.ico powershell.exe -NoProfile -ExecutionPolicy Bypass -File ..\scripts\extract_icon.ps1
+if exist pilots.ico (
+  rc.exe /nologo /fo "%OBJDIR%\pilots.res" pilots.rc
+  if errorlevel 1 goto :fail
+  set ICONRES=%OBJDIR%\pilots.res
+) else (
+  echo WARNING: no icon - scripts\extract_icon.ps1 could not carve it out of PILOTS.EXE
+  set ICONRES=
+)
+
 link.exe /OUT:PILOT_RV_x64.EXE /SUBSYSTEM:WINDOWS /MACHINE:X64 /NOLOGO ^
   /DEBUG /DYNAMICBASE:NO ^
   /PDB:PILOT_RV_x64.pdb /MAP:PILOT_RV_x64.map ^
   kernel32.lib user32.lib gdi32.lib winmm.lib vfw32.lib ^
   comdlg32.lib advapi32.lib shell32.lib ole32.lib oldnames.lib ^
   libcmt.lib libvcruntime.lib libucrt.lib libcpmt.lib SDL2.lib ^
-  %OBJDIR%\*.obj
+  %ICONRES% %OBJDIR%\*.obj
 if errorlevel 1 goto :fail
 
 copy /Y "%SDL2%\lib\x64\SDL2.dll" . >nul

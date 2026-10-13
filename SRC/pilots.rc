@@ -1,0 +1,10 @@
+/* Application icon for the rebuilt engine.
+   pilots.ico itself is NOT in the repo: it is carved out of the original
+   PILOTS.EXE by ..\scripts\extract_icon.ps1, because game data - and
+   anything taken from it - is never committed. The build bats run that
+   script when the file is missing and skip the icon if it still is not
+   there (a fresh checkout without the game data still has to link). */
+
+#include <windows.h>
+
+IDI_PILOTS ICON "pilots.ico"
