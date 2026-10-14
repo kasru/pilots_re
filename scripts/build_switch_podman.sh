@@ -9,22 +9,56 @@
 #
 # Why a container and not a local toolchain: devkitA64, libnx and
 # portlibs/switch must all come out of one dkp-pacman tree, and the host carries
-# none of them. The docker.io/devkitpro/devkita64 image already ships
-# everything this project needs:
+# none of them.
 #
-#   switch-sdl2 2.28.5   portlibs/switch/lib/pkgconfig/sdl2.pc
-#   switch-ffmpeg 7.1    libavcodec.pc / libavformat.pc / libavutil.pc /
-#                        libswscale.pc  (static .a, which is what we link anyway)
-#   switch-tools         elf2nro, nacptool
-#   libnx 4.12           plus cmake/Platform/NintendoSwitch.cmake, which defines
-#                        nx_create_nacp/nx_create_nro - the .nro step itself
+# WHERE SDL2 AND FFMPEG COME FROM: they are already in the image. devkitPro's
+# devkita64 image ships the whole Switch SDK, not just a compiler - 77
+# switch-* packages baked in at image build time, pulled from the signed
+# dkp-libs repo with devkitPro's own keyring. The ones this project uses:
 #
-# So unlike the wiliwili-based builds this needs NO custom packages downloaded
-# into the repo root: the reconstruction uses only SDL2 and the plain libav*
-# libraries, no libmpv, no libass, no forwarder/NSP tooling.
+#   switch-sdl2  2.28.5-4   sdl2.pc -> libSDL2.a. Its Cflags also carry
+#                           -D__SWITCH__, one of the two places that define
+#                           it (devkitPro's Platform/NintendoSwitch.cmake
+#                           passes the other), which is what every
+#                           #ifdef __SWITCH__ in the port layer keys off.
+#   switch-ffmpeg 7.1-5     libavcodec/libavformat/libavutil/libswscale .pc
+#                           and .a, linked transitively against dav1d, bz2,
+#                           zlib and swresample - also all in the image.
+#                           Crucially it contains ff_msrle_decoder: MS RLE is
+#                           the compression the game's own AVI files use, and
+#                           mci_ffmpeg.c decodes them through it.
+#   switch-tools 1.13.1-1   elf2nro + nacptool, i.e. the .nro step itself
+#   libnx 4.12.0-1          plus cmake/Platform/NintendoSwitch.cmake, which
+#                           defines nx_generate_nacp / nx_create_nro
+#   switch-pkg-config       aarch64-none-elf-pkg-config, what FindPkgConfig
+#                           runs once the toolchain file has set it
+#
+# So unlike the wiliwili-style Switch builds this downloads NOTHING into the
+# repo root and never runs dkp-pacman. Those scripts curl .pkg.tar.zst files
+# (switch-libmpv, switch-libass, hacBrewPack, switch-nspmini, and their own
+# switch-ffmpeg) and `dkp-pacman -U` them, because libmpv/libass and the NSP
+# forwarder tooling are simply not part of the SDK and they want a differently
+# configured ffmpeg on top. This project needs only SDL2 and the plain libav*,
+# which the SDK already provides - so there is nothing to fetch and nothing to
+# keep in the tree.
 #
 # No `dkp-pacman -Syu` either: the image is a snapshot that already works, and
 # a full system update on a fresh container is the usual way to break it.
+#
+# The one weak point this script defends against: the image is pinned only as
+# :latest, so a newer image on another machine could ship a different package
+# set. The build runs a pre-flight check first and fails with the exact package
+# names instead of a confusing CMake "could not find" error. If that ever
+# fires, the packages have to go INTO THE IMAGE - a --rm container forgets
+# anything dkp-pacman installs, which is exactly why the filmix scripts
+# reinstall theirs on every single build. Make a derived image:
+#
+#   podman run --name dkp-deps docker.io/devkitpro/devkita64 \
+#       dkp-pacman -S --noconfirm switch-sdl2 switch-ffmpeg
+#   podman commit dkp-deps docker.io/devkitpro/devkita64:pilots
+#   podman rm dkp-deps
+#   PILOTS_SWITCH_IMAGE=docker.io/devkitpro/devkita64:pilots \
+#       sh scripts/build_switch_podman.sh
 #
 # Clean has to run INSIDE the container. CMake bakes the mount path /data into
 # the generated Makefiles, so `make clean` on the host fails on `cd /data/...`.
@@ -51,7 +85,7 @@ case "$MODE" in
     exit 0
     ;;
   build) ;;
-  -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+  -h|--help) sed -n '2,70p' "$0"; exit 0 ;;
   *) echo "build_switch_podman: unknown mode '$MODE' (use: build | clean | distclean)" >&2; exit 2 ;;
 esac
 
@@ -60,12 +94,33 @@ command -v podman >/dev/null 2>&1 \
 podman image exists "$IMAGE" 2>/dev/null \
   || { echo "build_switch_podman: image '$IMAGE' not found (podman pull $IMAGE)" >&2; exit 1; }
 
-# Both steps in one --rm container: the tree is configured with the mount path
-# /data, so configure and build have to agree on it. PILOTS_DEBUG_LOG defaults
-# OFF for the Switch (app0: is read-only), -DPLATFORM_SWITCH=ON is what makes
-# CMakeLists add the nx_create_nro step on top of the regular executable.
+# One --rm container for the pre-flight check, the configure and the build: the
+# tree is configured with the mount path /data, so all three have to agree on
+# it. PILOTS_DEBUG_LOG defaults OFF for the Switch (app0: is read-only).
+# -DPLATFORM_SWITCH=ON is what makes CMakeLists add the nx_create_nro step on
+# top of the regular executable.
 podman run --rm -v "$REPO:/data" "$IMAGE" bash -c "
     set -e
+
+    # Pre-flight: every pkg-config module CMake is about to ask for must
+    # resolve here. They come with the image (see the header), so in practice
+    # this never fires - it exists so that a differently-stocked image fails
+    # loudly and with package names, before cmake has produced ten screens of
+    # output about it.
+    PC=/opt/devkitpro/portlibs/switch/bin/aarch64-none-elf-pkg-config
+    missing=
+    for m in sdl2 libavcodec libavformat libavutil libswscale; do
+      \"\$PC\" --exists \"\$m\" 2>/dev/null || missing=\"\$missing \$m\"
+    done
+    if [ -n \"\$missing\" ]; then
+      echo \"build_switch_podman: this image lacks:\$missing\" >&2
+      echo '  they ship with the image; a --rm container forgets installs, so put' >&2
+      echo '  them into the image itself - see WHERE SDL2 AND FFMPEG COME FROM' >&2
+      echo '  at the top of scripts/build_switch_podman.sh' >&2
+      exit 1
+    fi
+    echo \"deps: sdl2 + libav{codec,format,util} + libswscale resolve in the image\"
+
     cd /data
     cmake -S . -B ${BUILD_DIR} \
       -DCMAKE_BUILD_TYPE=Release \
