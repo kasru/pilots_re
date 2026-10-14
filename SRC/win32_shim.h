@@ -463,6 +463,7 @@ int  wvsprintfA(LPSTR, LPCSTR, va_list);
 DWORD GetModuleFileNameA(HINSTANCE, LPSTR, DWORD);
 DWORD GetFullPathNameA(LPCSTR, DWORD, LPSTR, LPSTR *);
 DWORD GetTempPathA(DWORD, LPSTR);
+int   SetCurrentDirectoryA(LPCSTR);
 DWORD GetVersion(void);
 void  Sleep(DWORD);
 HGLOBAL GlobalAlloc(UINT, size_t);

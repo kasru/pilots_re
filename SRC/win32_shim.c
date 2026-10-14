@@ -184,6 +184,20 @@ static void ShimPathToWin(char *s)
       *s = '\\';
 }
 
+/* SetCurrentDirectoryA - used by the -datapath command line switch to point the
+   whole game at another resource directory. Resolved the same way every file
+   open is (case-insensitive like Win9x), so -datapath ./PILOTS on a
+   case-sensitive filesystem still lands on ./pilots. */
+int SetCurrentDirectoryA(LPCSTR lpPathName)
+{
+  char unixPath[MAX_PATH * 2];
+
+  if ( !lpPathName || !*lpPathName )
+    return 0;
+  WinShim_ResolvePath(lpPathName, unixPath, sizeof unixPath);
+  return chdir(unixPath) == 0;
+}
+
 DWORD GetFullPathNameA(LPCSTR lpFileName, DWORD nBufferLength, LPSTR lpBuffer, LPSTR *lpFilePart)
 {
   char unixPath[MAX_PATH * 2];
@@ -1424,13 +1438,32 @@ int main(int argc, char **argv)
   for ( i = 1; i < argc; ++i )
   {
     size_t len = strlen(argv[i]);
-    if ( n + len + 2 >= sizeof s_Args )
+    size_t j;
+    int quote = 0;
+
+    /* Windows hands WinMain the raw command line with the shell's quoting still
+       in it, so -datapath "D:\My Games\Pilots" arrives as ONE token. argv has
+       already thrown that away, and joining with spaces would hand the port
+       layer's tokenizer "-datapath D:\My Games\Pilots" as three tokens - the
+       switch would get "D:\My" and the spaces in the path would silently pick
+       the wrong directory. Put the quotes back where they were. */
+    for ( j = 0; j < len; ++j )
+      if ( argv[i][j] == ' ' || argv[i][j] == '\t' )
+        quote = 1;
+    if ( n + len + 4 >= sizeof s_Args )
       break;
     if ( n )
       s_Args[n++] = ' ';
+    if ( quote )
+      s_Args[n++] = '"';
     memcpy(s_Args + n, argv[i], len);
     n += len;
     s_Args[n] = 0;
+    if ( quote )
+    {
+      s_Args[n++] = '"';
+      s_Args[n] = 0;
+    }
   }
   return WinMain(0, 0, s_Args, 1);
 }

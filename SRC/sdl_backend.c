@@ -863,38 +863,107 @@ void SdlBackendSetNativeMovie(int on)
 
 /* -fullscreen / /fullscreen on the command line (port option, case-insensitive).
    Windows passes WinMain's lpCmdLine, win32_shim joins argv[1..] into the same string. */
+/* ---- command line: -fullscreen and -datapath <dir> ----
+   SdlBackendParseCmdLine is called from WinMain (main.c) before the game opens
+   anything, and that is exactly what makes -datapath work. Everything the engine
+   looks up is CWD-relative - g_ExecutablePath stays ".\PILOTS.EXE", the scripts
+   ask for ".\movies\intro.AVI", the saves come from script data - so changing
+   the working directory here moves the whole lookup at once and the game code
+   does not have to know about it. Without the switch nothing is touched, which
+   is the original behaviour: resources are found next to wherever the process
+   was started.
+   Two things deliberately stay with the exe rather than follow -datapath: the
+   debug log and the .hlp, both derived from GetModuleFileNameA. */
+
+/* Next token of the command line. A '"'-quoted token may contain spaces and the
+   quotes are not part of it. Returns 0 once the line is exhausted, 1 when a token
+   was read - *len can then be 0 for an empty "" token, which is why the caller
+   must not treat 0 as "found nothing". */
+static int SdlNextToken(const char **pp, const char **ptok, int *len)
+{
+  const char *p = *pp;
+  const char *tok;
+
+  while ( *p == ' ' || *p == '\t' )
+    ++p;
+  if ( !*p )
+    return 0;
+  if ( *p == '"' )
+  {
+    ++p;
+    tok = p;
+    while ( *p && *p != '"' )
+      ++p;
+    *len = (int)(p - tok);
+    if ( *p == '"' )
+      ++p;
+  }
+  else
+  {
+    tok = p;
+    while ( *p && *p != ' ' && *p != '\t' )
+      ++p;
+    *len = (int)(p - tok);
+  }
+  *ptok = tok;
+  *pp = p;
+  return 1;
+}
+
+/* The whole token is "-name" (or "/name"), case-insensitively, and nothing else. */
+static int SdlArgIs(const char *tok, int len, const char *name)
+{
+  int i;
+
+  for ( i = 0; name[i]; ++i )
+  {
+    char a = (i + 1 < len) ? tok[i + 1] : 0;       /* +1 skips the leading - or / */
+    if ( a >= 'A' && a <= 'Z' )
+      a += 32;
+    if ( a != name[i] )
+      return 0;
+  }
+  return len == i + 1;
+}
+
+static void SdlUseDataPath(const char *path, int len)
+{
+  char dir[MAX_PATH];
+
+  if ( len >= (int)sizeof(dir) )
+    len = (int)sizeof(dir) - 1;
+  memcpy(dir, path, len);
+  dir[len] = '\0';
+  if ( !SetCurrentDirectoryA(dir) )                /* real one on Windows, shim over chdir on Linux */
+    DBG_LOG("SdlBackendParseCmdLine: -datapath '%s': cannot use it, keeping the current directory", dir);
+  else
+    DBG_LOG("SdlBackendParseCmdLine: -datapath '%s': game resources are looked up here", dir);
+}
+
 int SdlBackendParseCmdLine(const char *cmdLine)
 {
   const char *p = cmdLine;
+  const char *tok;
+  int len;
   int found = 0;
 
   if ( !p )
     return 0;
-  while ( *p )
+  while ( SdlNextToken(&p, &tok, &len) )
   {
-    const char *tok;
-    int len;
-    while ( *p == ' ' || *p == '\t' )
-      ++p;
-    tok = p;
-    while ( *p && *p != ' ' && *p != '\t' )
-      ++p;
-    len = (int)(p - tok);
-    if ( len > 1 && (tok[0] == '-' || tok[0] == '/') )
+    if ( len <= 1 || (tok[0] != '-' && tok[0] != '/') )
+      continue;
+    if ( SdlArgIs(tok, len, "fullscreen") )
+      found = 1;
+    else if ( SdlArgIs(tok, len, "datapath") )
     {
-      const char *s = tok + 1;
-      const char *o = "fullscreen";
-      int i;
-      for ( i = 0; o[i]; ++i )
-      {
-        char a = (i + 1 < len) ? s[i] : 0;
-        if ( a >= 'A' && a <= 'Z' )
-          a += 32;
-        if ( a != o[i] )
-          break;
-      }
-      if ( o[i] == 0 && len == i + 1 )
-        found = 1;
+      const char *val;
+      int vlen;
+
+      if ( SdlNextToken(&p, &val, &vlen) && vlen > 0 )
+        SdlUseDataPath(val, vlen);
+      else
+        DBG_LOG("SdlBackendParseCmdLine: -datapath needs a directory, ignored");
     }
   }
   if ( found )
