@@ -48,7 +48,9 @@
 extern int remove(const char *path);
 
 #include <dirent.h>   /* case-insensitive path walk below (Win9x semantics) */
+#ifndef __SWITCH__
 #include <sys/mman.h> /* low memory pool below (GlobalAlloc), see the note there */
+#endif
 
 /* Side setjmp buffer: pilots_globals.h routes setjmp/longjmp here (the
    generated 64-byte g_JumpBuffer field is too small for glibc's jmp_buf). */
@@ -591,14 +593,53 @@ int FreeLibrary(HMODULE hModule)
    address, which is byte-identical on x86 and avoids rewriting ~240 (INT_PTR)
    call sites - the memory pool is a GlobalAlloc block (InitializeVideoSystem).
 
-   MAP_32BIT is Linux/x86 only; the aarch64 (Switch) build takes the second path,
-   which asks for a low address and rejects anything the kernel put higher.
+   MAP_32BIT is Linux/x86 only; elsewhere the second path asks for a low
+   address and rejects anything the kernel put higher. The Switch is a third
+   case: newlib has no mmap at all, so it gets the pool out of its own image -
+   see the __SWITCH__ branch of Shim_AllocLow.
 
    munmap needs the mapping length and GlobalFree is given no size, so each block
    carries it in a 16-byte header (keeps the payload 16-byte aligned, like malloc). */
 
 #define SHIM_LOWMEM_HDR 16u
 
+#ifdef __SWITCH__
+/*
+ * No <sys/mman.h> on newlib, so neither mmap path below exists here. The pool
+ * comes out of the NRO image instead: .bss sits immediately after the code at
+ * the image base, which is the lowest address in the whole process - and that
+ * is exactly where the int round trip stays lossless. (The libnx heap starts
+ * there too but grows toward 4 GB, so a block handed out late could come back
+ * from above 2 GB; a pool at the start of the image cannot move.)
+ *
+ * Both GlobalAlloc users are small and allocate once at startup: the video
+ * pool (InitVidSys - a few hundred KB at 640x480) and g_hGraphicsMemory
+ * (0xF000 in audio.c), so 4 MB is comfortable. The bump allocator never hands
+ * memory back - the only two GlobalFree sites are the shutdown paths in
+ * audio.c and main.c, which have nothing to reclaim by then.
+ */
+#define SHIM_LOWMEM_POOL (4u * 1024u * 1024u)
+
+static unsigned char s_SwitchLowMemPool[SHIM_LOWMEM_POOL] __attribute__((aligned(16)));
+static size_t s_SwitchLowMemUsed;
+
+static void *Shim_AllocLow(size_t bytes)
+{
+  size_t total = (bytes + 15u) & ~(size_t)15u;
+  unsigned char *p;
+
+  if ( total > sizeof(s_SwitchLowMemPool) - s_SwitchLowMemUsed )
+    return 0;
+  p = s_SwitchLowMemPool + s_SwitchLowMemUsed;
+  s_SwitchLowMemUsed += total;
+  if ( (INT_PTR)p != (INT_PTR)(int)(INT_PTR)p )
+  {
+    DBG_LOG("Shim_AllocLow: pool at %p is above 2 GB, the int round trip would not survive it", p);
+    return 0;
+  }
+  return p;
+}
+#else
 static void *Shim_AllocLow(size_t bytes)
 {
   size_t total = bytes + SHIM_LOWMEM_HDR;
@@ -623,6 +664,7 @@ static void *Shim_AllocLow(size_t bytes)
   }
   return p;
 }
+#endif /* !__SWITCH__ */
 
 HGLOBAL GlobalAlloc(UINT uFlags, size_t dwBytes)
 {
@@ -640,6 +682,10 @@ HGLOBAL GlobalAlloc(UINT uFlags, size_t dwBytes)
 
 HGLOBAL GlobalFree(HGLOBAL hMem)
 {
+#ifdef __SWITCH__
+  (void)hMem;                             /* bump pool: the only frees are the shutdown paths */
+  return 0;
+#else
   unsigned char *p;
 
   if ( !hMem )
@@ -647,6 +693,7 @@ HGLOBAL GlobalFree(HGLOBAL hMem)
   p = (unsigned char *)hMem - SHIM_LOWMEM_HDR;
   munmap(p, *(size_t *)p);
   return 0;
+#endif
 }
 
 HGLOBAL GlobalLock(HGLOBAL hMem)

@@ -159,6 +159,26 @@ static __inline unsigned int _rotr(unsigned int v, int c)
 
 extern char *strupr(char *s);
 
+/*
+ * setjmp on newlib/aarch64 (the Nintendo Switch). glibc exports _setjmp - the
+ * variant that leaves the signal mask alone - and that is what
+ * pilots_globals.h's `#define setjmp(env) _setjmp(g_ShimJumpBuf)` asks for.
+ * newlib has no _setjmp at all: libc.a exports setjmp/longjmp only, and
+ * <setjmp.h> declares no prototype for it either. Route the name to the
+ * setjmp that does exist; it saves the signal mask as well, which on the
+ * Switch is nothing worth preserving.
+ *
+ * The chain terminates instead of recursing. While `setjmp` is being expanded
+ * it is blue-painted, so the `setjmp(g_ShimJumpBuf)` that _setjmp produces is
+ * the real library call - the very same paint the longjmp macro beside it in
+ * pilots_globals.h already relies on ("not self-referential: macros are
+ * blue-painted").
+ */
+#ifdef __SWITCH__
+#include <setjmp.h>
+#define _setjmp(env) setjmp(env)
+#endif
+
 /* ---- winuser.h message / input constants (from the Windows SDK) ---- */
 #define WM_DESTROY      0x0002
 #define WM_SIZE         0x0005

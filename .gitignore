@@ -1,6 +1,9 @@
 # build outputs: the Windows bats put .obj in build/<Configuration>/<Platform>,
 # e.g. build/Debug/x64 - one dir per bat, so all four builds coexist; the debug
-# bats also drop the /Fd compiler PDB there. CMake on Linux uses build/ too.
+# bats also drop the /Fd compiler PDB there. CMake gets one dir per flavour:
+# build/ (or build32/, build64/) on Linux, build-switch/ for the .nro. One dir
+# per flavour matters because SDL2/libavcodec must come from the matching
+# architecture, so a dir is tied to one of them for good.
 # Exe/PDB/MAP/SDL2.dll stay in SRC/ next to the game data.
 *.obj
 *.exe
@@ -9,7 +12,7 @@
 *.ilk
 *.dll
 *_debug.log
-build/
+build*/
 
 # third_party SDKs are committed as-is (SDL2.dll must not be ignored)
 !third_party/**

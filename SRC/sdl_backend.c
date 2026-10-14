@@ -396,7 +396,7 @@ static void SdlHandleResize(HWND hwnd, int w, int h)
 
 static void SdlDispatchSdlEvent(const SDL_Event *ev)
 {
-  HWND hwnd = g_MainWindow;               /* 0 before CreateMainWindow: input events drop */
+  HWND hwnd = (HWND)g_MainWindow;          /* 0 before CreateMainWindow: input events drop */
 
   switch ( ev->type )
   {
@@ -940,12 +940,35 @@ static void SdlUseDataPath(const char *path, int len)
     DBG_LOG("SdlBackendParseCmdLine: -datapath '%s': game resources are looked up here", dir);
 }
 
+#ifdef __SWITCH__
+/* The homebrew menu passes no command line, so -datapath cannot be used there
+   and the engine would look for .\PILOTS.EXE at whatever the CWD happens to be
+   (the SD root). Fall back to the usual homebrew location - but only when the
+   game data is really in it: whoever prefers the data elsewhere keeps exactly
+   the previous behaviour, and if nothing is there the CWD is left untouched,
+   so this can only ever add a case, never remove one. Goes through the same
+   SetCurrentDirectoryA as -datapath, so the sdmc: prefix and the
+   case-insensitive walk stay in one place. */
+static void SdlSwitchDefaultDataPath(void)
+{
+  char probe[MAX_PATH];
+
+  strcpy(probe, "sdmc:/switch/pilots");
+  strcat(probe, "/PILOTS.EXE");
+  if ( GetFileAttributesA(probe) == (DWORD)-1 )
+    return;
+  if ( SetCurrentDirectoryA("sdmc:/switch/pilots") )
+    DBG_LOG("SdlBackendParseCmdLine: no -datapath on the Switch, using sdmc:/switch/pilots");
+}
+#endif /* __SWITCH__ */
+
 int SdlBackendParseCmdLine(const char *cmdLine)
 {
   const char *p = cmdLine;
   const char *tok;
   int len;
   int found = 0;
+  int dataPathGiven = 0;
 
   if ( !p )
     return 0;
@@ -961,11 +984,20 @@ int SdlBackendParseCmdLine(const char *cmdLine)
       int vlen;
 
       if ( SdlNextToken(&p, &val, &vlen) && vlen > 0 )
+      {
+        dataPathGiven = 1;
         SdlUseDataPath(val, vlen);
+      }
       else
         DBG_LOG("SdlBackendParseCmdLine: -datapath needs a directory, ignored");
     }
   }
+#ifdef __SWITCH__
+  if ( !dataPathGiven )
+    SdlSwitchDefaultDataPath();
+#else
+  (void)dataPathGiven;
+#endif
   if ( found )
   {
     DBG_LOG("SdlBackendParseCmdLine: -fullscreen -> borderless desktop fullscreen, Alt+Enter toggles");
