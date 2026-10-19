@@ -169,7 +169,14 @@ echo "== 5. Alt+Enter -> fullscreen again"
 acquire 10
 $X warp "$ID" 5 5 >/dev/null
 alt_enter
-n=$(grep -c -F "SdlApplyFullscreen: on ->" "$LOG" 2>/dev/null)
+# The Alt+Enter above is delivered by XTEST and processed by the game's pump some
+# ms later - the same wait section 4 has (wait_log), just for a count.
+n=0; t=50
+while [ "$t" -gt 0 ]; do
+  n=$(grep -c -F "SdlApplyFullscreen: on ->" "$LOG" 2>/dev/null)
+  [ "${n:-0}" -ge 2 ] && break
+  sleep 0.2; t=$((t - 1))
+done
 [ "${n:-0}" -ge 2 ]; check $? "Alt+Enter returns to fullscreen"
 wait_geom "${SW}x${SH}" 10; check $? "window covers the screen again"
 echo "   geom: $(geom)"

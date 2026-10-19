@@ -85,11 +85,20 @@ overlay() {                                         # overlay <label>
   [ -n "$N" ] && [ "$N" -eq 0 ]; check $? "$1: Ctrl up clears them (count=${N:-none})"
 }
 
-cd SRC || exit 1
-../$BUILDDIR/PILOT_RV >/tmp/pilots_hs.out 2>&1 &
+# The scratch run dir with the data file and NO movies - the same contract the Windows
+# rundir.ps1 keeps. With the real MOVIES/ in the CWD the startup plays INTRO (~34 s) and
+# then START (~50 s), both INSIDE GameMainLoop, and during a movie the game pumps SDL
+# through PeekMessageA only: SdlUpdateHotspots (the overlay sampler, in
+# SdlBackendPumpEvents) does not run at all, so no Ctrl edge is ever logged - measured
+# with a call counter, frozen for 4 s of held Ctrl while KEYDBG saw the key fine.
+REPO=$(pwd)
+RUN=/tmp/pilots_hotspots_rundir
+rm -rf "$RUN"; mkdir -p "$RUN"
+ln -sf "$REPO/SRC/PILOTS.EXE" "$RUN/PILOTS.EXE"
+cd "$RUN" || exit 1
+"$REPO/$BUILDDIR/PILOT_RV" >/tmp/pilots_hs.out 2>&1 &
 P=$!
-cd ..
-
+cd "$REPO"
 ID=""
 if ! acquire 45; then
   echo "FAIL: no live game window within 45s"
@@ -110,7 +119,9 @@ $X warp "$ID" 5 5 >/dev/null
 # objects do, and reading the overlay during that window just reads an empty stack.
 echo "== 1. waiting for the menu"
 wait_log "ENTER: GameMainLoop" 40; check $? "game reached its main loop"
-sleep 2
+# The startup screen's own loads run for ~3 s after the loop is entered; with no movies
+# they are the only thing left to wait for, and an empty stack reads as count=0.
+sleep 5
 
 echo "== 2. overlay on the startup screen"
 overlay startup
