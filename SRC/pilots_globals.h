@@ -366,15 +366,66 @@ int __stdcall sub_408870(int a1, int a2, int a3);
 /* SDL2 backend (sdl_backend.c) - window/present/palette/pump + SDL wave device */
 int SdlBackendStartup(void);
 void SdlBackendShutdown(void);
+/* Why the frame loop ended: a read-only report the shim prints from WinHelpA(HELP_QUIT) -
+   main.c's first action after ProcessGameFrame returned 0 - and SdlBackendShutdown prints
+   when that never comes (WM_QUIT and pErrorMessage == 1 skip it). Debug builds only; a
+   no-op everywhere else. */
+void SdlQuitReportExit(const char *where);
+/* Switch only (switch_libnx.c): point stderr at the machine that started the app
+   through nxlink, so the debug log is visible live as well as on the card. Called
+   from SdlBackendStartup under __SWITCH__; on every other platform there is no
+   such thing and no caller. */
+void SdlSwitchAttachDebugChannel(void);
+/* Also Switch only: log where the code/heap/stack are and how much memory this
+   process may use - the numbers the port kept having to guess at. */
+void SdlSwitchReportEnvironment(void);
+/* Also Switch only: `bytes` of zeroed memory that sits below 2 GB, or 0. The engine
+   stores a pool pointer in a 32-bit field, so that pointer has to survive the trip
+   through an int, and nothing this process is handed by default does - see
+   SdlSwitchMapLowMemory in switch_libnx.c and Shim_AllocLow in win32_shim.c. */
+void *SdlSwitchMapLowMemory(size_t bytes);
+/* Also Switch only: give that mapping back before the process leaves - the loader owns
+   the pages underneath it and breaks on exit if they are still aliased. Called from
+   SdlBackendShutdown, after the game's cleanup. */
+void SdlSwitchUnmapLowMemory(void);
+/* Also Switch only: the stick and the face buttons, which SDL does not read on this
+   console (its Switch build has touch and keyboard but no npad driver). stickX/stickY
+   are hid's own values, +-0x7FFF with y positive upwards; buttons is the bits below.
+   MINUS is the Joy-Con "-" key: the same picture toggle the keyboard '-' performs on the
+   other platforms (SdlBackendToggleStretch), which is why it is read at all - the console
+   has no keyboard in the dock, and the user asks for that key by name. */
+#define SWITCH_PAD_A 0x0001u
+#define SWITCH_PAD_B 0x0002u
+#define SWITCH_PAD_X 0x0004u
+#define SWITCH_PAD_Y 0x0008u
+#define SWITCH_PAD_L 0x0010u
+#define SWITCH_PAD_R 0x0020u
+#define SWITCH_PAD_MINUS 0x0040u
+void SdlSwitchPollPad(int *stickX, int *stickY, unsigned int *buttons);
 HWND SdlBackendCreateWindow(int x, int y, int clientW, int clientH, int resizable, LPCSTR title);
 void SdlBackendSetCursorVisible(int visible);
 int SdlBackendCreateVideoTargets(int clientW, int clientH);
 void SdlBackendPresentRect(const void *bits, int bmp_height, int stride, int x, int y, int w, int h);
 void SdlBackendVideoFrame(const void *bgra, int srcw, int srch, int x, int y, int w, int h); /* MCI movie overlay (mci_ffmpeg.c) */
+/* a movie's own sound: the shared mixer's third source (mci_ffmpeg.c reads the AVI's WAVE
+   stream itself - neither ffmpeg nor the game's AVI reader looks at it), paced by its video
+   clock. Mono 8-bit PCM is the only shape these files hold. Undef'd on Windows, where
+   mciavi32 plays that stream and these functions are not called. */
+#ifndef _WIN32
+int SdlMix_MovieOpen(unsigned int rate);          /* 1 = the mixer took it */
+unsigned int SdlMix_MovieWrite(const unsigned char *src, unsigned int len); /* bytes taken */
+void SdlMix_MovieClose(void);
+#endif
 void SdlBackendClearBlack(void);
 void SdlBackendDrawGrid(unsigned int colorRef);
 void SdlBackendUpdatePalette(const PALETTEENTRY *entries, int count);
 int SdlBackendPumpEvents(void);
+/* port features: '-' toggles the picture between the game's own aspect and stretched over the
+   whole screen; the busy indicator is fed by the shim's read path (win32_shim.c) because a load
+   happens inside the game's own loop, where nothing the port owns gets called but the reads */
+int SdlBackendToggleStretch(void);
+void SdlBackendLoadBeat(unsigned int bytes);
+void SdlBackendFrameShown(void);
 /* borderless fullscreen (port feature: -fullscreen at startup, Alt+Enter to toggle) */
 int SdlBackendParseCmdLine(const char *cmdLine);   /* applies the options it recognises */
 void SdlBackendSetFullscreen(int on);
@@ -388,6 +439,9 @@ int SdlWave_Queue(const void *data, unsigned int len);
 void SdlWave_Clear(void);
 void SdlWave_Pause(int pause);
 unsigned int SdlWave_Queued(void);
+unsigned int SdlWave_RingDepth(void);            /* frames actually in the shared ring: the device-side
+                                                    truth under SdlWave_Queued's accounting, see the
+                                                    watchdog in SdlWavePump */
 int SdlWave_IsOpen(void);
 void SdlWave_SetVolume(int vol);
 int SdlWave_GetVolume(void);
@@ -406,5 +460,7 @@ void SdlBackendGetClientSize(int *w, int *h);
 int  SdlBackendIsMinimized(void);
 void SdlBackendShowWindow(int show);
 DWORD SdlBackendGetWinStyle(void);
+void SdlBackendNoteFramePoll(void);              /* win32_shim's GetCursorPos: main.c polls it once
+                                                    per frame, so the count is the loop's own pulse */
 
 #endif /* PILOTS_GLOBALS_H */

@@ -48,7 +48,7 @@ cl.exe /c /TC /W3 /WX- /Od /DNDEBUG /DWIN32 /MT ^
   script.c resource.c saveload.c audio.c ^
   video.c text.c tilemap.c blitting.c ^
   graphics.c main.c fileio.c memory.c ^
-  input.c native_funcs.c sdl_backend.c win32_shim.c mci_ffmpeg.c
+  input.c native_funcs.c sdl_backend.c switch_libnx.c win32_shim.c mci_ffmpeg.c
 if errorlevel 1 goto :fail
 
 rem ---- libADLMIDI (third_party/libADLMIDI): MIDI music synth, C++ core + Nuked/DosBox OPL emulators ----

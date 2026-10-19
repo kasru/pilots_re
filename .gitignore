@@ -12,6 +12,7 @@
 *.ilk
 *.dll
 *_debug.log
+build_dbg*.log
 build*/
 
 # third_party SDKs are committed as-is (SDL2.dll must not be ignored)

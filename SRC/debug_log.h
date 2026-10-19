@@ -247,22 +247,48 @@ static void DbgInstallExceptionHandler(void)
 #else /* !_WIN32: POSIX signal handlers + backtrace instead of SEH */
 
 #include <signal.h>
-#include <execinfo.h>
 #include <unistd.h>
+
+/* backtrace() lives in glibc's execinfo.h, and that header is a glibc-ism:
+   newlib - which is what the Switch builds against - does not ship it, so the
+   _DEBUG crash handler below simply did not compile there. Probing for the
+   header instead of testing __NEWLIB__ keeps this right on musl and on the
+   older toolchains too. */
+#ifdef __has_include
+#  if __has_include(<execinfo.h>)
+#    include <execinfo.h>
+#    define PILOTS_HAVE_BACKTRACE 1
+#  endif
+#else
+#  include <execinfo.h>           /* compilers without __has_include: assume glibc */
+#  define PILOTS_HAVE_BACKTRACE 1
+#endif
 
 /* Async-signal-safe-ish crash dump: raw write() + backtrace_symbols_fd only
    (DbgPrintf uses the log-file CS and could deadlock inside a handler). */
 static void DbgSignalHandler(int sig)
 {
-    void *frames[32];
-    int n;
     ssize_t wr;
     static const char hdr[] = "\n[PILOTS] *** FATAL SIGNAL - stack trace ***\n";
 
     wr = write(2, hdr, sizeof hdr - 1);
     (void)wr;
-    n = backtrace(frames, 32);
-    backtrace_symbols_fd(frames, n, 2);
+#ifdef PILOTS_HAVE_BACKTRACE
+    {
+        void *frames[32];
+        int n = backtrace(frames, 32);
+        backtrace_symbols_fd(frames, n, 2);
+    }
+#else
+    /* Nothing to unwind to here. The log file is written and flushed line by
+       line (DbgPrintf), so whatever it already holds is the trace of how far
+       the run got - and on the Switch stderr goes nowhere, so that log is all
+       there is. Do NOT "fix" this by logging from here: EnterCriticalSection
+       inside a handler is the deadlock the comment above is about. */
+    static const char nb[] = "\n[PILOTS] (no backtrace on this platform)\n";
+    wr = write(2, nb, sizeof nb - 1);
+    (void)wr;
+#endif
     _exit(128 + sig);
 }
 
@@ -273,7 +299,11 @@ static void DbgInstallExceptionHandler(void)
     signal(SIGFPE, DbgSignalHandler);
     signal(SIGILL, DbgSignalHandler);
     signal(SIGABRT, DbgSignalHandler);
+#ifdef PILOTS_HAVE_BACKTRACE
     DBG_MSG("POSIX signal handlers installed (backtrace on crash)");
+#else
+    DBG_MSG("POSIX signal handlers installed (no backtrace; the log tail is the trace)");
+#endif
 }
 
 #endif /* _WIN32 */

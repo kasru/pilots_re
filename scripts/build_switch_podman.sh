@@ -3,9 +3,20 @@
 # devkitpro/devkita64 podman container.
 #
 # Usage:
-#   sh scripts/build_switch_podman.sh             configure + build the .nro
+#   sh scripts/build_switch_podman.sh             configure + build the .nro (Release)
+#   sh scripts/build_switch_podman.sh debug       the same, with _DEBUG on: debug
+#                                                 log and crash register dump
 #   sh scripts/build_switch_podman.sh clean       make clean
 #   sh scripts/build_switch_podman.sh distclean   drop the build dir entirely
+#
+# WHY A SEPARATE debug MODE AND ITS OWN DIRECTORY: both configurations produce a
+# file named PILOT_RV.nro, so they can never share a build dir - the same rule
+# that keeps build32 and build64 apart. debug is also the only way to learn
+# anything from a real console run: in a Release .nro the DBG_* macros are
+# no-ops, so the app is silent, and a hang there looks exactly like a working
+# build. Its log lands as /switch/pilots/PILOT_RV_debug.log, i.e. next to the
+# .nro - see the note in CMakeLists.txt for why an NRO can write there at all.
+# Deploy it with BUILDDIR=build-switch-dbg scripts/deploy_switch.sh.
 #
 # Why a container and not a local toolchain: devkitA64, libnx and
 # portlibs/switch must all come out of one dkp-pacman tree, and the host carries
@@ -67,10 +78,22 @@
 set -eu
 
 REPO=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-BUILD_DIR=${PILOTS_SWITCH_BUILDDIR:-build-switch}
 IMAGE=${PILOTS_SWITCH_IMAGE:-docker.io/devkitpro/devkita64:latest}
 TOOLCHAIN=/opt/devkitpro/cmake/Switch.cmake
 MODE=${1:-build}
+
+# One directory per configuration: both produce PILOT_RV.nro. PILOTS_SWITCH_BUILDDIR
+# overrides either way, which is also how `clean` is aimed at the debug tree:
+#   PILOTS_SWITCH_BUILDDIR=build-switch-dbg sh scripts/build_switch_podman.sh clean
+if [ "$MODE" = debug ]; then
+  BUILD_DIR=${PILOTS_SWITCH_BUILDDIR:-build-switch-dbg}
+  CMAKE_BUILD_TYPE=Debug
+  DEBUG_LOG=ON
+else
+  BUILD_DIR=${PILOTS_SWITCH_BUILDDIR:-build-switch}
+  CMAKE_BUILD_TYPE=Release
+  DEBUG_LOG=OFF
+fi
 
 case "$MODE" in
   clean)
@@ -85,8 +108,9 @@ case "$MODE" in
     exit 0
     ;;
   build) ;;
-  -h|--help) sed -n '2,70p' "$0"; exit 0 ;;
-  *) echo "build_switch_podman: unknown mode '$MODE' (use: build | clean | distclean)" >&2; exit 2 ;;
+  debug) ;;
+  -h|--help) sed -n '2,76p' "$0"; exit 0 ;;
+  *) echo "build_switch_podman: unknown mode '$MODE' (use: build | debug | clean | distclean)" >&2; exit 2 ;;
 esac
 
 command -v podman >/dev/null 2>&1 \
@@ -96,7 +120,9 @@ podman image exists "$IMAGE" 2>/dev/null \
 
 # One --rm container for the pre-flight check, the configure and the build: the
 # tree is configured with the mount path /data, so all three have to agree on
-# it. PILOTS_DEBUG_LOG defaults OFF for the Switch (app0: is read-only).
+# it. PILOTS_DEBUG_LOG is passed explicitly in both modes, so what the tree got
+# never depends on the CMake default - `debug` is the only way to get _DEBUG, and
+# without it the .nro runs silent on the console.
 # -DPLATFORM_SWITCH=ON is what makes CMakeLists add the nx_create_nro step on
 # top of the regular executable.
 podman run --rm -v "$REPO:/data" "$IMAGE" bash -c "
@@ -123,9 +149,10 @@ podman run --rm -v "$REPO:/data" "$IMAGE" bash -c "
 
     cd /data
     cmake -S . -B ${BUILD_DIR} \
-      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
       -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN} \
-      -DPLATFORM_SWITCH=ON
+      -DPLATFORM_SWITCH=ON \
+      -DPILOTS_DEBUG_LOG=${DEBUG_LOG}
     make -C ${BUILD_DIR} PILOT_RV_nro -j\$(nproc)
 "
 

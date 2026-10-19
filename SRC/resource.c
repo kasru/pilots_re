@@ -189,6 +189,11 @@ char __stdcall ReadCompressedData(char *destBuffer)
 
   g_DecompressedDataSize = 0;
   g_TemplateDataSize = 0;
+  /* Every number below is read out of the resource file, so this is the one
+     place that can tell a legitimately large resource from a corrupted size -
+     see the note in ProcessSpriteData for why that distinction is the whole
+     question on aarch64. */
+  DBG_LOG("ReadCompressedData: dest=%p", (void *)destBuffer);
   if ( !ReadByte() || (signed char)g_CurrentOpcode >= 0 )
     return ShowFileError();
   if ( (g_CurrentOpcode & 0x40) != 0 )
@@ -202,6 +207,14 @@ char __stdcall ReadCompressedData(char *destBuffer)
     decompressedSize = dword_41022C;
     compressedSize = dword_410230;
     sizeFieldBytes = (g_CurrentOpcode & 3) + 1;
+    /* a1 of LZSSDecompress is the number of INPUT bytes to eat (it decrements on
+       every bit and every pair it consumes), and the caller here feeds it
+       decompressedSize - so this number decides how far the output pointer may
+       run. It comes from a 1..4 byte field, and the bytes the field does not
+       cover keep the seed value above: that is why both are logged. */
+    DBG_LOG("ReadCompressedData: opcode=0x%02X sizeFieldBytes=%u seed=%d/%d size=%u compSize=%d",
+            (unsigned int)g_CurrentOpcode, sizeFieldBytes, dword_41022C, dword_410230,
+            decompressedSize, compressedSize);
     if ( BufferedRead(sizeFieldBytes, (char *)&decompressedSize) )
     {
       if ( (g_CurrentOpcode & 0xC) != 0 )
@@ -210,6 +223,16 @@ char __stdcall ReadCompressedData(char *destBuffer)
         if ( !BufferedRead(sizeFieldBytes, (char *)&compressedSize) || !BufferedRead(decompressedSize, compressedBuf) )
           return ShowFileError();
         g_DecompressedDataSize = decompressedSize;
+        /* The Switch died inside LZSSDecompress with its output pointer ~47 MB
+           past the start of the image (Atmosphère report 01792014833: the store of
+           *a2++ at resource.c:613 aborted on a page-aligned address, i.e. on the
+           first byte past the end of the mapping). "end" is where the output was
+           supposed to stop, so this line tells a size field that parsed wrong from
+           a bit stream that is being parsed wrong - which is the whole question,
+           and the same build on x86 never gets here with these numbers. */
+        DBG_LOG("ReadCompressedData: LZSS in=%p out=%p end=%p n=%u compSize=%d",
+                (void *)compressedBuf, (void *)destBuffer,
+                (void *)(destBuffer + decompressedSize), decompressedSize, compressedSize);
         LZSSDecompress(decompressedSize, destBuffer, compressedBuf);
         g_TemplateDataSize = compressedSize;
       }
@@ -384,6 +407,13 @@ char ProcessSpriteData()
   DBG_ENTER("ProcessSpriteData");
   void *v1; // eax
 
+  /* The first LZSS resource of the run, and the place the Switch dies: its output
+     pointer ended up ~47 MB past the start of the image, so the destination is
+     logged as an address, not just a name - the console gives no other way to
+     know where the image actually landed. Subtracting the vaddr of this field
+     (nm) from the value below turns every address in an Atmosphère crash report
+     into an offset this build can be resolved with. */
+  DBG_LOG("ProcessSpriteData: dest=&dword_4161F0=%p", (void *)&dword_4161F0);
   ReadCompressedData((char *)&dword_4161F0);
   DBG_LOG("ProcessSpriteData: magic=0x%08X (expect 0x80000016)", (unsigned int)dword_4161F0);
   if ( dword_4161F0 != -2147483626 )

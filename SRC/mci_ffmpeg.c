@@ -29,6 +29,8 @@
    lib headers must not see them. pilots_fwd.h is still the one game header. */
 #ifndef _WIN32
 #include <errno.h>
+#include <stdio.h>
+#include <string.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
@@ -82,6 +84,19 @@ typedef struct
   int64_t         base_pts_us;     /* its stream timestamp */
   int64_t         last_end_us;     /* when the last shown frame's display time ends */
   int64_t         last_pts_us;     /* fallback for frames without a timestamp */
+  /* the movie's own sound: a second, independent read of the same file, see MciAudioProbe */
+  FILE           *aud;             /* our own handle: ffmpeg never sees this stream */
+  int             aud_ok;          /* a usable PCM stream was found in the header */
+  int             aud_eof;         /* no audio chunk left in movi */
+  unsigned int    aud_rate;        /* strf's nSamplesPerSec */
+  unsigned int    aud_fcc;         /* the audio chunks' fourcc, '01wb' for stream 1 */
+  unsigned long   aud_total;       /* bytes of PCM the file holds (summed while probing) */
+  unsigned long   aud_fed;         /* bytes handed to the mixer since PLAY */
+  unsigned long   movi_start;      /* first chunk inside the movi list */
+  unsigned long   movi_end;        /* end of that list: no chunk of ours beyond it */
+  unsigned long   chunk_left;      /* bytes of the current chunk still unread */
+  unsigned long   first_off;       /* data offset of the first audio chunk, to rewind on PLAY */
+  unsigned long   first_size;
 } ShimMciState;
 
 static ShimMciState s_Mci;
@@ -93,6 +108,374 @@ static void MciLogAvError(const char *what, int err)
 
   av_strerror(err, buf, sizeof buf);
   DBG_LOG("MciFfmpeg: %s: %s", what, buf);
+}
+
+/* --- the movie's own sound ------------------------------------------------------------
+ * The AVIs ship a second stream: hdrl/LIST strl with strh.fccType 'auds' and a 16-byte strf
+ * WAVEFORMATEX (PCM, one channel, 8 bits - 22050 Hz in INTRO.AVI, 11025 in START and FINAL),
+ * whose samples sit in the movi list as '01wb' chunks, named after the stream's index.
+ *
+ * ffmpeg's avi demuxer takes none of it: `ffprobe INTRO.AVI` prints "non-interleaved AVI" and
+ * one stream, the video, so nothing above can be made to decode it. The game's own AVI reader
+ * (ProcessVideoCommands, which draws the other movies) never had sound either. So the header is
+ * walked by hand: one format record and a chunk cursor is all that is needed, and both are read
+ * from a second FILE* so ffmpeg's own cursor is untouched.
+ *
+ * Only mono 8-bit PCM is accepted, which is what all three shipped movies are. Anything else
+ * says so in the log and leaves the movie silent - the picture path does not care.
+ */
+static unsigned int RiffU32(const unsigned char *p)
+{
+  return (unsigned int)p[0] | ((unsigned int)p[1] << 8) | ((unsigned int)p[2] << 16)
+       | ((unsigned int)p[3] << 24);
+}
+
+static unsigned int RiffU16(const unsigned char *p)
+{
+  return (unsigned int)p[0] | ((unsigned int)p[1] << 8);
+}
+
+/* Read a chunk header at an absolute offset. Leaves the file cursor wherever fread put it, so
+   every caller positions itself before reading data. */
+static int RiffPeek(FILE *f, unsigned long at, unsigned char *fourcc, unsigned long *size)
+{
+  unsigned char hdr[8];
+
+  if ( fseek(f, (long)at, SEEK_SET) != 0 || fread(hdr, 1, 8, f) != 8 )
+    return 0;
+  memcpy(fourcc, hdr, 4);
+  *size = RiffU32(hdr + 4);
+  return 1;
+}
+
+#define FCC_IS(p, s) (memcmp(p, s, 4) == 0)
+
+/* Walk forward to the next chunk of the movie's own stream. Ours are front-loaded in these
+   files (the writer put the whole sound before the frames), but a walk that only reads headers
+   and seeks over the rest costs nothing even when the frames are megabytes. */
+static int MciAudioNextChunk(ShimMciState *m)
+{
+  unsigned char fourcc[4];
+  unsigned long size;
+  unsigned long at = (unsigned long)ftell(m->aud);
+
+  m->chunk_left = 0;
+  while ( at + 8 <= m->movi_end )
+  {
+    if ( !RiffPeek(m->aud, at, fourcc, &size) )
+      break;
+    if ( RiffU32(fourcc) == m->aud_fcc )
+    {
+      if ( fseek(m->aud, (long)(at + 8), SEEK_SET) != 0 )
+        break;
+      m->chunk_left = size;
+      return 1;
+    }
+    at += 8 + size + (size & 1);                /* chunks are word-aligned */
+  }
+  return 0;
+}
+
+/* The chunk fourcc of stream n's audio: two hex digits then 'wb', so '01wb' for the second
+   stream - which is the shape all three shipped movies have. Read as a little-endian word, the
+   same way RiffPeek compares against it. */
+static unsigned int MciAudioFcc(unsigned int stream_no)
+{
+  static const char digits[] = "0123456789ABCDEF";
+  unsigned char s[4];
+
+  s[0] = (unsigned char)digits[(stream_no >> 4) & 15];
+  s[1] = (unsigned char)digits[stream_no & 15];
+  s[2] = 'w';
+  s[3] = 'b';
+  return RiffU32(s);
+}
+
+/* Find the 'auds' stream's format and the chunks that hold its samples. Called with the video
+   pipeline already up, from MciOpenElement, with the same resolved path ffmpeg was given. */
+static void MciAudioProbe(ShimMciState *m, const char *path)
+{
+  unsigned char fourcc[4];
+  unsigned char list[4];
+  unsigned char strh[4];
+  unsigned char fmt[16];
+  unsigned char top[12];
+  unsigned long size, at, end, list_end, strl_at, strl_size, child_at, child_end, csize;
+  unsigned long data_at, data_size, chunks = 0;
+  unsigned int stream_no = 0;
+  unsigned int aud_stream = 0;
+  unsigned int tag, channels, bits;
+  long file_len;
+
+  m->aud = fopen(path, "rb");
+  if ( !m->aud )
+  {
+    DBG_LOG("MciFfmpeg: movie sound: cannot re-open '%s' (%s)", path, strerror(errno));
+    return;
+  }
+  if ( fread(top, 1, 12, m->aud) != 12 || !FCC_IS(top, "RIFF") || !FCC_IS(top + 8, "AVI ") )
+  {
+    DBG_LOG("MciFfmpeg: movie sound: not a RIFF AVI, skipping");
+    fclose(m->aud);
+    m->aud = 0;
+    return;
+  }
+  fseek(m->aud, 0, SEEK_END);
+  file_len = ftell(m->aud);
+  end = RiffU32(top + 4) + 8;
+  if ( file_len > 0 && (unsigned long)file_len < end )
+    end = (unsigned long)file_len;               /* a truncated copy of the movie */
+
+  at = 12;
+  while ( at + 8 <= end && RiffPeek(m->aud, at, fourcc, &size) )
+  {
+    unsigned long top_size = size;               /* the walks below reuse size; this one steps on it */
+
+    if ( !FCC_IS(fourcc, "LIST") )
+    {
+      at += 8 + top_size + (top_size & 1);
+      continue;
+    }
+    if ( fseek(m->aud, (long)(at + 8), SEEK_SET) != 0 || fread(list, 1, 4, m->aud) != 4 )
+      break;
+    list_end = at + 8 + top_size;
+
+    if ( FCC_IS(list, "hdrl") )
+    {
+      /* Streams are numbered by the order of their strl chunks and the chunk fourcc carries that
+         number in hex, so '01wb' is the second stream's audio. The game's movies are video first
+         and sound second, but the count is what decides, not the guess. */
+      strl_at = at + 12;
+      while ( strl_at + 8 <= list_end && RiffPeek(m->aud, strl_at, fourcc, &size) )
+      {
+        strl_size = size;
+        if ( FCC_IS(fourcc, "LIST") )
+        {
+          int is_audio = 0;
+
+          if ( fseek(m->aud, (long)(strl_at + 8), SEEK_SET) == 0
+            && fread(list, 1, 4, m->aud) == 4 && FCC_IS(list, "strl") )
+          {
+            child_at = strl_at + 12;
+            child_end = strl_at + 8 + strl_size;
+            while ( child_at + 8 <= child_end && RiffPeek(m->aud, child_at, fourcc, &size) )
+            {
+              csize = size;
+              if ( FCC_IS(fourcc, "strh") && csize >= 4 )
+              {
+                if ( fseek(m->aud, (long)(child_at + 8), SEEK_SET) != 0
+                  || fread(strh, 1, 4, m->aud) != 4 )
+                  break;
+                is_audio = FCC_IS(strh, "auds");
+                if ( is_audio )
+                  aud_stream = stream_no;
+              }
+              else if ( FCC_IS(fourcc, "strf") && is_audio && csize >= 16 && !m->aud_ok )
+              {
+                if ( fseek(m->aud, (long)(child_at + 8), SEEK_SET) != 0
+                  || fread(fmt, 1, 16, m->aud) != 16 )
+                  break;
+                tag = RiffU16(fmt);
+                channels = RiffU16(fmt + 2);
+                m->aud_rate = RiffU32(fmt + 4);
+                bits = RiffU16(fmt + 14);
+                if ( tag == 1 && channels == 1 && bits == 8 )
+                {
+                  m->aud_ok = 1;
+                  m->aud_fcc = MciAudioFcc(aud_stream);
+                }
+                else
+                {
+                  DBG_LOG("MciFfmpeg: movie sound: tag=%u %u ch %u bit at %u Hz is not mono 8-bit PCM, the movie stays silent",
+                          tag, channels, bits, m->aud_rate);
+                  m->aud_rate = 0;
+                }
+              }
+              child_at += 8 + csize + (csize & 1);
+            }
+          }
+          ++stream_no;
+        }
+        strl_at += 8 + strl_size + (strl_size & 1);
+      }
+    }
+    else if ( FCC_IS(list, "movi") )
+    {
+      m->movi_start = at + 12;
+      m->movi_end = list_end;
+    }
+    at += 8 + top_size + (top_size & 1);
+  }
+
+  if ( !m->aud_ok || !m->movi_end )
+  {
+    if ( m->aud_ok )
+      DBG_LOG("MciFfmpeg: movie sound: a sound stream but no movi list, skipping");
+    fclose(m->aud);
+    m->aud = 0;
+    m->aud_ok = 0;
+    return;
+  }
+
+  /* One pass over the movi headers: where the first of our chunks starts (to rewind on PLAY)
+     and how much sound there is in total, which is what makes the summary line mean something. */
+  for ( data_at = m->movi_start;
+        data_at + 8 <= m->movi_end && RiffPeek(m->aud, data_at, fourcc, &data_size);
+        data_at += 8 + data_size + (data_size & 1) )
+  {
+    if ( RiffU32(fourcc) != m->aud_fcc )
+      continue;
+    if ( !m->aud_total )
+    {
+      m->first_off = data_at + 8;
+      m->first_size = data_size;
+    }
+    m->aud_total += data_size;
+    ++chunks;
+  }
+  if ( !m->aud_total )
+  {
+    DBG_LOG("MciFfmpeg: movie sound: the stream has a header but no chunks, skipping");
+    fclose(m->aud);
+    m->aud = 0;
+    m->aud_ok = 0;
+    return;
+  }
+  DBG_LOG("MciFfmpeg: movie sound: stream %u PCM %u Hz mono 8 bit, %lu bytes in %lu chunks",
+          aud_stream, m->aud_rate, m->aud_total, chunks);
+}
+
+/* Rewind the sound to the first chunk and let the mixer know a movie is playing. */
+static void MciAudioStart(ShimMciState *m)
+{
+  if ( !m->aud_ok || !m->aud_total || !SdlMix_MovieOpen(m->aud_rate) )
+    return;
+  if ( fseek(m->aud, (long)m->first_off, SEEK_SET) != 0 )
+    return;
+  m->chunk_left = m->first_size;
+  m->aud_fed = 0;
+  m->aud_eof = 0;
+  DBG_LOG("MciFfmpeg: movie sound started: %u Hz mono 8 bit, %lu bytes to give",
+          m->aud_rate, m->aud_total);
+}
+
+/* The other half: queued samples go with the movie, and the accounting is said once. */
+static void MciAudioStop(ShimMciState *m)
+{
+  if ( !m->aud_ok )
+    return;
+  if ( m->aud_fed )
+    DBG_LOG("MciFfmpeg: movie sound stopped: %lu of %lu bytes reached the mixer",
+            m->aud_fed, m->aud_total);
+  SdlMix_MovieClose();
+  m->aud_fed = 0;
+  m->chunk_left = 0;
+  m->aud_eof = 0;
+}
+
+static void MciAudioFree(ShimMciState *m)
+{
+  MciAudioStop(m);
+  if ( m->aud )
+  {
+    fclose(m->aud);
+    m->aud = 0;
+  }
+  m->aud_ok = 0;
+  m->aud_rate = 0;
+  m->aud_total = 0;
+  m->movi_start = m->movi_end = 0;
+  m->first_off = m->first_size = m->chunk_left = 0;
+}
+
+/* Move the read cursor forward without playing anything: used when the sound has fallen far
+   enough behind the picture that hurrying through it would be worse than losing it. */
+static void MciAudioSkip(ShimMciState *m, unsigned long bytes)
+{
+  while ( bytes )
+  {
+    if ( !m->chunk_left && !MciAudioNextChunk(m) )
+    {
+      m->aud_eof = 1;
+      return;
+    }
+    if ( m->chunk_left <= bytes )
+    {
+      bytes -= m->chunk_left;
+      m->aud_fed += m->chunk_left;
+      fseek(m->aud, (long)m->chunk_left, SEEK_CUR);
+      m->chunk_left = 0;
+    }
+    else
+    {
+      fseek(m->aud, (long)bytes, SEEK_CUR);
+      m->aud_fed += bytes;
+      m->chunk_left -= bytes;
+      return;
+    }
+  }
+}
+
+/* Feed the mixer up to where the picture has reached. The clock is the video's own and it is a
+   stream clock, not a wall clock: frame_due_us is base_wall_us plus the frame's timestamp, so
+   shown_us is how far into the movie is on screen. A starved pump therefore holds the sound with
+   the picture instead of letting it run on, which is what the console's slow transitions need. */
+static void MciAudioPump(ShimMciState *m)
+{
+  unsigned char buf[4096];
+  int64_t shown_us;
+  unsigned long target, want, got, taken;
+
+  if ( !m->aud_ok || m->aud_eof || !m->aud || !m->disp_valid )
+    return;
+  shown_us = m->last_end_us - m->base_wall_us;
+  if ( shown_us < 0 )
+    shown_us = 0;
+  target = (unsigned long)((shown_us * (int64_t)m->aud_rate) / 1000000);
+  if ( target > m->aud_fed + m->aud_rate / 2 )  /* more than half a second behind: the pump was
+                                                   starved, and catching up would sound like a
+                                                   fast-forward, so the gap is cut instead */
+  {
+    DBG_LOG("MciFfmpeg: movie sound %lu samples behind the picture, dropping them", target - m->aud_fed);
+    MciAudioSkip(m, target - m->aud_fed);
+    if ( m->aud_eof )
+      return;
+  }
+  while ( m->aud_fed < target )
+  {
+    if ( !m->chunk_left && !MciAudioNextChunk(m) )
+    {
+      m->aud_eof = 1;
+      DBG_LOG("MciFfmpeg: movie sound: no more chunks, %lu of %lu bytes played",
+              m->aud_fed, m->aud_total);
+      return;
+    }
+    want = target - m->aud_fed;
+    if ( want > m->chunk_left )
+      want = m->chunk_left;
+    if ( want > sizeof buf )
+      want = sizeof buf;
+    got = (unsigned long)fread(buf, 1, want, m->aud);
+    if ( !got )
+    {
+      m->aud_eof = 1;
+      return;
+    }
+    taken = SdlMix_MovieWrite(buf, (unsigned int)got);
+    /* Whatever the mixer really took is already out of the chunk and counts towards the
+       picture's position - even on a partial take, where only the rejection is rewound
+       below. Skipping this left chunk_left and aud_fed behind by `taken`: the file then
+       ran ahead of the chunk boundary (the next chunk's bytes read as PCM), the tempo
+       feed under-counted, and the next-chunk search started off the boundary. taken==0
+       - the usual reason for a partial write - changes nothing here either way. */
+    m->chunk_left -= taken;
+    m->aud_fed += taken;
+    if ( taken < got )                           /* the mixer's ring is full: same bytes next pump */
+    {
+      fseek(m->aud, (long)-(long)(got - taken), SEEK_CUR);
+      return;
+    }
+  }
 }
 
 static void MciResetPlayback(void)
@@ -121,6 +504,7 @@ static void MciFreeStream(void)
 {
   ShimMciState *m = &s_Mci;
 
+  MciAudioFree(m);                                /* the sound's own file handle goes with the stream */
   if ( m->sws )
   {
     sws_freeContext(m->sws);
@@ -251,6 +635,7 @@ static int MciOpenElement(const char *win_path)
           m->dec->width, m->dec->height, m->dec->pix_fmt,
           m->fmt->streams[m->stream_idx]->time_base.num,
           m->fmt->streams[m->stream_idx]->time_base.den);
+  MciAudioProbe(m, path);                         /* ffmpeg looked at the video only; the sound is ours */
   return 0;
 }
 
@@ -366,6 +751,8 @@ void WinShim_VideoPump(void)
     SdlBackendVideoFrame(m->buf[m->disp_idx], m->dec->width, m->dec->height,
                          m->win_x, m->win_y, m->win_w, m->win_h);
 
+  MciAudioPump(m);                              /* the sound follows the picture, not the wall clock */
+
   if ( m->eof && !m->pend && now_us >= m->last_end_us )
   {
     DBG_LOG("MciFfmpeg: playback finished (%d frames shown)", m->frames_shown);
@@ -442,6 +829,7 @@ MMRESULT mciSendCommandA(MCIDEVICEID idDevice, UINT uMsg, DWORD dwFlags, DWORD_P
       m->notify_pending = (dwFlags & 1u) != 0;  /* MCI_NOTIFY */
       m->notify_hwnd = MciResolveCallbackHwnd(dwParam ? *(DWORD_PTR *)(char *)(uintptr_t)dwParam : 0);
       m->playing = 1;
+      MciAudioStart(m);                           /* the sound rewinds with the picture */
       DBG_LOG("MciFfmpeg: PLAY notify=%d callback=0x%08X",
               m->notify_pending, (unsigned)(uintptr_t)m->notify_hwnd);
       return 0;
@@ -451,6 +839,7 @@ MMRESULT mciSendCommandA(MCIDEVICEID idDevice, UINT uMsg, DWORD dwFlags, DWORD_P
       if ( m->playing )
       {
         m->playing = 0;
+        MciAudioStop(m);                          /* a skipped movie takes its queued sound with it */
         MciNotifyDone();                        /* stopping completes the notified MCI_PLAY */
       }
       return 0;

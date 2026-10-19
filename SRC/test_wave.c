@@ -35,7 +35,9 @@ int main(void)
 
   PlaySoundEffect(1, 0, -1, (int *)soundData);  // game entry point (prefills two buffers)
 
-  for ( i = 0; i < 400; ++i )                   // ~4 s of pumping, like WinMain/PumpWindowMessages
+  for ( i = 0; i < 900; ++i )                   // ~9 s of pumping, like WinMain/PumpWindowMessages:
+                                                // the mixer reports per 5 s of audio, so a shorter
+                                                // pump proves the queue drained and still logs nothing
   {
     SdlWavePump();
     cur = SdlWave_Queued();

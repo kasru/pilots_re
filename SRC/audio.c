@@ -71,6 +71,8 @@ MMRESULT CleanupWaveOut()
 {
   SdlWave_Close();
   WaveResetQueueState();
+  g_GraphicsState1 = 0;                          /* queue dropped: no completion will ever come
+                                                    (see ResetWave for the measured deadlock) */
   return 0;
 }
 
@@ -83,6 +85,9 @@ int __stdcall InitWaveOut(DWORD_PTR *a1)
     return 0;
   DBG_LOG("InitWaveOut: SDL wave device open (11025 Hz U8 mono)");
   WaveResetQueueState();
+  g_GraphicsState1 = 0;                          /* fresh device, empty queue: the first sound
+                                                    must mix directly (v7==2), not wait for a
+                                                    completion that only a queue could produce */
   for ( i = 0; i < WAVE_NUM_HEADERS; ++i )
   {                                             // 8 x 2048-byte slices of the g_hMainWindow mix buffer
     (&pwh)[i].lpData = (char *)a1 + WAVE_BUF_BYTES * i;
@@ -104,6 +109,22 @@ unsigned int GetNextWaveBuffer()
     if ( ((&pwh)[i].dwFlags & 1) != 0 )            // WHDR_DONE: first free header
       return i;
   }
+#ifdef _DEBUG
+  /* The original's waveOutReset fallback, and until now the most silent moment in the whole
+     wave path: every header still INQUEUE means the completions stopped being reported, and
+     dropping the queue is what the engine does about it. docs/sound-disappears.md could not
+     tell "the chain froze" from "the chain fell behind" precisely because this moment logged
+     nothing; capped because a genuinely stuck chain hits it on every refill. */
+  {
+    static unsigned int s_NofreeLines;
+    if ( s_NofreeLines < 40 )
+    {
+      ++s_NofreeLines;
+      DBG_LOG("GetNextWaveBuffer: no header is free (%u of 40) - queue dropped, pending was %u game bytes",
+              s_NofreeLines, SdlWave_Queued());
+    }
+  }
+#endif
   SdlWave_Clear();                              // original fallback: waveOutReset (drops queued audio)
   WaveResetQueueState();
   return 0;
@@ -131,6 +152,19 @@ BOOL ResetWave()
 {
   SdlWave_Clear();                              // waveOutReset equivalent: drop queued audio
   WaveResetQueueState();
+  /* The measured death of "the sound disappears" (console, 2026-10-16, session log): a scene
+     change calls ClearInputBuffer - which zeroes every sound slot AND resets the wave queue -
+     while sounds are playing, i.e. while g_GraphicsState1 (MixAudioBuffers' "slots were mixed
+     last round") is still > 0. With the queue dropped there will be no MM_WOM_DONE, so
+     MixAudioBuffers never runs again, so state1 never becomes 0 again - and PlaySoundEffect's
+     deferred branch (state1 set -> register the slot, let the completion mix it) then defers
+     EVERY sound for the rest of the session: the log showed the last SdlWave_Queue right at
+     "auxMainLoop: startResourceId=4", then 20+ TriggerSoundSlot registrations, zero queues and
+     a silent watchdog (device idle, nothing in flight). All slots are empty by now, so "no
+     slots were mixed" is simply the truth this state is supposed to hold - writing it here is
+     what makes the next sound mix directly (v7==2) instead of waiting for a callback that can
+     no longer arrive. */
+  g_GraphicsState1 = 0;
   return 1;
 }
 
@@ -159,6 +193,42 @@ int __stdcall SetWaveVolume(unsigned __int8 a1)
     ResetWave();                                // original also waveOutReset on mute
   return 1;
 }
+
+#ifdef _DEBUG
+/* The protocol's pulse, one line per two seconds WHILE SOMETHING IS PENDING - and the point is
+   the moment it stops. docs/sound-disappears.md ended without a named cause because the failure
+   leaves no events behind: a device that stops draining logs nothing at all, and the per-buffer
+   SdlWave_Queue log ends with the last sound that still played. This line follows the STATE
+   instead of the events: while the chain is alive, pending counts down and the ring holds the
+   bytes the counters promise; when it dies, one column freezes and the rest say which number
+   lied. A healthy silence (nothing pending, nothing in flight) prints nothing at all, so a
+   session pays only for the seconds that had sound in them; the cap keeps a stuck state from
+   flooding the very log it exists to explain - 120 lines at 2 s are the four minutes before
+   the death, which is where the evidence lives. */
+static void SdlWaveWatchdog(unsigned int pending, unsigned int total,
+                            unsigned int limit, unsigned int reported)
+{
+  static unsigned int s_WdTick;
+  static unsigned int s_WdLines;
+  unsigned int ring = SdlWave_RingDepth();
+
+  if ( !pending && !s_WaveIfCount )
+  {
+    s_WdTick = SDL_GetTicks();                  /* quiet: reset the clock, say nothing */
+    return;
+  }
+  if ( !s_WdTick )
+    s_WdTick = SDL_GetTicks();
+  if ( SDL_GetTicks() - s_WdTick < 2000 || s_WdLines >= 120 )
+    return;
+  s_WdTick = SDL_GetTicks();
+  ++s_WdLines;
+  DBG_LOG("SdlWavePump: state %u/120 - pending %u game bytes, ring %u frames, in flight %d/%d, queued total %u, limit %u reported %u state1 %d%s",
+          s_WdLines, pending, ring, s_WaveIfCount, WAVE_NUM_HEADERS, total, limit, reported,
+          g_GraphicsState1,
+          (pending && !ring) ? " - DESYNC: the counters promise bytes the ring no longer holds" : "");
+}
+#endif
 
 /* Called from the message pumps in place of MM_WOM_DONE: report every buffer the device has
    (nearly) finished and mix the next one. */
@@ -197,6 +267,30 @@ void SdlWavePump()
     }
     ++guard;
   }
+  /* The invariant that kills every form of "the sound disappears for the rest of the session":
+     state1 > 0 means PlaySoundEffect defers new sounds to the NEXT MM_WOM_DONE - and a fully
+     drained queue produces no completions ever again, so the deferral waits for a callback that
+     cannot arrive (measured twice on the console: at a scene change through ClearInputBuffer,
+     and at a scene change with no reset in the path at all - the log showed a healthy chain
+     going quiet, then zero SdlWave_Queue calls for the rest of the session while the script
+     kept triggering). Idle with state1 set is the deadlock BY DEFINITION: a set state1 always
+     comes from a mix that had active slots, and that mix queues - so if the queue is empty and
+     nothing is in flight, nothing is playing and the honest answer is "no slots were mixed".
+     Clearing it here makes the next sound mix directly (v7==2) instead of deferring. */
+  if ( !avail && !s_WaveIfCount && g_GraphicsState1 )
+  {
+    static unsigned int s_IdleLines;
+    if ( s_IdleLines < 40 )
+    {
+      ++s_IdleLines;
+      DBG_LOG("SdlWavePump: queue idle with state1=%d - cleared, the completion it was waiting for can no longer arrive (line %u of 40)",
+              g_GraphicsState1, s_IdleLines);
+    }
+    g_GraphicsState1 = 0;
+  }
+#ifdef _DEBUG
+  SdlWaveWatchdog(avail, total, limit, reported);
+#endif
 }
 
 MMRESULT ResetMidi()
@@ -286,6 +380,15 @@ LABEL_19:
 
 void __stdcall MidiTimerCallback(UINT uTimerID, UINT uMsg, DWORD_PTR dwUser, DWORD_PTR dw1, DWORD_PTR dw2)
 {
+  /* ResetMidi kills the event BEFORE GameState_Reset frees the game memory g_MidiDataPtr points
+     into - yet the x64 session at 16.10 crashed here anyway (ProcessMidiEvents' very first byte
+     read, RIP 0x14002F58B, the return address on the stack in MidiTimerCallback): winmm delivered
+     a tick queued before timeKillEvent, and a queued tick cannot be recalled. Such a delivery
+     finds the id already 0 and must do nothing - ProcessMidiEvents would dereference the freed
+     MIDI stream (read the ACCESS_VIOLATION address in that log: a low GlobalAlloc block, long
+     since unmapped). */
+  if ( !g_MidiTimerID )
+    return;
   if ( g_MidiLooping )
   {
     if ( --g_MidiLooping )
@@ -819,6 +922,22 @@ unsigned __int8 MixAudioBuffers()
     v3 += 4;
   }
   while ( &g_GraphicsBuffers[4 * g_GraphicsConfig] > v3 );
+#ifdef _DEBUG
+  /* state1 is the number of slots mixed last round, and it is what PlaySoundEffect branches on:
+     set -> "a completion will pick my sound up", clear -> "mix me now". Every death of the wave
+     chain ends with this number frozen, so both its edges are logged (0<->N only: a run of 1s
+     during one sound is not news), capped. */
+  if ( v0 != g_GraphicsState1 )
+  {
+    static unsigned int s_MixLines;
+    if ( s_MixLines < 40 )
+    {
+      ++s_MixLines;
+      DBG_LOG("MixAudioBuffers: %d slot(s) mixed, state1 %d -> %d (line %u of 40)",
+              v0, g_GraphicsState1, v0, s_MixLines);
+    }
+  }
+#endif
   g_GraphicsState1 = v0;
   if ( v0 )
     return g_pfnWriteWaveBuffer();

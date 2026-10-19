@@ -572,6 +572,8 @@ int     GlobalUnlock(HGLOBAL hMem);
 /* ---- internal queue plumbing used by sdl_backend.c (not part of the Win32 API) ---- */
 int  WinShim_PumpSDLToQueue(void);   /* drain SDL events -> synthesize+post WM_* (sdl_backend.c) */
 int  WinShim_QuitPosted(void);       /* PostQuitMessage seen? */
+int  WinShim_MsgQueueDepth(void);    /* posted messages waiting to be dispatched */
+unsigned WinShim_MsgDispatched(void);/* messages handed to the game since the start */
 HWND WinShimMainWindow(void);        /* the fake main-window handle SdlBackendCreateWindow returns */
 void ShimPathToUnix(const char *src, char *dst, size_t cap); /* '\\'->'/' path copy (win32_shim.c) */
 

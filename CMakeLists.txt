@@ -27,9 +27,18 @@ option(PLATFORM_SWITCH "Cross-compile the Nintendo Switch .nro (devkitA64/libnx)
 project(PILOT_RV C CXX)
 
 # Debug logging on by default: DBG_* macros are our only diagnostics on Linux
-# (writes PILOT_RV_debug.log next to the exe, backtrace on crash). Off on the
-# Switch: app0: is read-only, so the log cannot go "next to the exe", and the
-# console is the only sane place for it anyway.
+# (writes PILOT_RV_debug.log next to the exe, backtrace on crash). Off by default
+# on the Switch, where the reason is app0:: a shipped NSO has its own filesystem
+# mounted read-only, so "next to the exe" cannot be written.
+#
+# An NRO is the other case, and the one we actually run: libnx chdir's to the
+# directory the .nro was loaded from (fs_dev.c __libnx_init_cwd, for anything
+# that is not an NSO), and that directory is on sdmc. GetModuleFileNameA has no
+# /proc/self/exe on newlib, so it answers the relative "PILOT_RV.EXE"
+# (win32_shim.c), debug_log.h turns that into "PILOT_RV_debug.log" in the CWD -
+# i.e. right next to the .nro and the game data in /switch/pilots. So the log is
+# not only possible on the console, it is the only way to see anything there:
+# scripts/build_switch_podman.sh debug turns it on.
 if(PLATFORM_SWITCH)
   option(PILOTS_DEBUG_LOG "Define _DEBUG (debug log + crash handlers)" OFF)
 else()
@@ -43,6 +52,21 @@ endif()
 
 # -fno-strict-aliasing: the decompiled code type-puns through IDA macros (bmi/pwh overlays)
 add_compile_options(-fno-strict-aliasing -fcommon)
+# -fsigned-char: `char` in this code means the x86 `char`, which is SIGNED, and the
+# original leaned on that default rather than saying it - LZSSDecompress (resource.c)
+# ends its back-reference copy with
+#     char v13 = (BYTE1(v10) & 0xF) + 2;  do { ...; --v13; } while ( v13 >= 0 );
+# AArch64 (AAPCS64) makes plain `char` UNSIGNED by default, so on the console
+# `v13 >= 0` is a tautology, the test folds away - the loop that shipped was
+# literally `ldrb / strb [x1], #1 / b` with no counter left in it - and the copy
+# never stops. It wrote ~26 MB past a 76-byte resource and aborted on the first
+# unmapped page (Atmosphère report: Data Abort, PC at resource.c:613, both Switch
+# configs, first LZSS resource of the run). MSVC and x86/x86-64 GCC already default
+# to signed, so the same sources are provably unchanged on the baseline arches: this
+# option only brings the console in line with them. Not a resource.c bug to fix
+# locally - the codebase writes `(signed char)` explicitly in six places and relies
+# on the default elsewhere, so signedness is a property of the build.
+add_compile_options(-fsigned-char)
 # gnu17, not the compiler default. GCC 14+ defaults to C23, where `()` in a
 # declaration means "(void)" - and game_globals_struct.h, which is generated
 # and must stay byte-faithful, declares the engine's callbacks as
@@ -110,6 +134,9 @@ set(GAME_SOURCES
   ${GAME_DIR}/input.c
   ${GAME_DIR}/native_funcs.c
   ${GAME_DIR}/sdl_backend.c
+  # switch_libnx.c is #ifdef __SWITCH__ all the way down and compiles to nothing
+  # elsewhere; it is listed everywhere for symmetry, as win32_shim.c is on Windows.
+  ${GAME_DIR}/switch_libnx.c
   ${GAME_DIR}/win32_shim.c
   ${GAME_DIR}/mci_ffmpeg.c
 )
@@ -188,14 +215,34 @@ endif()
 # ---- Nintendo Switch: wrap the ELF into PILOT_RV.nro ----
 # nx_create_nro / nx_generate_nacp come from devkitPro's
 # cmake/Platform/NintendoSwitch.cmake, which CMake loads as the platform file
-# once the toolchain has set CMAKE_SYSTEM_NAME=NintendoSwitch. elf2nro only
-# needs an ELF, a name and an icon; the default devkitPro icon is used until
-# the reconstruction has one of its own.
+# once the toolchain has set CMAKE_SYSTEM_NAME=NintendoSwitch. elf2nro wants an
+# ELF, a NACP and an icon; the icon has to be an uncompressed 128x128 8bpp BMP,
+# because it is copied into the .nro verbatim and hbmenu draws it as-is.
+#
+# assets/switch_icon.bmp is that icon, and unlike SRC/pilots.ico it is IN the
+# repository: the game's own icon is a PE resource inside PILOTS.EXE - game data,
+# extracted at build time on the user's copy and gitignored - whereas whatever is
+# baked into a .nro we hand out, so it has to be art this project owns. It is
+# generated, not drawn by hand: scripts/make_switch_icon.ps1 derives it from
+# arithmetic (see that file for why), so the binary asset has readable source.
+#
+# Missing asset degrades to devkitPro's default icon rather than failing the
+# build, exactly like the Windows icon does.
 if(PLATFORM_SWITCH)
+  set(SWITCH_ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/switch_icon.bmp")
+  if(EXISTS "${SWITCH_ICON}")
+    set(SWITCH_ICON_ARGS ICON "${SWITCH_ICON}")
+  else()
+    set(SWITCH_ICON_ARGS "")
+    message(WARNING "PILOT_RV: no assets/switch_icon.bmp, using devkitPro's default icon "
+                    "(regenerate: pwsh scripts/make_switch_icon.ps1)")
+  endif()
+
   nx_generate_nacp(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/PILOT_RV.nacp"
                    NAME    "Pilots"
                    AUTHOR  "pilots_re reconstruction"
                    VERSION "1.0.0")
-  nx_create_nro(PILOT_RV NACP "${CMAKE_CURRENT_BINARY_DIR}/PILOT_RV.nacp")
+  nx_create_nro(PILOT_RV NACP "${CMAKE_CURRENT_BINARY_DIR}/PILOT_RV.nacp" ${SWITCH_ICON_ARGS})
   message(STATUS "PILOT_RV: nro target PILOT_RV_nro -> ${CMAKE_CURRENT_BINARY_DIR}/PILOT_RV.nro")
+  message(STATUS "PILOT_RV: nro icon ${SWITCH_ICON_ARGS}")
 endif()

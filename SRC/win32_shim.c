@@ -393,7 +393,14 @@ int _close(int fd)
 
 int _read(int fd, void *buf, unsigned int count)
 {
-  return (int)read(fd, buf, count);
+  int n = (int)read(fd, buf, count);
+
+  /* A loading screen the player can see has to be driven from here: a scene loads inside the
+     game's own loop, where nothing the port owns is called except these reads, and the screen
+     stands still the whole time (see SdlBackendLoadBeat). */
+  if ( n > 0 )
+    SdlBackendLoadBeat((unsigned int)n);
+  return n;
 }
 
 int _write(int fd, const void *buf, unsigned int count)
@@ -595,8 +602,10 @@ int FreeLibrary(HMODULE hModule)
 
    MAP_32BIT is Linux/x86 only; elsewhere the second path asks for a low
    address and rejects anything the kernel put higher. The Switch is a third
-   case: newlib has no mmap at all, so it gets the pool out of its own image -
-   see the __SWITCH__ branch of Shim_AllocLow.
+   case: newlib has no mmap at all, and the image whose .bss it could take the
+   pool from is itself mapped above 2 GB by the loader - see the __SWITCH__
+   branch of Shim_AllocLow, where that was measured on hardware and what it
+   leaves the port to find out.
 
    munmap needs the mapping length and GlobalFree is given no size, so each block
    carries it in a 16-byte header (keeps the payload 16-byte aligned, like malloc). */
@@ -605,38 +614,88 @@ int FreeLibrary(HMODULE hModule)
 
 #ifdef __SWITCH__
 /*
- * No <sys/mman.h> on newlib, so neither mmap path below exists here. The pool
- * comes out of the NRO image instead: .bss sits immediately after the code at
- * the image base, which is the lowest address in the whole process - and that
- * is exactly where the int round trip stays lossless. (The libnx heap starts
- * there too but grows toward 4 GB, so a block handed out late could come back
- * from above 2 GB; a pool at the start of the image cannot move.)
+ * No <sys/mman.h> on newlib, so neither mmap path below exists here. What the Switch
+ * does instead has been measured at every step, because the first two guesses were
+ * both wrong:
  *
- * Both GlobalAlloc users are small and allocate once at startup: the video
- * pool (InitVidSys - a few hundred KB at 640x480) and g_hGraphicsMemory
- * (0xF000 in audio.c), so 4 MB is comfortable. The bump allocator never hands
- * memory back - the only two GlobalFree sites are the shutdown paths in
- * audio.c and main.c, which have nothing to reclaim by then.
+ *  - THE IMAGE IS NOT LOW. hbloader maps the .nro high: &dword_4161F0 came back as
+ *    0x78c3fa888 in one run and the code as 0000000A64056000 in another (it
+ *    randomises). So the pool cannot come out of .bss and still satisfy the round
+ *    trip.
+ *  - NEITHER IS THE HEAP. The heap is a slice of hbloader's own (its forwarder calls
+ *    svcSetHeapSize, and the NRO is handed the result as libnx's "heap override",
+ *    runtime/init.c: envHasHeapOverride), and the run says where it landed: "the
+ *    malloc heap sits at 0000000CDD4DC000 + 3127 MB". malloc was tried here, it
+ *    answered, and the answer is that line - so it is not asked again.
+ *
+ * What is left is to ask for a mapping of one's own, and the console does allow it:
+ * SdlSwitchMapLowMemory (switch_libnx.c) turns a block into a transfer-memory object
+ * and maps it at an address the caller names - which is how libnx maps its own IPC
+ * buffers, so it is not an exotic route. The pool is built in that alias, so the
+ * pointers the game stores in an int name the right bytes. The .bss pool stays as the
+ * fallback: if the kernel ever refuses, the game still runs and the log says out loud
+ * that the pointers are no good, which beats refusing to start.
+ *
+ * SIZE: InitVidSys asks for poolSizeBytes - frameDataSize - 80000 and the shipped
+ * resource has poolSizeBytes = 10485760, i.e. 10098560 bytes (logged as "InitVidSys:
+ * field_0=10098560 size=307200"), plus audio.c's 0xF000. 16 MB covers both. Note the
+ * bump reserves bytes + HDR: GlobalAlloc writes its 16-byte header *before* the
+ * payload it returns, so a block that only reserved `bytes` would have the next
+ * block's header land on its last 16 bytes.
  */
-#define SHIM_LOWMEM_POOL (4u * 1024u * 1024u)
+#define SHIM_LOWMEM_POOL (16u * 1024u * 1024u)
 
 static unsigned char s_SwitchLowMemPool[SHIM_LOWMEM_POOL] __attribute__((aligned(16)));
-static size_t s_SwitchLowMemUsed;
+static unsigned char *s_LowPool;              /* the low alias, or .bss if there is no alias */
+static size_t s_LowPoolSize;
+static size_t s_LowPoolUsed;
+static int s_LowMemTooHighReported;
+
+static int Shim_RoundTripOk(void *p)
+{
+  return (INT_PTR)p == (INT_PTR)(int)(INT_PTR)p;
+}
 
 static void *Shim_AllocLow(size_t bytes)
 {
-  size_t total = (bytes + 15u) & ~(size_t)15u;
+  /* Rounded to 16 like malloc: the bump hand-out is not the first block only, and the header
+     promise at SHIM_LOWMEM_HDR ("keeps the payload 16-byte aligned") has to hold for the
+     NEXT payload as well - GlobalAlloc stores a size_t right at the start of every block. */
+  size_t total = (bytes + SHIM_LOWMEM_HDR + 15u) & ~(size_t)15u;
   unsigned char *p;
 
-  if ( total > sizeof(s_SwitchLowMemPool) - s_SwitchLowMemUsed )
-    return 0;
-  p = s_SwitchLowMemPool + s_SwitchLowMemUsed;
-  s_SwitchLowMemUsed += total;
-  if ( (INT_PTR)p != (INT_PTR)(int)(INT_PTR)p )
+  if ( !s_LowPool )
   {
-    DBG_LOG("Shim_AllocLow: pool at %p is above 2 GB, the int round trip would not survive it", p);
+    void *low = SdlSwitchMapLowMemory(SHIM_LOWMEM_POOL);
+
+    if ( low && Shim_RoundTripOk(low) )
+      s_LowPool = (unsigned char *)low;
+    else
+      s_LowPool = s_SwitchLowMemPool;
+    s_LowPoolSize = SHIM_LOWMEM_POOL;
+    DBG_LOG("Shim_AllocLow: building the pool in %s",
+            s_LowPool == s_SwitchLowMemPool ? "the image's .bss" : "a mapping below 2 GB");
+  }
+
+  if ( total > s_LowPoolSize - s_LowPoolUsed )
+  {
+    DBG_LOG("Shim_AllocLow: %d bytes will not fit in the pool, %d of %d used",
+            (int)bytes, (int)s_LowPoolUsed, (int)s_LowPoolSize);
     return 0;
   }
+  p = s_LowPool + s_LowPoolUsed;
+  s_LowPoolUsed += total;
+  if ( !Shim_RoundTripOk(p) && !s_LowMemTooHighReported )
+  {
+    /* Once per run: it is a property of where the memory is, not of this block, and
+       repeating it per block hides everything else. */
+    s_LowMemTooHighReported = 1;
+    DBG_LOG("Shim_AllocLow: this pool is NOT below 2 GB - a pointer the game keeps in an int will not survive it");
+  }
+  DBG_LOG("Shim_AllocLow: %d bytes -> 0x%08X%08X (%s 2 GB)", (int)bytes,
+          (unsigned int)((unsigned long long)(UINT_PTR)p >> 32),
+          (unsigned int)(unsigned long long)(UINT_PTR)p,
+          Shim_RoundTripOk(p) ? "BELOW" : "ABOVE");
   return p;
 }
 #else
@@ -683,8 +742,8 @@ HGLOBAL GlobalAlloc(UINT uFlags, size_t dwBytes)
 HGLOBAL GlobalFree(HGLOBAL hMem)
 {
 #ifdef __SWITCH__
-  (void)hMem;                             /* bump pool: the only frees are the shutdown paths */
-  return 0;
+  (void)hMem;          /* bump pool, low alias or .bss: neither has anything to give back */
+  return 0;            /* and both call sites are shutdown paths */
 #else
   unsigned char *p;
 
@@ -902,16 +961,49 @@ int GetSystemMetrics(int nIndex)
 static MSG s_MsgQueue[SHIM_MSG_CAPACITY];
 static int s_MsgHead;
 static int s_MsgCount;
+static unsigned s_MsgDispatched;               /* messages handed to the game, since the start */
 static int s_QuitPosted;
 static int s_QuitDelivered;
 static int s_PaintPending;
 static int s_InDispatch;
 static int s_InPump;
+static int s_HaveMousePos;                   /* a WM_MOUSEMOVE has been posted at least once */
+static int s_MouseGameX, s_MouseGameY;       /* its position, in the game's own coords */
 
 int PostMessageA(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
   MSG *m;
   int x, y;
+  int i;
+
+  /* What Windows does with a mouse move that has not been picked up yet: it does not queue a
+     second one, it merges. Real Win32 states it outright (a WM_MOUSEMOVE is discarded when another
+     one is already in the queue), and SDL's own pump does the same with SDL_MOUSEMOTION. Without
+     this, a device that reports often - the console's analog stick, which posts a move every poll
+     it is held aside - fills the queue with positions the game then walks through one by one, and
+     every one of them is a cursor erase, a cursor redraw and a present. The player sees the scene's
+     animation stop while the pointer moves: the loop is busy replaying a trail of pointer positions
+     the real system would have collapsed into the last one. */
+  if ( message == WM_MOUSEMOVE )
+  {
+    /* Where the pointer now is, as the game will read it out of the message: GetCursorPos is
+       answered from this (see there), because on these platforms the only mouse that exists is
+       the one the port posts - SDL's own state never sees the console's stick. */
+    s_HaveMousePos = 1;
+    s_MouseGameX = (short)(lParam & 0xFFFF);
+    s_MouseGameY = (short)((lParam >> 16) & 0xFFFF);
+    for ( i = 0; i < s_MsgCount; ++i )
+    {
+      MSG *p = &s_MsgQueue[(s_MsgHead + i) % SHIM_MSG_CAPACITY];
+      if ( p->message == WM_MOUSEMOVE && p->hwnd == hWnd )
+      {
+        p->lParam = lParam;
+        p->wParam = wParam;
+        p->time = SDL_GetTicks();
+        return 1;
+      }
+    }
+  }
 
   if ( s_MsgCount >= SHIM_MSG_CAPACITY )
   {
@@ -940,6 +1032,21 @@ void PostQuitMessage(int nExitCode)
 int WinShim_QuitPosted(void)
 {
   return s_QuitPosted;
+}
+
+int WinShim_MsgQueueDepth(void)
+{
+  return s_MsgCount;                             /* how many posted messages are waiting to be
+                                                    dispatched: the loop profile reads it, because a
+                                                    queue that grows while the player moves the
+                                                    pointer says the game is not keeping up with the
+                                                    port, which is a different illness from a slow
+                                                    present and needs a different cure */
+}
+
+unsigned WinShim_MsgDispatched(void)
+{
+  return s_MsgDispatched;
 }
 
 HWND WinShimMainWindow(void)
@@ -984,6 +1091,8 @@ int PeekMessageA(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax,
     {
       s_MsgHead = (s_MsgHead + 1) % SHIM_MSG_CAPACITY;
       --s_MsgCount;
+      ++s_MsgDispatched;                       /* the loop profile counts what the game actually
+                                                  took out of the queue, not what was offered */
     }
     return 1;
   }
@@ -1259,8 +1368,29 @@ int GetCursorPos(LPPOINT lpPoint)
   int x, y;
   if ( !lpPoint )
     return 0;
-  SDL_GetMouseState(&x, &y);               /* window coords == client coords here */
-  SdlBackendClientToGame(&x, &y);          /* fullscreen: client px -> the game's own coords */
+  /* main.c polls the pointer once per frame (and video.c once per wait-loop turn), so this call
+     is the game loop's own pulse on the platforms with no user32: when the loop starves, the
+     polls stop with it, and SdlLoopProfile counts them.
+
+     The answer is WINDOW CLIENT px, the same space a real GetCursorPos + ScreenToClient lands
+     in, and NOT the game's coords: main.c converts with SdlBackendClientToGame itself, and it
+     does so to decide inputState - "the pointer is inside the picture". Answering in game coords
+     fed that comparison a second transform, which in the letterboxed layout threw most positions
+     outside the picture (SDL's own mouse, which on the console has never seen the stick, sat at
+     the window's (0,0) - a letterbox corner); inputState went 0 and the engine erased its arrow
+     every frame, which is exactly the "the cursor disappears when idle after '-'" report. The
+     position comes from the port's own posted WM_MOUSEMOVE - the only mouse these platforms have -
+     mapped back out of the game's space; SDL_GetMouseState is only the answer before the first
+     move ever, where it is already window px. */
+  SdlBackendNoteFramePoll();
+  if ( s_HaveMousePos )
+  {
+    x = s_MouseGameX;
+    y = s_MouseGameY;
+    SdlBackendGameToClient(&x, &y);          /* game px -> window client px (identity untransformed) */
+  }
+  else
+    SDL_GetMouseState(&x, &y);               /* window coords == client coords here */
   lpPoint->x = x;
   lpPoint->y = y;
   return 1;
@@ -1304,6 +1434,12 @@ SHORT GetKeyState(int nVirtKey)
 int WinHelpA(HWND hWnd, LPCSTR lpHelpFile, UINT uCommand, ULONG_PTR dwData)
 {
   (void)hWnd; (void)uCommand; (void)dwData;
+  /* HELP_QUIT (2) is asked for only by main.c's CleanupHelpAndWindow, i.e. immediately after
+     its frame loop broke - with the game's globals still untouched (CleanupGameResources runs
+     after this returns). That is the one moment where "why did the engine quit" can be answered
+     from the state itself, so the port's read-only report fires here. */
+  if ( uCommand == 2 )
+    SdlQuitReportExit("WinHelpA(HELP_QUIT) - just after main.c's frame loop broke");
   DBG_LOG("WinHelpA: ignored (help file '%s')", lpHelpFile ? lpHelpFile : "");
   return 0;                                /* .hlp ships with nothing here: report failure,
                                               never open a viewer */
