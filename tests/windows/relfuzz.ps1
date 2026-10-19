@@ -10,7 +10,7 @@ Get-Process PILOT_RV,PILOT_RV_x64 -ErrorAction SilentlyContinue | Stop-Process -
 Start-Sleep -Seconds 1
 
 "### building x64 RELEASE ###"
-cmd /c "`"$SRC\build_sdl_x64.bat`"" 2>&1 | Select-String -Pattern 'SUCCESS|BUILD FAILED|error C' | ForEach-Object { $_.Line }
+cmd /c "`"$SRC\build_sdl.bat release x64`"" 2>&1 | Select-String -Pattern 'SUCCESS|BUILD FAILED|error C' | ForEach-Object { $_.Line }
 
 $p = Start-Process -FilePath "$SRC\PILOT_RV_x64.EXE" -WorkingDirectory $SRC -PassThru
 $h = [IntPtr]::Zero

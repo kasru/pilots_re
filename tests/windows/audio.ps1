@@ -45,7 +45,7 @@ param(
 )
 
 $ExeName = if ($Arch -eq 'x86') { 'PILOT_RV.EXE' } else { 'PILOT_RV_x64.EXE' }
-$BatFile = if ($Arch -eq 'x86') { 'build_sdl_debug.bat' } else { 'build_sdl_x64_debug.bat' }
+$BatArgs = if ($Arch -eq 'x86') { 'debug x86' } else { 'debug x64' }
 $LogName = $ExeName -replace '\.EXE$', '_debug.log'
 
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
@@ -77,7 +77,7 @@ Start-Sleep -Seconds 1
 
 if ($Build) {
   "=== building $Arch DEBUG ==="
-  cmd /c "`"$SRC\$BatFile`"" 2>&1 | Select-String -Pattern 'SUCCESS|BUILD FAILED| error ' | ForEach-Object { $_.Line }
+  cmd /c "`"$SRC\build_sdl.bat $BatArgs`"" 2>&1 | Select-String -Pattern 'SUCCESS|BUILD FAILED| error ' | ForEach-Object { $_.Line }
 }
 
 # Scratch dir holding the data but NOT MOVIES: keeps the run deterministic

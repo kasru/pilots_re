@@ -25,8 +25,8 @@
 
 На этой ветке (`sdl2`) — SDL2-порт под Windows x86/x64, Linux и Nintendo Switch:
 
-- Windows: `SRC\build_sdl_debug.bat` / `SRC\build_sdl_release.bat` (x86 → `PILOT_RV.EXE`),
-  `SRC\build_sdl_x64_debug.bat` / `SRC\build_sdl_x64.bat` (x64 → `PILOT_RV_x64.EXE`);
+- Windows: `SRC\build_sdl.bat [debug|release] [x86|x64]` (по умолчанию `release x64`;
+  x86 → `PILOT_RV.EXE`, x64 → `PILOT_RV_x64.EXE`);
   нужны Visual Studio 2022 и Windows SDK, SDL2 лежит в `third_party\SDL2`.
 - Linux: CMake — `cmake -S . -B build64` (нативный x86_64) или `build32` (32-бит
   в контейнере из `Containerfile`).

@@ -13,7 +13,7 @@ Get-Process PILOT_RV,PILOT_RV_x64 -ErrorAction SilentlyContinue | Stop-Process -
 Start-Sleep -Seconds 1
 
 "=== building x86 DEBUG (last, so SDL2.dll is the x86 one) ==="
-$out = cmd /c "`"$SRC\build_sdl_debug.bat`"" 2>&1
+$out = cmd /c "`"$SRC\build_sdl.bat debug x86`"" 2>&1
 $out | Select-String -Pattern 'SUCCESS|BUILD FAILED|error [A-Z]|LNK[0-9]' | ForEach-Object { $_.Line }
 
 if (-not (Test-Path (Join-Path $SRC 'PILOT_RV.EXE'))) { "PILOT_RV.EXE missing"; exit 1 }

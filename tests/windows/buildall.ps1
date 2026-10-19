@@ -1,7 +1,8 @@
 $SRC = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
-$bats = @('build_sdl_debug.bat','build_sdl_release.bat','build_sdl_x64.bat','build_sdl_x64_debug.bat')
-foreach ($b in $bats) {
-  "=== $b ==="
-  $out = cmd /c "`"$SRC\$b`"" 2>&1
+# The four combinations of build_sdl.bat: [debug|release] [x86|x64].
+$combos = @('debug x86','release x86','release x64','debug x64')
+foreach ($c in $combos) {
+  "=== build_sdl.bat $c ==="
+  $out = cmd /c "`"$SRC\build_sdl.bat $c`"" 2>&1
   $out | Select-String -Pattern 'SUCCESS|BUILD FAILED|error [A-Z]|LNK[0-9]' | ForEach-Object { $_.Line }
 }

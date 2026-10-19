@@ -1,5 +1,5 @@
 # Linux + Nintendo Switch build for the "Братья Пилоты" reconstruction.
-# Windows builds keep using SRC/build_sdl_release.bat + build_sdl_debug.bat (untouched).
+# Windows builds keep using SRC/build_sdl.bat [debug|release] [x86|x64] (untouched).
 #
 # Three flavours, all driven by the same CMakeLists:
 #
@@ -113,7 +113,7 @@ endif()
 set(GAME_DIR ${CMAKE_CURRENT_SOURCE_DIR}/SRC)
 set(THIRD_PARTY ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 
-# Same explicit list as build_sdl_release.bat (test_cast.c / test_wave.c stay out of the build)
+# Same explicit list as SRC/build_sdl.bat (test_cast.c / test_wave.c stay out of the build)
 set(GAME_SOURCES
   ${GAME_DIR}/globals.c
   ${GAME_DIR}/animation.c

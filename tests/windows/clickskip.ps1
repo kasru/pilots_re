@@ -87,9 +87,9 @@ function Check([string]$name, [bool]$ok) {
 Get-Process PILOT_RV,PILOT_RV_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
-$bat = if ($Arch -eq 'x64') { 'build_sdl_x64_debug.bat' } else { 'build_sdl_debug.bat' }
-"building $bat ..."
-& cmd /c "`"$SRC\$bat`"" | Select-Object -Last 1
+$bat = if ($Arch -eq 'x64') { 'debug x64' } else { 'debug x86' }
+"building $Arch DEBUG (build_sdl.bat $bat)..."
+& cmd /c "`"$SRC\build_sdl.bat $bat`"" | Select-Object -Last 1
 if (-not (Test-Path (Join-Path $SRC $exe))) { "no exe: $SRC\$exe"; exit 1 }
 
 . "$PSScriptRoot\rundir.ps1"
