@@ -496,7 +496,7 @@ int GmPath_SeekClassSet(GM_EVENT target, uint8_t classSet, uint8_t mode)
     const uint8_t *memberBits;
 
     GmPath_Setup(target);
-    memberBits = g_ClassSets[classSet].memberBits;
+    memberBits = (const uint8_t *)(uintptr_t)g_ClassSets[classSet].memberBits;
     if (target == GMEV_ACTION1 || target == GMEV_ACTION2)
     {
         if (target != g_ClickEvent || !ClassSet_Contains(memberBits, g_ClickTileClass))

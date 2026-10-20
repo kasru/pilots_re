@@ -383,8 +383,8 @@ void GmLoad_WorldHeader(void)
     g_LoadPtr = GmHeap_Reserve(sizeof(GM_GRAPHIC) * (uint32_t)g_World.graphicCount);
     g_Sounds = (GM_SOUND *)g_LoadPtr;
     g_LoadPtr = GmHeap_Reserve(sizeof(GM_SOUND) * (uint32_t)g_World.soundCount);
-    g_MusicTracks = (const GM_MUSIC_DATA **)g_LoadPtr;
-    g_LoadPtr = GmHeap_Reserve(sizeof(GM_MUSIC_DATA *) * (uint32_t)g_World.musicCount);
+    g_MusicTracks = (uint32_t *)g_LoadPtr;
+    g_LoadPtr = GmHeap_Reserve(sizeof(uint32_t) * (uint32_t)g_World.musicCount);
     g_Panels = (GM_PANEL *)g_LoadPtr;
     g_LoadPtr = GmHeap_Reserve(sizeof(GM_PANEL) * (uint32_t)g_World.panelCount);
 
@@ -412,13 +412,13 @@ static GM_RULE_ITEM *GmRule_ScriptSlot(GM_RULE *rule)
 }
 
 /* Список кадров графики для направления index1 (у шрифтов и графики без направлений — общий).
-   Возвращает адрес слота: поля списка в рантайм-структуре или ячейки таблицы в образе —
-   в обоих случаях слот 4 байта на всех архитектурах (адреса списка ниже 2 ГБ). */
+   Возвращает адрес слота: поле frames рантайм-структуры или ячейка таблицы направлений
+   в образе — в обоих случаях слот 4 байта на всех архитектурах (адреса ниже 2 ГБ). */
 static uint32_t *GmGraphic_FrameListSlot(GM_GRAPHIC *graphic, int direction)
 {
     if (graphic->isFont || graphic->dirMode <= 1)
-        return (uint32_t *)&graphic->frames.list;
-    return graphic->frames.byDirection + direction;
+        return &graphic->frames;
+    return (uint32_t *)(uintptr_t)graphic->frames + direction;
 }
 
 /*
@@ -448,9 +448,9 @@ bool GmLoad_ApplyRecord(GM_RECORD_TYPE type, int slot, int index1, int index2, i
     {
         GM_ROOM *room = &g_Rooms[slot];
 
-        room->loadBuffer = g_Background;
+        room->loadBuffer = (uint32_t)(uintptr_t)g_Background;
         room->fileOffset = g_RoomFileOffset;
-        room->savedState = NULL;
+        room->savedState = 0;
         room->savedObjectCount = 0;
         /* Разряд 31 первого двойного слова фона помечает стартовую комнату. */
         if (g_StartRoom == -1 && (((const GM_BACKGROUND *)data)->reserved0 & 0x80000000u) != 0)
@@ -474,47 +474,40 @@ bool GmLoad_ApplyRecord(GM_RECORD_TYPE type, int slot, int index1, int index2, i
         break;
 
     case GMREC_CLASS:
-#if UINTPTR_MAX == 0xFFFFFFFFu
-        GmLoad_CopyRecord(&g_Classes[slot]);
-#else
         /* Запись класса в файле — 4 скалярных байта (kind, ориентации правил, слой,
-           размер переменных); указатели скриптов и правил задают отдельные записи-
-           фикстапы. Копируется ровно префикс — как копией g_RecordSize байт на x86:
-           тело записи указатели не трогает, а слот при повторной загрузке эпизода
-           обновляется теми же записями, что и в первый раз. */
-        memcpy(&g_Classes[slot], g_LoadPtr, 4);
-#endif
+           размер переменных); слоты скриптов и правил задают отдельные записи-фикстапы. */
+        GmLoad_CopyRecord(&g_Classes[slot]);
         break;
     case GMREC_CLASS_CREATE_SCRIPT:
-        g_Classes[slot].createScript = bytes + dataOffset;
+        g_Classes[slot].createScript = (uint32_t)(uintptr_t)(bytes + dataOffset);
         break;
     case GMREC_CLASS_DESTROY_SCRIPT:
-        g_Classes[slot].destroyScript = bytes + dataOffset;
+        g_Classes[slot].destroyScript = (uint32_t)(uintptr_t)(bytes + dataOffset);
         break;
     case GMREC_CLASS_RULES:
-        g_Classes[slot].rules = data;
+        g_Classes[slot].rules = (uint32_t)(uintptr_t)data;
         break;
     case GMREC_RULE:
         /* Таблица правил в образе: 4-байтовые слоты (см. GM_RULES_SET). */
-        GM_RULES_SET(g_Classes[slot].rules, index1, data);
+        GM_RULES_SET((void *)(uintptr_t)g_Classes[slot].rules, index1, data);
         break;
     case GMREC_RULE_PRECONDITION:
-        GM_RULES_AT(g_Classes[slot].rules, index1)->items[0].script =
+        GM_RULES_AT((void *)(uintptr_t)g_Classes[slot].rules, index1)->items[0].script =
             (uint32_t)(uintptr_t)(bytes + dataOffset);
         break;
     case GMREC_RULE_SCRIPT:
-        GmRule_ScriptSlot(GM_RULES_AT(g_Classes[slot].rules, index1))->script =
+        GmRule_ScriptSlot(GM_RULES_AT((void *)(uintptr_t)g_Classes[slot].rules, index1))->script =
             (uint32_t)(uintptr_t)(bytes + dataOffset);
         break;
 
     case GMREC_CLASS_SET_MEMBERS:
-        g_ClassSets[slot].memberBits = data;
+        g_ClassSets[slot].memberBits = (uint32_t)(uintptr_t)data;
         break;
     case GMREC_CLASS_SET_CHOICES:
-        g_ClassSets[slot].randomChoices = data;
+        g_ClassSets[slot].randomChoices = (uint32_t)(uintptr_t)data;
         break;
     case GMREC_CLASS_SET_ORIENTATIONS:
-        g_ClassSets[slot].orientations = data;
+        g_ClassSets[slot].orientations = (uint32_t)(uintptr_t)data;
         break;
 
     case GMREC_GRAPHIC:
@@ -522,7 +515,7 @@ bool GmLoad_ApplyRecord(GM_RECORD_TYPE type, int slot, int index1, int index2, i
         g_GraphicOnDisk = ((const GM_GRAPHIC *)g_LoadPtr)->options & GMGR_ON_DISK;
         break;
     case GMREC_GRAPHIC_FRAMES:
-        g_Graphics[slot].frames.list = data;
+        g_Graphics[slot].frames = (uint32_t)(uintptr_t)data;
         break;
     case GMREC_GRAPHIC_DIR_FRAMES:
         /* Слот таблицы направлений — 4 байта (адрес списка кадров в образе). */
@@ -538,17 +531,17 @@ bool GmLoad_ApplyRecord(GM_RECORD_TYPE type, int slot, int index1, int index2, i
         GmLoad_CopyRecord(&g_Sounds[slot]);
         break;
     case GMREC_SOUND_DATA:
-        g_Sounds[slot].data = data;
+        g_Sounds[slot].data = (uint32_t)(uintptr_t)data;
         break;
     case GMREC_MUSIC:
-        g_MusicTracks[slot] = data;
+        g_MusicTracks[slot] = (uint32_t)(uintptr_t)data;
         break;
 
     case GMREC_PANEL_RULE:
-        g_Panels[slot].rule = data;
+        g_Panels[slot].rule = (uint32_t)(uintptr_t)data;
         break;
     case GMREC_PANEL_ITEMS:
-        g_Panels[slot].items = data;
+        g_Panels[slot].items = (uint32_t)(uintptr_t)data;
         break;
 
     case GMREC_VARS_KEEP_ALWAYS:

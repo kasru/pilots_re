@@ -37,7 +37,7 @@ GM_SPRITE *GmText_PutGlyph(int character, int fontIndex, int *x, uint16_t y)
     glyph->x = (int16_t)*x;
     glyph->y = (int16_t)y;
 
-    frame = &font->glyphs[character - font->firstChar];
+    frame = &((GM_FRAME *)(uintptr_t)font->glyphs)[character - font->firstChar];
     glyph->frame = frame;
     *x += GM_FRAME_IMAGE(frame)->width - frame->hotX;
 

@@ -34,6 +34,14 @@
 #define GM_ASSERT_RUNTIME(T, n) /* LP64: рантайм-структура шире — формат не задет */
 #endif
 
+/*
+ * Структуры массивов, отводимых в арене заголовком мира: их размер входит в layout
+ * арены, а слоты сохранений считаются от её начала, — поэтому он фиксирован на всех
+ * архитектурах. Указатели внутри — 4-байтовые слоты: образ и арена ниже 2 ГБ
+ * (см. GM_RULES_AT), слот не теряет адрес.
+ */
+#define GM_ASSERT_FIXED(T, n) _Static_assert(sizeof(T) == (n), #T)
+
 #define NORETURN __declspec(noreturn)
 
 /* ========================================================================== */
@@ -49,7 +57,6 @@ typedef struct GM_PANEL_ITEM GM_PANEL_ITEM;
 typedef struct GM_PANEL GM_PANEL;
 typedef struct GM_ROOM GM_ROOM;
 typedef struct GM_CLASS_SET GM_CLASS_SET;
-typedef union GM_FRAME_LISTS GM_FRAME_LISTS;
 typedef struct GM_GRAPHIC GM_GRAPHIC;
 typedef struct GM_IMAGE_DISK GM_IMAGE_DISK;
 typedef struct GM_IMAGE GM_IMAGE;
@@ -184,18 +191,18 @@ struct GM_CLASS
     uint8_t ruleOrientations;
     uint8_t defaultLayer;
     uint8_t varsSizeMinus1;
-    uint8_t *createScript;
-    GM_RULE **rules;
-    uint8_t *destroyScript;
+    uint32_t createScript;   /* слот: адрес скрипта в образе */
+    uint32_t rules;          /* слот: адрес таблицы правил в образе */
+    uint32_t destroyScript;  /* слот: адрес скрипта в образе */
 };
-GM_ASSERT_RUNTIME(GM_CLASS, 16);
+GM_ASSERT_FIXED(GM_CLASS, 16);
 
 struct GM_SOUND
 {
     uint32_t reserved;
-    GM_SOUND_DATA *data;
+    uint32_t data;           /* слот: адрес данных звука в образе */
 };
-GM_ASSERT_RUNTIME(GM_SOUND, 8);
+GM_ASSERT_FIXED(GM_SOUND, 8);
 
 struct GM_PANEL_ITEM
 {
@@ -209,38 +216,33 @@ _Static_assert(sizeof(GM_PANEL_ITEM) == 8, "GM_PANEL_ITEM");
 
 struct GM_PANEL
 {
-    GM_RULE *rule;
-    GM_PANEL_ITEM *items;
+    uint32_t rule;           /* слот: адрес правила в образе */
+    uint32_t items;          /* слот: адрес элементов панели в образе */
 };
-GM_ASSERT_RUNTIME(GM_PANEL, 8);
+GM_ASSERT_FIXED(GM_PANEL, 8);
 
 struct GM_ROOM
 {
-    void *loadBuffer;
+    uint32_t loadBuffer;     /* слот: адрес рабочего буфера (фона) в арене */
     uint32_t fileOffset;
-    void *savedState;
+    uint32_t savedState;     /* слот: адрес блока состояния в арене */
     int savedObjectCount;
 };
-GM_ASSERT_RUNTIME(GM_ROOM, 16);
+GM_ASSERT_FIXED(GM_ROOM, 16);
 
 struct GM_CLASS_SET
 {
-    uint8_t *memberBits;
-    uint8_t *randomChoices;
-    uint8_t *orientations;
+    uint32_t memberBits;     /* слот: адрес бит членства в образе */
+    uint32_t randomChoices;  /* слот: адрес таблицы случайного выбора в образе */
+    uint32_t orientations;   /* слот: адрес ориентаций членов в образе */
     uint32_t unused;
 };
-GM_ASSERT_RUNTIME(GM_CLASS_SET, 16);
+GM_ASSERT_FIXED(GM_CLASS_SET, 16);
 
-union GM_FRAME_LISTS
-{
-    GM_FRAME *list;
-    /* Таблица списков по направлениям лежит в образе: 4-байтовые слоты —
-       шаг одинаков на всех архитектурах. Было GM_FRAME **byDirection: на LP64
-       индексация ходила бы шагом 8 и читала из слотов мимо них. */
-    uint32_t *byDirection;
-};
-GM_ASSERT_RUNTIME(GM_FRAME_LISTS, 4);
+/* Список кадров графики — 4-байтовый слот: общий список кадров (dirMode ≤ 1)
+   или адрес таблицы списков по направлениям, лежащей в образе (см. GM_RULES_AT). */
+#define GM_FRAME_LIST(g) ((GM_FRAME *)(uintptr_t)(g)->frames)
+#define GM_FRAME_DIRS(g) ((const uint32_t *)(uintptr_t)(g)->frames)
 
 struct GM_GRAPHIC
 {
@@ -248,9 +250,9 @@ struct GM_GRAPHIC
     uint8_t options;
     uint8_t dirMode;
     uint8_t frameCount;
-    GM_FRAME_LISTS frames;
+    uint32_t frames;         /* слот: адрес списка кадров или таблицы направлений */
 };
-GM_ASSERT_RUNTIME(GM_GRAPHIC, 8);
+GM_ASSERT_FIXED(GM_GRAPHIC, 8);
 
 typedef enum GM_RECORD_TYPE
 {
@@ -529,9 +531,9 @@ struct GM_FONT
     uint8_t firstChar;
     uint8_t lastChar;
     uint8_t frameCount;
-    GM_FRAME *glyphs;
+    uint32_t glyphs;         /* слот: адрес массива кадров-глифов в образе */
 };
-GM_ASSERT_RUNTIME(GM_FONT, 8);
+GM_ASSERT_FIXED(GM_FONT, 8);
 
 typedef uint8_t GM_INPUT_BITS;
 enum
@@ -1439,7 +1441,7 @@ extern GM_BACKGROUND *g_Background; /* Фон текущей комнаты (п�
 extern GM_GAME_HEADER g_GameHeader;
 extern GM_ARENA g_Arena;
 extern GM_PANEL *g_Panels; /* Панели (GM_PANEL). */
-extern const GM_MUSIC_DATA **g_MusicTracks; /* Мелодии мира (указатели на данные собственного формата MIDI). */
+extern uint32_t *g_MusicTracks; /* Мелодии мира: слоты-адреса данных собственного формата MIDI. */
 extern GM_SETTINGS g_Settings;
 extern int g_StartEntry;
 extern int g_CurrentRoom;
@@ -1616,7 +1618,7 @@ int Native_KeyInputIs(int bits);
 int GmDirIndex_MatchesRotated(int dir, int baseDir);
 int Native_IsDirectionKey(uint8_t dirAndShift);
 int Native_LayerIs(int layer);
-int GmRule_RunWithSavedContext(GM_RULE **rulePtr);
+int GmRule_RunWithSavedContext(const uint32_t *ruleSlot);
 int Native_RunPanel(int panelIndex);
 int Native_IsUnderTileEmpty(void);
 int Native_UnderTileIs(int classIndex);

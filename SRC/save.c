@@ -310,7 +310,7 @@ bool GmSaveGame_Load(int slot)
         room->savedObjectCount = value;
 
         stateSize = sizeof(GM_POOL_ENTRY) * (uint32_t)value + sizeof(GM_TILE) * (uint32_t)g_MapTileCount;
-        room->savedState = GmHeap_Alloc(stateSize);
+        room->savedState = (uint32_t)(uintptr_t)GmHeap_Alloc(stateSize);
 
         /* Блок в файле форматного размера (16 байт на запись): читаем в черновик
            и разворачиваем в рантайм-раскладку блока состояния. */
@@ -320,8 +320,8 @@ bool GmSaveGame_Load(int slot)
             uint8_t *fmt = GmHeap_Alloc(fmtSize);
 
             Host_SaveRead(fmt, fmtSize);
-            memcpy(room->savedState, fmt, tileBytes);
-            entry = (GM_POOL_ENTRY *)((GM_TILE *)room->savedState + g_MapTileCount);
+            memcpy((void *)(uintptr_t)room->savedState, fmt, tileBytes);
+            entry = (GM_POOL_ENTRY *)((GM_TILE *)(uintptr_t)room->savedState + g_MapTileCount);
             GmSave_ExpandPoolEntries(entry, fmt + tileBytes, value, (int)(intptr_t)g_Arena.freePtr);
             GmHeap_Free(fmt);
         }
@@ -383,10 +383,10 @@ bool GmSaveGame_Save(int slot)
     {
         GM_ROOM *room = &g_Rooms[roomIndex];
 
-        if (room->loadBuffer != NULL)
+        if (room->loadBuffer != 0)
         {
             int count = room->savedObjectCount;
-            GM_POOL_ENTRY *entry = (GM_POOL_ENTRY *)((GM_TILE *)room->savedState + g_MapTileCount);
+            GM_POOL_ENTRY *entry = (GM_POOL_ENTRY *)((GM_TILE *)(uintptr_t)room->savedState + g_MapTileCount);
             int arenaBase = (int)(intptr_t)g_Arena.freePtr;
 
             GmSave_WriteInt(roomIndex);
@@ -399,7 +399,7 @@ bool GmSaveGame_Save(int slot)
                 uint32_t fmtSize = 16u * (uint32_t)count + tileBytes;
                 uint8_t *fmt = GmHeap_Alloc(fmtSize);
 
-                memcpy(fmt, room->savedState, tileBytes);
+                memcpy(fmt, (const void *)(uintptr_t)room->savedState, tileBytes);
                 GmSave_CompressPoolEntries(fmt + tileBytes, entry, count);
                 Host_SaveWrite(fmt, fmtSize);
                 GmHeap_Free(fmt);

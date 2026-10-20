@@ -324,10 +324,10 @@ bool GmRules_RunTick(void)
         g_CurClass = &g_Classes[obj->classIndex];
         g_CurVars = (obj->flags & GMOBJ_VARS_ALLOCATED) ? obj->vars : (uint8_t *)&obj->vars;
         g_PathFound = false;
-        if (g_CurClass->rules == NULL)
+        if (g_CurClass->rules == 0)
             continue;
 
-        outcome = Object_RunRules(g_CurClass->rules);
+        outcome = Object_RunRules((GM_RULE **)(uintptr_t)g_CurClass->rules);
         if (outcome == RULES_YIELD)
         {
             g_ResumeObject = obj;
@@ -402,13 +402,15 @@ static bool Pattern_MatchCell(GM_RULE_CELL *cell, bool absolute)
         if (tile.classIndex == GMCLASS_EMPTY_TILE)
             return false;
         set = &g_ClassSets[cell->classIndex];
-        if ((set->memberBits[tile.classIndex >> 3] & (1 << (tile.classIndex & 7))) == 0)
+        if ((((const uint8_t *)(uintptr_t)set->memberBits)[tile.classIndex >> 3]
+             & (1 << (tile.classIndex & 7))) == 0)
             return false;
-        if (set->orientations != NULL)
+        if (set->orientations != 0)
         {
             uint8_t cellDirMask = cell->flags >> 4;
 
-            cell->flags = (uint8_t)(set->orientations[tile.classIndex] | (cell->flags & CELL_MATCH_BITS));
+            cell->flags = (uint8_t)(((const uint8_t *)(uintptr_t)set->orientations)[tile.classIndex]
+                                    | (cell->flags & CELL_MATCH_BITS));
             g_RotateCellByDirection[cellDirMask](cell);
         }
     }
@@ -716,8 +718,9 @@ int GmDirIndex_MatchesRotated(int dir, int baseDir)
 
 /* Выполнить правило в абсолютном режиме, сохранив и восстановив весь контекст скрипта
    (объект, класс, тайлы, направление, преобразование, размещение, переменные, признак
-   показа спрайта) — для панелей, которые вызываются изнутри правил. */
-int GmRule_RunWithSavedContext(GM_RULE **rulePtr)
+   показа спрайта) — для панелей, которые вызываются изнутри правил. ruleSlot — адрес
+   4-байтового слота с указателем на правило (поле GM_PANEL.rule). */
+int GmRule_RunWithSavedContext(const uint32_t *ruleSlot)
 {
     GM_OBJECT *savedObject = g_CurObject;
     int savedObjectIndex = g_CurObjectIndex;
@@ -735,7 +738,7 @@ int GmRule_RunWithSavedContext(GM_RULE **rulePtr)
     bool savedSpriteSetThisStep = g_SpriteSetThisStep;
     int result;
 
-    result = GmRule_Run(*rulePtr, true);
+    result = GmRule_Run((GM_RULE *)(uintptr_t)*ruleSlot, true);
 
     g_SpriteSetThisStep = savedSpriteSetThisStep;
     g_CurVars = savedVars;

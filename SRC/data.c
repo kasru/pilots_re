@@ -301,7 +301,7 @@ GM_BACKGROUND * g_Background; /* Фон текущей комнаты (пикс�
 GM_GAME_HEADER g_GameHeader;
 GM_ARENA g_Arena;
 GM_PANEL * g_Panels; /* Панели (GM_PANEL). */
-const GM_MUSIC_DATA ** g_MusicTracks; /* Мелодии мира (указатели на данные собственного формата MIDI). */
+uint32_t * g_MusicTracks; /* Мелодии мира: слоты-адреса данных собственного формата MIDI. */
 GM_SETTINGS g_Settings;
 int g_StartEntry;
 int g_CurrentRoom;

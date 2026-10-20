@@ -24,7 +24,9 @@ static void Random_Next(void)
    Вариант выбирается по старшему слову текущего зерна, затем генератор продвигается. */
 static uint8_t ClassSet_RandomMember(const GM_CLASS_SET *set)
 {
-    uint8_t member = set->randomChoices[((set->randomChoices[0] * (g_RandomSeed >> 16)) >> 16) + 1];
+    const uint8_t *choices = (const uint8_t *)(uintptr_t)set->randomChoices;
+    uint8_t member = choices[((choices[0] * (g_RandomSeed >> 16)) >> 16) + 1];
+
     Random_Next();
     return member;
 }
@@ -290,7 +292,7 @@ void GmSprite_SetDirectionalFrames(GM_GRAPHIC *graphic, GM_SPRITE *sprite, bool 
 
     if (graphic->dirMode == 1)
     {
-        sprite->frame = graphic->frames.list;
+        sprite->frame = GM_FRAME_LIST(graphic);
         if (g_CurDirection == GMDIR_EAST)
         {
             if (graphic->options & GMGR_MIRROR_X_EAST)
@@ -306,7 +308,7 @@ void GmSprite_SetDirectionalFrames(GM_GRAPHIC *graphic, GM_SPRITE *sprite, bool 
         GM_FRAME_SLOT slot = Sprite_ChooseDirSlot(graphic, sprite);
 
         /* Слот таблицы направлений — 4 байта (адрес списка кадров в образе). */
-        sprite->frame = (GM_FRAME *)(uintptr_t)graphic->frames.byDirection[slot];
+        sprite->frame = (GM_FRAME *)(uintptr_t)GM_FRAME_DIRS(graphic)[slot];
     }
 
     if (screenAnchored)
@@ -330,7 +332,7 @@ GM_GRAPHIC *GmSprite_FindGraphic(GM_SPRITE *sprite)
     const GM_FRAME *frame = sprite->frame;
     GM_GRAPHIC *graphic = &g_Graphics[g_World.graphicCount - 1];
 
-    while (frame < graphic->frames.list)
+    while (frame < GM_FRAME_LIST(graphic))
         --graphic;
     return graphic;
 }
@@ -567,7 +569,7 @@ void GmCurObject_DestroyUnderTile(void)
             break;
     }
 
-    GmRunScriptWithContext(cls->destroyScript, cls, NULL, GM_NO_INDEX, NULL,
+    GmRunScriptWithContext((uint8_t *)(uintptr_t)cls->destroyScript, cls, NULL, GM_NO_INDEX, NULL,
                            g_CurObject->tile.x, g_CurObject->tile.y, g_CurObject->underTile.flags);
     g_CurObject->underTile.raw = GMTILE_EMPTY_RAW;
 }
@@ -642,7 +644,7 @@ void GmTile_Clear(int tileX, int tileY, bool alsoFreeSprites)
         under.flags &= GMUT_DIR_MASK;
         *tile = under;
     }
-    GmRunScriptWithContext(cls->destroyScript, cls, NULL, GM_NO_INDEX, NULL,
+    GmRunScriptWithContext((uint8_t *)(uintptr_t)cls->destroyScript, cls, NULL, GM_NO_INDEX, NULL,
                            (uint8_t)tileX, (uint8_t)tileY, tile->flags);
 }
 
@@ -657,7 +659,7 @@ void GmCurObject_SetUnderTile(int classOrSet, bool fromClassSet)
 
     g_CurObject->underTile.classIndex = (uint8_t)classOrSet;
     g_CurObject->underTile.flags = GMDIR_SOUTH;
-    GmRunScriptWithContext(g_Classes[classOrSet].createScript, &g_Classes[classOrSet], NULL, GM_NO_INDEX, NULL,
+    GmRunScriptWithContext((uint8_t *)(uintptr_t)g_Classes[classOrSet].createScript, &g_Classes[classOrSet], NULL, GM_NO_INDEX, NULL,
                            g_CurObject->tile.x, g_CurObject->tile.y, GMDIR_SOUTH);
 }
 
@@ -681,11 +683,11 @@ void GmTile_Place(GM_RULE_CELL cell, int tileX, int tileY)
         const GM_CLASS_SET *set = &g_ClassSets[cell.classIndex];
 
         classIndex = ClassSet_RandomMember(set);
-        if (set->orientations != NULL)
+        if (set->orientations != 0)
         {
             int cellDir = cell.flags >> 4;
 
-            cell.flags = set->orientations[classIndex];
+            cell.flags = ((const uint8_t *)(uintptr_t)set->orientations)[classIndex];
             g_RotateCellByDirection[cellDir](&cell);
         }
     }
@@ -752,7 +754,7 @@ void GmTile_Place(GM_RULE_CELL cell, int tileX, int tileY)
     }
 
     *tile = cell.tile;
-    GmRunScriptWithContext(cls->createScript, cls, obj, objectIndex, vars, (uint8_t)tileX, (uint8_t)tileY, cell.flags);
+    GmRunScriptWithContext((uint8_t *)(uintptr_t)cls->createScript, cls, obj, objectIndex, vars, (uint8_t)tileX, (uint8_t)tileY, cell.flags);
 }
 
 /* Ход/поворот текущего объекта по клетке step. Ненулевой сдвиг (dx, dy): объект уходит
@@ -1082,9 +1084,9 @@ bool GmCursor_SetGraphic(int graphicIndex, bool redraw)
     g_CursorSprite.y = 0;
     g_CursorSprite.x = 0;
     if (graphic->dirMode == 1)
-        g_CursorSprite.frame = graphic->frames.list;
+        g_CursorSprite.frame = GM_FRAME_LIST(graphic);
     else
-        g_CursorSprite.frame = (GM_FRAME *)(uintptr_t)graphic->frames.byDirection[0];
+        g_CursorSprite.frame = (GM_FRAME *)(uintptr_t)GM_FRAME_DIRS(graphic)[0];
     return true;
 }
 

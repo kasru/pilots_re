@@ -517,16 +517,16 @@ void GmRoom_SaveState(int roomIndex)
             room->savedObjectCount++;
     }
 
-    room->savedState = GmHeap_Alloc(sizeof(GM_POOL_ENTRY) * room->savedObjectCount
+    room->savedState = (uint32_t)(uintptr_t)GmHeap_Alloc(sizeof(GM_POOL_ENTRY) * room->savedObjectCount
                                     + sizeof(GM_TILE) * g_MapTileCount);
     for (row = 0; row < g_World.mapHeight; row++)
     {
-        memcpy((GM_TILE *)room->savedState + row * g_World.mapWidth,
+        memcpy((GM_TILE *)(uintptr_t)room->savedState + row * g_World.mapWidth,
                &g_TileMap[row << g_TileMapShift],
                sizeof(GM_TILE) * g_World.mapWidth);
     }
 
-    out = (GM_POOL_ENTRY *)((GM_TILE *)room->savedState + g_MapTileCount);
+    out = (GM_POOL_ENTRY *)((GM_TILE *)(uintptr_t)room->savedState + g_MapTileCount);
     savedCount = 0;
     for (entry = g_PoolTop; entry > g_PoolBottom; entry--)
     {
@@ -607,22 +607,22 @@ bool GmRoom_Enter(int roomIndex, bool keepCurrent)
 
     g_CurrentRoom = roomIndex;
     room = &g_Rooms[roomIndex];
-    if (!GmRead_Seek((int)room->fileOffset, SEEK_SET) || !GmRead_Record(room->loadBuffer))
+    if (!GmRead_Seek((int)room->fileOffset, SEEK_SET) || !GmRead_Record((void *)(uintptr_t)room->loadBuffer))
         return false;
 
     for (row = 0; row < g_World.mapHeight; row++)
     {
         memcpy(&g_TileMap[row << g_TileMapShift],
-               (const GM_TILE *)room->savedState + row * g_World.mapWidth,
+               (const GM_TILE *)(uintptr_t)room->savedState + row * g_World.mapWidth,
                sizeof(GM_TILE) * g_World.mapWidth);
     }
 
-    saved = (const GM_POOL_ENTRY *)((const GM_TILE *)room->savedState + g_MapTileCount);
+    saved = (const GM_POOL_ENTRY *)((const GM_TILE *)(uintptr_t)room->savedState + g_MapTileCount);
     for (count = room->savedObjectCount; count != 0; count--)
         *GmPool_Alloc() = *saved++;
 
     room->savedObjectCount = 0;
-    GmHeap_Free(room->savedState);
+    GmHeap_Free((void *)(uintptr_t)room->savedState);
     GmRoom_ResetView(false);
     if (!keepCurrent)
         return GmRoom_RepaintAll();

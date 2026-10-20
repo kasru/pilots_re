@@ -105,7 +105,8 @@ int Native_UnderTileInSet(int classSet)
 {
     uint8_t classIndex = g_CurObject->underTile.classIndex;
 
-    return g_ClassSets[classSet].memberBits[classIndex >> 3] & (1 << (classIndex & 7));
+    return ((const uint8_t *)(uintptr_t)g_ClassSets[classSet].memberBits)[classIndex >> 3]
+        & (1 << (classIndex & 7));
 }
 
 /* №13. Истина, если знак, введённый в этом такте, входит в строку chars. */
@@ -157,7 +158,7 @@ int Native_PlayMusic(int track)
     if (!g_Settings.musicOn)
         return 1;
     g_Settings.currentMusic = track;
-    return GmMusic_Start(g_MusicTracks[track]);
+    return GmMusic_Start((const GM_MUSIC_DATA *)(uintptr_t)g_MusicTracks[track]);
 }
 
 /* №17. Сыграть звук soundIndex (если звук включён и не идёт постройка комнаты);
@@ -165,7 +166,7 @@ int Native_PlayMusic(int track)
 int Native_PlaySound(int soundIndex)
 {
     if (!g_BuildingRoom && g_Settings.soundOn)
-        GmAudio_PlaySound(g_Sounds[soundIndex].data, 0xFF, 0, 1);
+        GmAudio_PlaySound((GM_SOUND_DATA *)(uintptr_t)g_Sounds[soundIndex].data, 0xFF, 0, 1);
     return 1;
 }
 
@@ -203,7 +204,7 @@ int Native_ShowGraphic(int graphicIndex)
 int Native_ShowPanel(int panelIndex)
 {
     GM_PANEL *panel = &g_Panels[panelIndex];
-    const GM_PANEL_ITEM *item = panel->items;
+    const GM_PANEL_ITEM *item = (const GM_PANEL_ITEM *)(uintptr_t)panel->items;
 
     if (item != NULL)
     {
@@ -230,7 +231,7 @@ int Native_InputTextAtTile(int fontIndex, uint8_t *text)
 /* №22. Запросить ввод текста в позиции и шрифтом первого элемента панели. */
 int Native_InputTextAtPanel(int panelIndex, uint8_t *text)
 {
-    const GM_PANEL_ITEM *item = g_Panels[panelIndex].items;
+    const GM_PANEL_ITEM *item = (const GM_PANEL_ITEM *)(uintptr_t)g_Panels[panelIndex].items;
 
     return GmText_StartInput(text, item->graphicIndex, item->x, item->y);
 }
@@ -246,7 +247,7 @@ int Native_PrintAtTile(int fontIndex, uint8_t *text)
 /* №24. Напечатать текст в позиции и шрифтом первого элемента панели. */
 int Native_PrintAtPanel(int panelIndex, uint8_t *text)
 {
-    const GM_PANEL_ITEM *item = g_Panels[panelIndex].items;
+    const GM_PANEL_ITEM *item = (const GM_PANEL_ITEM *)(uintptr_t)g_Panels[panelIndex].items;
 
     return GmText_Print(text, item->graphicIndex, item->x, item->y);
 }
@@ -633,7 +634,7 @@ int Native_SaveGameOp(int slot, GM_SAVE_OPERATION action)
    (проход повторяется до снятия фильтра). */
 int Native_SetClassFilter(int classSet)
 {
-    g_ActiveClassFilter = g_ClassSets[classSet].memberBits;
+    g_ActiveClassFilter = (uint8_t *)(uintptr_t)g_ClassSets[classSet].memberBits;
     return 1;
 }
 
