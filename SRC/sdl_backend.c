@@ -144,7 +144,10 @@ HWND SdlBackendCreateWindow(int clientW, int clientH, const char *title, int res
 {
     SDL_SysWMinfo wmi;
     HWND hwnd;
-    Uint32 flags = SDL_WINDOW_SHOWN;
+    /* Окно создаётся скрытым: игра сама показывает его через ShowWindow
+       (Host_ShowWindowOrIntro / Host_PlayAvi), и этот переход hidden→visible как
+       в оригинале порождает первый WM_PAINT, которым мчитается окно AVI-ребёнка. */
+    Uint32 flags = SDL_WINDOW_HIDDEN;
 
     if (resizable)
         flags |= SDL_WINDOW_RESIZABLE;
