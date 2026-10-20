@@ -12,7 +12,7 @@ set PATH=%VCTOOLS%\bin\Hostx86\x86;%WINSDK%\bin\%SDKVER%\x86;%PATH%
 set INCLUDE=%VCTOOLS%\include;%WINSDK%\Include\%SDKVER%\ucrt;%WINSDK%\Include\%SDKVER%\um;%WINSDK%\Include\%SDKVER%\shared
 set LIB=%VCTOOLS%\lib\x86;%WINSDK%\Lib\%SDKVER%\ucrt\x86;%WINSDK%\Lib\%SDKVER%\um\x86
 
-rem SDL2 (порт P1): заголовки/библиотека/DLL. /external:W0 гасит предупреждения
+rem SDL2: заголовки/библиотека/DLL. /external:W0 гасит предупреждения
 rem в заголовках SDL при /W4 /WX; /external:I добавляет путь поиска как внешний.
 set SDL2=%~dp0..\third_party\SDL2
 

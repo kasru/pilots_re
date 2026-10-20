@@ -1,5 +1,5 @@
 /*
- * SDL2-шов (фаза P1 миграции): окно, презент кадра, ввод и палитра через SDL.
+ * SDL2-шов: окно, презент кадра, ввод и палитра через SDL.
  * Имена Host_* сохранены в host.c; здесь — минимальный слой над SDL, который
  * эти тела вызывают. Окно создаёт SDL; wndproc подклассируется так, что
  * игровой набор сообщений уходит в Host_MainWndProc (как в оригинале), а
@@ -29,7 +29,7 @@ static uint32_t *s_Shadow;          /* теневой кадр ARGB, texW×texH 
 static uint32_t s_PaletteLut[256];  /* индекс палитры → ARGB */
 static int s_TexW, s_TexH;
 static bool s_Dirty;                /* теневой кадр ждёт показа */
-static bool s_PresentedOnce;        /* первый показ уже случился (маркер P1) */
+static bool s_PresentedOnce;        /* первый показ уже случился */
 static WNDPROC s_OrigWndProc;       /* wndproc SDL до подкласса */
 
 /* ========================================================================== */
@@ -319,7 +319,7 @@ void SdlBackendPumpEvents(void)
     }
 }
 
-/* Разбор командной строки. В P1 — заглушка (фичи порта придут в P5). */
+/* Разбор командной строки. Заглушка: разбор (в т.ч. -datapath) добавляется отдельно. */
 void SdlBackendParseCmdLine(const char *cmdLine)
 {
     (void)cmdLine;
