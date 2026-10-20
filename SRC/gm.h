@@ -17,6 +17,10 @@
 #include <stddef.h>
 #include <setjmp.h>
 
+/* Отладочный лог (DBG_*): включается здесь, чтобы каждый .c видел макросы через
+   gm.h. В release все макросы — no-op (см. debug_log.h). */
+#include "debug_log.h"
+
 _Static_assert(sizeof(void *) == 4, "Сборка только для x86: формат игры хранит 32-разрядные указатели");
 
 #define NORETURN __declspec(noreturn)
@@ -1776,6 +1780,23 @@ bool Host_SaveSeek(int offset);
 int Host_SaveTruncate(void);
 int Host_CloseSave(void);
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd);
+
+/* ========================================================================== */
+/* SDL-шов (sdl_backend.c): окно, презент, ввод, палитра.                     */
+/* Имена Host_* сохранены; тела переписаны над SDL. MCI-видео и winmm —       */
+/* Win32, сообщениям игрового набора SDL-подкласс пересылает Host_MainWndProc. */
+/* ========================================================================== */
+int SdlBackendStartup(void);
+void SdlBackendShutdown(void);
+HWND SdlBackendCreateWindow(int clientW, int clientH, const char *title, int resizable);
+void SdlBackendPresentRect(const void *bits, int bmpHeight, int stride, int x, int y, int w, int h);
+void SdlBackendFlushPresent(void);
+void SdlBackendUpdatePalette(const uint8_t *rgb, int count);
+void SdlBackendClearBlack(void);
+void SdlBackendDrawGrid(int colorref);
+void SdlBackendPumpEvents(void);
+void SdlBackendParseCmdLine(const char *cmdLine);
+
 int GmWave_GetVolume(void);
 int GmMidi_GetVolume(void);
 

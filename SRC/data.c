@@ -253,6 +253,12 @@ GM_WINDOW g_Window;
 HGDIOBJ g_hDibSection;
 void * g_DibBits;
 HDC g_hDibDC;
+#ifdef _DEBUG
+/* Канал отладочного лога (см. debug_log.h): файл в каталоге EXE и критическая
+   секция вокруг записи. Определяются здесь, объявлены в debug_log.h. */
+HANDLE g_hDebugLogFile = INVALID_HANDLE_VALUE;
+CRITICAL_SECTION g_DebugLogCS;
+#endif
 int g_AviX;
 int g_AviY;
 int g_AviWidth;

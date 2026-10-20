@@ -547,10 +547,12 @@ bool Host_PlayAvi(const char *name, int x, int y, int width, int height)
     strcpy(g_AviBasePath, g_Window.header->movieDir);
     strcat(g_AviBasePath, s_Backslash);
     strcat(g_AviBasePath, name ? name : s_DefaultIntroName);
+    DBG_LOG("PlayAvi: start name=%s rect=%d,%d %dx%d", name ? name : s_DefaultIntroName, x, y, width, height);
     Host_AviOpen();
     if (!g_AviDeviceId)
     {
         g_AviActive = false;
+        DBG_LOG("PlayAvi: open failed (no device)");
         return false;
     }
 
@@ -592,6 +594,7 @@ bool Host_PlayAvi(const char *name, int x, int y, int width, int height)
         GetCursorPos(&cursorPos);
         SetCursorPos(cursorPos.x, cursorPos.y);
     }
+    DBG_LOG("PlayAvi: end playing=%d quit=%d", (int)g_AviPlaying, (int)g_AviQuitRequested);
     return true;
 }
 
@@ -715,6 +718,7 @@ LRESULT CALLBACK Host_MainWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
         {
             g_Window.lastChar = g_Window.settings->specialKeys[0];
             Host_OnMouseButton(GMEV_ACTION1, lParam);
+            DBG_LOG("click L: %d,%d", (int)LOWORD(lParam), (int)HIWORD(lParam));
         }
         return 0;
 
@@ -804,9 +808,6 @@ bool Host_ShowWindowOrIntro(void)
    Возвращает DC окна (он же g_Window.hdc). */
 HDC Host_CreateWindow(GM_GAME_HEADER *header)
 {
-    WNDCLASSA wndClass;
-    int windowX = CW_USEDEFAULT;
-    int windowY = CW_USEDEFAULT;
     DWORD windowStyle;
 
     g_Window.clientWidth = header->screenWidth;
@@ -818,7 +819,9 @@ HDC Host_CreateWindow(GM_GAME_HEADER *header)
     g_Window.screenWidth = GetSystemMetrics(SM_CXSCREEN);
     g_Window.screenHeight = GetSystemMetrics(SM_CYSCREEN);
 
-    /* Рамка изменяемая (WS_OVERLAPPEDWINDOW) или тонкая, без кнопки разворачивания. */
+    /* Рамка изменяемая (WS_OVERLAPPEDWINDOW) или тонкая, без кнопки разворачивания.
+       Стиль нужен только чтобы посчитать frameExtra для WM_GETMINMAXINFO; само окно
+       создаёт SDL (флаг SDL_WINDOW_RESIZABLE). */
     windowStyle = header->resizable ? WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN
                                     : WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
 
@@ -832,59 +835,29 @@ HDC Host_CreateWindow(GM_GAME_HEADER *header)
     g_Window.frameExtraWidth = frame.right - frame.left;
     g_Window.frameExtraHeight = frame.bottom - frame.top;
 
-    /* Если окно не меньше экрана, рамка и заголовок уводятся за его край. */
+    /* Если окно не меньше экрана, клиентская область ужимается под экран. */
     if (header->resizable)
     {
         if (g_Window.screenWidth <= g_Window.clientWidth)
-        {
             g_Window.clientWidth = g_Window.screenWidth;
-            windowX = frame.left;
-        }
         if (g_Window.screenHeight <= g_Window.clientHeight)
-        {
             g_Window.clientHeight = g_Window.screenHeight;
-            windowY = frame.top;
-        }
-    }
-    else if (g_Window.screenWidth == g_Window.clientWidth && g_Window.screenHeight == g_Window.clientHeight)
-    {
-        windowX = frame.left;
-        windowY = frame.top;
     }
 
-    wndClass.style = CS_OWNDC | CS_BYTEALIGNCLIENT;
-    wndClass.lpfnWndProc = Host_MainWndProc;
-    wndClass.cbClsExtra = 0;
-    wndClass.cbWndExtra = 0;
-    wndClass.hInstance = g_hAppInstance;
-    wndClass.hIcon = LoadIconA(g_hAppInstance, MAKEINTRESOURCEA(HOST_ICON_RESOURCE));
-    wndClass.hCursor = Host_GetCursor();
-    wndClass.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    wndClass.lpszMenuName = NULL;
-    wndClass.lpszClassName = s_WindowClassName;
-    RegisterClassA(&wndClass);
-
-    g_MainWindow = CreateWindowExA(0, s_WindowClassName, header->title, windowStyle,
-                                   windowX, windowY,
-                                   g_Window.frameExtraWidth + g_Window.clientWidth,
-                                   g_Window.frameExtraHeight + g_Window.clientHeight,
-                                   NULL, NULL, g_hAppInstance, NULL);
+    g_MainWindow = SdlBackendCreateWindow(g_Window.clientWidth, g_Window.clientHeight,
+                                          header->title, header->resizable);
     g_Window.hdc = GetDC(g_MainWindow);
     return g_Window.hdc;
 }
 
 /* ========================================================================== */
-/* Видео: DIB-секция, палитра, вывод кадра                                    */
+/* Видео: палитра, вывод кадра                                                */
 /* ========================================================================== */
 
-/* CreateDIBSection берётся через GetProcAddress: в Win32s её может не быть. */
-typedef HBITMAP (WINAPI *PFN_CREATEDIBSECTION)(HDC hdc, const BITMAPINFO *bmi, UINT usage,
-                                               void **bits, HANDLE section, DWORD offset);
-
-/* Подготовить видео и память арены: создать окно (если ещё нет), DIB-секцию с
-   индексной палитрой (DIB_PAL_COLORS) и совместимый DC; кадровый буфер — биты DIB.
-   Из арены вычитаются кадровый буфер (если он в DIB) и запас, остаток выделяется
-   и запирается. Истина — память арены получена. */
+/* Подготовить видео и память арены: создать окно (если ещё нет). Под SDL
+   DIB-секция не создаётся — кадровый буфер выделит модуль кадра из арены, а
+   вывод идёт через палитруный LUT в текстуру SDL. Из арены вычитается запас,
+   остаток выделяется и запирается. Истина — память арены получена. */
 bool Host_InitVideo(GM_ARENA *arena, GM_GAME_HEADER *header, GM_SETTINGS *settings)
 {
     g_Window.arena = arena;
@@ -893,30 +866,9 @@ bool Host_InitVideo(GM_ARENA *arena, GM_GAME_HEADER *header, GM_SETTINGS *settin
     if (!g_MainWindow)
         Host_CreateWindow(header);
 
-    if (!g_DibBits)
-    {
-        HMODULE hGdi32 = GetModuleHandleA(s_Gdi32Dll);
-        if (hGdi32)
-        {
-            PFN_CREATEDIBSECTION pfnCreateDIBSection =
-                (PFN_CREATEDIBSECTION)(void *)GetProcAddress(hGdi32, s_CreateDIBSection);
-            if (pfnCreateDIBSection)
-            {
-                g_hDibSection = pfnCreateDIBSection(g_Window.hdc, (const BITMAPINFO *)&g_FrameBitmapInfo,
-                                                    DIB_PAL_COLORS, &g_DibBits, NULL, 0);
-                if (g_DibBits)
-                {
-                    g_hDibDC = CreateCompatibleDC(g_Window.hdc);
-                    SelectObject(g_hDibDC, g_hDibSection);
-                }
-            }
-        }
-    }
-
-    /* Без DIB-секции кадровый буфер (NULL) выделит модуль кадра из арены. */
-    arena->frameBuffer = g_DibBits;
-    if (g_DibBits)
-        arena->freeBytes -= arena->frameBufferSize;
+    /* Под SDL DIB-секция не создаётся: кадровый буфер выделит модуль кадра из арены
+       (GmFrame_Init), а вывод идёт через палитруный LUT в текстуру SDL. */
+    arena->frameBuffer = NULL;
     arena->freeBytes -= HOST_ARENA_RESERVE;
     if (!g_Window.arenaMem)
     {
@@ -952,34 +904,14 @@ bool Host_SetPalette(const uint8_t *rgb, int count, char gridColor, bool keepSys
 {
     HOST_LOGPALETTE palette;
 
+    DBG_LOG("SetPalette: count=%d grid=%d keepSystem=%d", count, (int)gridColor, (int)keepSystemColors);
     if (g_Window.clientWidth && g_Window.clientHeight)
     {
+        /* Переход рисуется SDL-рендерером (GDI-отрисовка поверх окна SDL не видна). */
         if (gridColor)
-        {
-            HPEN pen = CreatePen(PS_SOLID, 1, g_TransitionGridColors[gridColor - 1]);
-            HGDIOBJ oldPen = SelectObject(g_Window.hdc, pen);
-
-            for (int phase = 0; phase < 8; phase++)
-            {
-                for (int x = phase; x < g_Window.clientWidth; x += 8)
-                {
-                    MoveToEx(g_Window.hdc, x, 0, NULL);
-                    LineTo(g_Window.hdc, x, g_Window.clientHeight);
-                }
-                for (int y = phase; y < g_Window.clientHeight; y += 8)
-                {
-                    MoveToEx(g_Window.hdc, 0, y, NULL);
-                    LineTo(g_Window.hdc, g_Window.clientWidth, y);
-                }
-            }
-            SelectObject(g_Window.hdc, oldPen);
-            DeleteObject(pen);
-        }
+            SdlBackendDrawGrid(g_TransitionGridColors[gridColor - 1]);
         else
-        {
-            RECT clientRect = { 0, 0, g_Window.clientWidth, g_Window.clientHeight };
-            FillRect(g_Window.hdc, &clientRect, (HBRUSH)GetStockObject(BLACK_BRUSH));
-        }
+            SdlBackendClearBlack();
     }
 
     palette.palVersion = 0x300;
@@ -1000,36 +932,28 @@ bool Host_SetPalette(const uint8_t *rgb, int count, char gridColor, bool keepSys
         DeleteObject(g_Window.hPalette);
     g_Window.hPalette = CreatePalette((const LOGPALETTE *)&palette);
 
-    if (g_hDibDC)
-    {
-        /* Обмен R и B превращает PALETTEENTRY {R,G,B,флаги} в RGBQUAD {B,G,R,0/флаги}. */
-        for (int i = 0; i < count; i++)
-        {
-            BYTE red = palette.palPalEntry[i].peRed;
-            palette.palPalEntry[i].peRed = palette.palPalEntry[i].peBlue;
-            palette.palPalEntry[i].peBlue = red;
-        }
-        SetDIBColorTable(g_hDibDC, 0, (UINT)count, (const RGBQUAD *)palette.palPalEntry);
-    }
+    /* LUT SDL: палитра конвертирует кадр при каждом выводе. DIB-секции нет,
+       поэтому SetDIBColorTable не нужен. */
+    SdlBackendUpdatePalette(rgb, count);
+
     if (g_MainWindow)
         SendMessageA(g_MainWindow, WM_QUERYNEWPALETTE, 0, 0);
     return g_Window.hPalette != NULL;
 }
 
-/* Вывести прямоугольник кадра в окно: BitBlt из DIB-секции либо StretchDIBits
-   из буфера bits (строки снизу вверх, высота кадра frameHeight). */
+/* Вывести прямоугольник кадра в окно: конверсия индексных битов (строки снизу
+   вверх, высота кадра frameHeight) через палитруный LUT в теневой кадр SDL.
+   Показ отдельно — Host_Flush. */
 int Host_BlitRect(void *bits, int x, int y, int width, int height, int frameHeight)
 {
-    if (g_hDibDC)
-        return BitBlt(g_Window.hdc, x, y, width, height, g_hDibDC, x, y, SRCCOPY);
-    return StretchDIBits(g_Window.hdc, x, y, width, height,
-                         x, frameHeight - y - height, width, height,
-                         bits, (const BITMAPINFO *)&g_FrameBitmapInfo, DIB_PAL_COLORS, SRCCOPY);
+    SdlBackendPresentRect(bits, frameHeight, g_FrameStride, x, y, width, height);
+    return 1;
 }
 
 /* Вывести в окно прямоугольник кадра или (dissolve) весь кадр растворением:
    16 проходов квадратами 16×16 с шагом 64 по смещениям g_DissolvePatternX/Y.
-   frameStride не используется. */
+   frameStride не используется. Под SDL растворение сводится к одному кадру:
+   все тайлы конвертируются в теневой буфер, показ идёт один раз в Host_Flush. */
 bool Host_Present(void *bits, int x, int y, int width, int height, int frameStride, int frameHeight, bool dissolve)
 {
     (void)frameStride;
@@ -1045,7 +969,6 @@ bool Host_Present(void *bits, int x, int y, int width, int height, int frameStri
                     for (int tileY = g_DissolvePatternY[pass]; tileY < g_Window.clientHeight; tileY += 64)
                     {
                         Host_BlitRect(bits, tileX, tileY, 16, 16, frameHeight);
-                        GdiFlush();
                     }
                 }
             }
@@ -1058,10 +981,11 @@ bool Host_Present(void *bits, int x, int y, int width, int height, int frameStri
     return true;
 }
 
-/* Сбросить накопленные команды GDI, чтобы кадр попал на экран. */
+/* Показать накопленный кадр (SDL_RenderPresent). Если кадр не грязный — no-op. */
 int Host_Flush(void)
 {
-    return GdiFlush();
+    SdlBackendFlushPresent();
+    return 1;
 }
 
 /* Выбрать сообщения во время фильма и вернуть событие такта; *now — время такта
@@ -1074,6 +998,7 @@ GM_EVENT Host_PumpMessages(DWORD *now)
 
     if (!*now)
         g_Window.event = GMEV_NONE;
+    SdlBackendPumpEvents();
     while (PeekMessageA(&message, NULL, 0, 0, PM_REMOVE))
     {
         if (message.message == WM_QUIT)
@@ -1294,9 +1219,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     (void)hPrevInstance;
     (void)lpCmdLine;
 
+    DbgLogInit();
+    DbgInstallExceptionHandler();
+    DBG_ENTER("WinMain");
+
     GetModuleFileNameA(hInstance, exePath, sizeof(exePath));
     /* Не в оригинале: пересобранный EXE без данных игры читает их из PILOTS.EXE. */
     Host_ResolveGameFilePath(exePath);
+
+    if (!SdlBackendStartup())
+    {
+        Host_ErrorBox("SDL_Init failed");
+        return 1;
+    }
+    SdlBackendParseCmdLine(lpCmdLine);
 
     g_hAppInstance = hInstance;
     g_Window.nShowCmd = nShowCmd;
@@ -1331,12 +1267,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         Host_ShowPendingError();
         Host_CloseWindow();
         Host_Shutdown();
+        SdlBackendShutdown();
+        DbgLogClose();
         return 0;
     }
+    DBG_LOG("GmGame_Initialize: ok");
     Host_SetHelpPath(exePath);
 
+    DBG_ENTER("GameMainLoop");
     for (;;)
     {
+        SdlBackendPumpEvents();
         while (PeekMessageA(&message, NULL, 0, 0, PM_REMOVE))
         {
             if (message.message == WM_QUIT)
@@ -1384,5 +1325,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 shutdown:
     Host_Shutdown();
+    SdlBackendShutdown();
+    DBG_EXIT("WinMain");
+    DbgLogClose();
     return (int)message.wParam;
 }
