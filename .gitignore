@@ -1,0 +1,36 @@
+# build outputs: the Windows bats put .obj in build/<Configuration>/<Platform>,
+# e.g. build/Debug/x64 - one dir per bat, so all four builds coexist; the debug
+# bats also drop the /Fd compiler PDB there. CMake gets one dir per flavour:
+# build/ (or build32/, build64/) on Linux, build-switch/ for the .nro. One dir
+# per flavour matters because SDL2/libavcodec must come from the matching
+# architecture, so a dir is tied to one of them for good.
+# Exe/PDB/MAP/SDL2.dll stay in SRC/ next to the game data.
+*.obj
+*.exe
+*.pdb
+*.map
+*.ilk
+*.dll
+*_debug.log
+build_dbg*.log
+build*/
+
+# third_party SDKs are committed as-is (SDL2.dll must not be ignored)
+!third_party/**
+
+# original game data and saves - never commit
+*.SAV
+*.avi
+*.AVI
+FINAL.BMP
+INTRO.BMP
+START.BMP
+PILOTS.iso
+PILOTS0
+PILOTS0.*
+
+# the exe's icon is carved out of PILOTS.EXE by scripts/extract_icon.ps1, so it
+# is original game data just like the source file and must not be committed.
+# The bats regenerate it on demand; *.res is its compiled intermediate.
+SRC/pilots.ico
+*.res

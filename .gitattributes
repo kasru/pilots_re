@@ -1,0 +1,15 @@
+# Line endings are pinned per file type, so a checkout produces the same bytes on
+# every machine no matter what core.autocrlf says. Everything else keeps following
+# core.autocrlf, as before.
+#
+# .sh/.py must be LF: with a CRLF checkout the \r lands inside the "#!/bin/sh"
+# shebang and at the end of every command, and sh on Linux aborts with
+# "bad interpreter" / "command not found". These run on Astra, not through MSYS,
+# which reads scripts in text mode and hides the damage.
+#
+# .bat/.cmd must be CRLF: cmd.exe is unhappy with labels and goto in an LF-only
+# batch file.
+*.sh	text eol=lf
+*.py	text eol=lf
+*.bat	text eol=crlf
+*.cmd	text eol=crlf
