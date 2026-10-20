@@ -39,7 +39,7 @@ GM_SPRITE *GmText_PutGlyph(int character, int fontIndex, int *x, uint16_t y)
 
     frame = &font->glyphs[character - font->firstChar];
     glyph->frame = frame;
-    *x += frame->image->width - frame->hotX;
+    *x += GM_FRAME_IMAGE(frame)->width - frame->hotX;
 
     GmSprite_Invalidate(glyph);
     return glyph;
@@ -60,7 +60,7 @@ void GmText_EraseChars(int count)
     do
     {
         GM_SPRITE *glyph = g_TextGlyphSprites[--g_TextInputLength];
-        g_TextX -= glyph->frame->image->width - glyph->frame->hotX;
+        g_TextX -= GM_FRAME_IMAGE(glyph->frame)->width - glyph->frame->hotX;
         GmSprite_Destroy(glyph);
     } while (--count != 0);
 }

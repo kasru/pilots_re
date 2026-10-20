@@ -242,6 +242,7 @@ void GmMidi_Pump(void)
                 message |= (DWORD)value << 16;
                 noDelay = (data2 & MIDIDATA_NO_DELAY) != 0;
             }
+
             if (send)
                 midiOutShortMsg(g_hMidiOut, message);
         }
@@ -316,7 +317,11 @@ bool GmMidi_Open(void)
         return false;
 
     g_MidiTimerPeriod = 0;
-    g_MidiVolume = 1;
+    /* Программная громкость музыки обязана переживать переоткрытие звука: в оригинале
+       громкость жила в самом устройстве и Close/Open не трогал её, а здесь сброс при
+       переоткрытии обрывает играющую музыку (ноты уходят со скоростью 1 из 127).
+       Исходная громкость — наибольшая, как в GmMidi_GetVolume; скрипт задаёт свою. */
+    g_MidiVolume = FULL_VOLUME;
     if (midiOutGetID(g_hMidiOut, &g_MidiOutId) == MMSYSERR_NOERROR
         && timeGetDevCaps(&caps, sizeof caps) == TIMERR_NOERROR)
     {

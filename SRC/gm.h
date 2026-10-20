@@ -3,8 +3,13 @@
  * Общий заголовок: типы данных формата игры, глобальное состояние движка, прототипы.
  *
  * Восстановлено по базе IDA. Размеры всех структур, которые читаются из файла игры
- * или лежат в пуле записей, проверяются _Static_assert. Сборка — только x86 (32 разряда):
- * записи файла хранят 32-разрядные указатели, а скрипты передают адреса как int32_t.
+ * или лежат в пуле записей, проверяются _Static_assert. Формат игры — 32-разрядные
+ * адреса (записи файла и юниты правил хранят их в 4 байтах); скрипты передают
+ * адреса как int32_t, поэтому вся игровая память размещается ниже 2 ГБ и на LP64
+ * усечение адреса до int32 обратимо. Рантайм-структуры на LP64 растут — их
+ * layout проверяется только на 32 битах (GM_ASSERT_RUNTIME); форматные юниты
+ * (заголовок игры, юниты правил) обязаны быть одинаковыми на обеих архитектурах
+ * и проверяются безусловно.
  */
 #ifndef GM_H
 #define GM_H
@@ -21,7 +26,13 @@
    gm.h. В release все макросы — no-op (см. debug_log.h). */
 #include "debug_log.h"
 
-_Static_assert(sizeof(void *) == 4, "Сборка только для x86: формат игры хранит 32-разрядные указатели");
+/* Рантайм-структуры: на x86 их размер равен размеру исходного формата, на LP64
+   указатели вдвое шире и структуры растут — это норма, а не ошибка. */
+#if UINTPTR_MAX == 0xFFFFFFFFu
+#define GM_ASSERT_RUNTIME(T, n) _Static_assert(sizeof(T) == (n), #T)
+#else
+#define GM_ASSERT_RUNTIME(T, n) /* LP64: рантайм-структура шире — формат не задет */
+#endif
 
 #define NORETURN __declspec(noreturn)
 
@@ -122,7 +133,7 @@ struct GM_WINDOW
     int saveFile;
     char helpPath[256];
 };
-_Static_assert(sizeof(GM_WINDOW) == 360, "GM_WINDOW");
+GM_ASSERT_RUNTIME(GM_WINDOW, 360);
 
 struct GM_GAME_HEADER
 {
@@ -156,7 +167,7 @@ struct GM_ARENA
     int frameBufferSize;
     void *frameBuffer;
 };
-_Static_assert(sizeof(GM_ARENA) == 16, "GM_ARENA");
+GM_ASSERT_RUNTIME(GM_ARENA, 16);
 
 typedef uint8_t GM_CLASS_KIND;
 enum
@@ -177,14 +188,14 @@ struct GM_CLASS
     GM_RULE **rules;
     uint8_t *destroyScript;
 };
-_Static_assert(sizeof(GM_CLASS) == 16, "GM_CLASS");
+GM_ASSERT_RUNTIME(GM_CLASS, 16);
 
 struct GM_SOUND
 {
     uint32_t reserved;
     GM_SOUND_DATA *data;
 };
-_Static_assert(sizeof(GM_SOUND) == 8, "GM_SOUND");
+GM_ASSERT_RUNTIME(GM_SOUND, 8);
 
 struct GM_PANEL_ITEM
 {
@@ -201,7 +212,7 @@ struct GM_PANEL
     GM_RULE *rule;
     GM_PANEL_ITEM *items;
 };
-_Static_assert(sizeof(GM_PANEL) == 8, "GM_PANEL");
+GM_ASSERT_RUNTIME(GM_PANEL, 8);
 
 struct GM_ROOM
 {
@@ -210,7 +221,7 @@ struct GM_ROOM
     void *savedState;
     int savedObjectCount;
 };
-_Static_assert(sizeof(GM_ROOM) == 16, "GM_ROOM");
+GM_ASSERT_RUNTIME(GM_ROOM, 16);
 
 struct GM_CLASS_SET
 {
@@ -219,14 +230,17 @@ struct GM_CLASS_SET
     uint8_t *orientations;
     uint32_t unused;
 };
-_Static_assert(sizeof(GM_CLASS_SET) == 16, "GM_CLASS_SET");
+GM_ASSERT_RUNTIME(GM_CLASS_SET, 16);
 
 union GM_FRAME_LISTS
 {
     GM_FRAME *list;
-    GM_FRAME **byDirection;
+    /* Таблица списков по направлениям лежит в образе: 4-байтовые слоты —
+       шаг одинаков на всех архитектурах. Было GM_FRAME **byDirection: на LP64
+       индексация ходила бы шагом 8 и читала из слотов мимо них. */
+    uint32_t *byDirection;
 };
-_Static_assert(sizeof(GM_FRAME_LISTS) == 4, "GM_FRAME_LISTS");
+GM_ASSERT_RUNTIME(GM_FRAME_LISTS, 4);
 
 struct GM_GRAPHIC
 {
@@ -236,7 +250,7 @@ struct GM_GRAPHIC
     uint8_t frameCount;
     GM_FRAME_LISTS frames;
 };
-_Static_assert(sizeof(GM_GRAPHIC) == 8, "GM_GRAPHIC");
+GM_ASSERT_RUNTIME(GM_GRAPHIC, 8);
 
 typedef enum GM_RECORD_TYPE
 {
@@ -328,7 +342,7 @@ struct GM_SPRITE
     int16_t y;
     GM_FRAME *frame;
 };
-_Static_assert(sizeof(GM_SPRITE) == 16, "GM_SPRITE");
+GM_ASSERT_RUNTIME(GM_SPRITE, 16);
 
 struct GM_DIRTY_RECT
 {
@@ -338,7 +352,7 @@ struct GM_DIRTY_RECT
     int bottom;
     GM_DIRTY_RECT *next;
 };
-_Static_assert(sizeof(GM_DIRTY_RECT) == 20, "GM_DIRTY_RECT");
+GM_ASSERT_RUNTIME(GM_DIRTY_RECT, 20);
 
 struct GM_SYSVARS
 {
@@ -493,11 +507,21 @@ enum
 
 struct GM_FRAME
 {
-    GM_IMAGE *image;
+    /* Кадр лежит в образе игры поверх байтов файла: image — 4-байтовый слот
+       с адресом картинки (образ и пул ниже 2 ГБ, усечение обратимо, как
+       pointer на исходном x86). Было GM_IMAGE *image: на LP64 указатель
+       занял бы 8 байт и разорвал раскладку кадра — массивы кадров в образе
+       ходят шагом 8 и обязаны совпадать с x86 байт в байт. */
+    uint32_t image;
     int16_t hotX;
     int16_t hotY;
 };
+/* Форматная раскладка — одинакова на всех архитектурах, поэтому ассерт
+   безусловный, а не только для x86. */
 _Static_assert(sizeof(GM_FRAME) == 8, "GM_FRAME");
+
+/* Картинка кадра из 4-байтового слота (адрес ниже 2 ГБ). */
+#define GM_FRAME_IMAGE(f) ((GM_IMAGE *)(uintptr_t)(f)->image)
 
 struct GM_FONT
 {
@@ -507,7 +531,7 @@ struct GM_FONT
     uint8_t frameCount;
     GM_FRAME *glyphs;
 };
-_Static_assert(sizeof(GM_FONT) == 8, "GM_FONT");
+GM_ASSERT_RUNTIME(GM_FONT, 8);
 
 typedef uint8_t GM_INPUT_BITS;
 enum
@@ -532,7 +556,7 @@ struct GM_OBJECT
     uint16_t spriteIndex;
     uint8_t *vars;
 };
-_Static_assert(sizeof(GM_OBJECT) == 16, "GM_OBJECT");
+GM_ASSERT_RUNTIME(GM_OBJECT, 16);
 
 struct GM_BACKGROUND
 {
@@ -613,7 +637,7 @@ struct GM_SOUND_CHANNEL
     int8_t mode;
     uint8_t pad;
 };
-_Static_assert(sizeof(GM_SOUND_CHANNEL) == 16, "GM_SOUND_CHANNEL");
+GM_ASSERT_RUNTIME(GM_SOUND_CHANNEL, 16);
 
 union GM_POOL_ENTRY
 {
@@ -622,7 +646,7 @@ union GM_POOL_ENTRY
     GM_OBJECT object;
     uint32_t words[4];
 };
-_Static_assert(sizeof(GM_POOL_ENTRY) == 16, "GM_POOL_ENTRY");
+GM_ASSERT_RUNTIME(GM_POOL_ENTRY, 16);
 
 typedef uint8_t GM_LOAD_TAG;
 enum
@@ -694,7 +718,11 @@ union GM_RULE_ITEM
 {
     GM_RULE_GROUP group;
     GM_RULE_CELL cell;
-    uint8_t *script;
+    /* Адрес буфера скрипта, обрезанный до 32 разряд. Юнит — это 4 байта формата
+       поверх байтов файла (правило читается «на месте»), а игровой пул целиком
+       ниже 2 ГБ, так что обрезка обратима. Было uint8_t *script: на LP64
+       указатель занял бы 8 байт и разорвал юнит и правило целиком. */
+    uint32_t script;
     uint32_t raw;
 };
 _Static_assert(sizeof(GM_RULE_ITEM) == 4, "GM_RULE_ITEM");
@@ -709,6 +737,14 @@ struct GM_RULE
     GM_RULE_ITEM items[1];
 };
 _Static_assert(sizeof(GM_RULE) == 8, "GM_RULE");
+
+/* Таблицы указателей, лежащие внутри образа игры, — 4-байтовые слоты на всех
+   архитектурах: таков формат, а образ и пул ниже 2 ГБ, поэтому слот не теряет
+   адрес (как pointer на исходном x86). */
+#define GM_RULES_AT(table, i) \
+    ((GM_RULE *)(uintptr_t)((const uint32_t *)(table))[i])
+#define GM_RULES_SET(table, i, rule) \
+    (((uint32_t *)(table))[i] = (uint32_t)(uintptr_t)(rule))
 
 struct GM_MATCH_RANGE
 {

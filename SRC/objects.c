@@ -130,7 +130,7 @@ void GmSprite_Invalidate(GM_SPRITE *sprite)
         x -= frame->hotX;
         y -= frame->hotY;
     }
-    GmDirty_Add(x, y, x + frame->image->width, y + frame->image->height);
+    GmDirty_Add(x, y, x + GM_FRAME_IMAGE(frame)->width, y + GM_FRAME_IMAGE(frame)->height);
 }
 
 /* Добавить в грязные прямоугольник спрайта по номеру записи пула. */
@@ -161,7 +161,7 @@ void GmPool_DestroySpriteByIndex(int index)
 void GmSprite_UpdatePosition(GM_SPRITE *sprite)
 {
     const GM_FRAME *frame = sprite->frame;
-    const GM_IMAGE *image = frame->image;
+    const GM_IMAGE *image = GM_FRAME_IMAGE(frame);
     int x = sprite->fromTile.x;
     int y = sprite->fromTile.y;
     int pixelX = g_GameHeader.tileWidth * x;
@@ -305,7 +305,8 @@ void GmSprite_SetDirectionalFrames(GM_GRAPHIC *graphic, GM_SPRITE *sprite, bool 
     {
         GM_FRAME_SLOT slot = Sprite_ChooseDirSlot(graphic, sprite);
 
-        sprite->frame = graphic->frames.byDirection[slot];
+        /* Слот таблицы направлений — 4 байта (адрес списка кадров в образе). */
+        sprite->frame = (GM_FRAME *)(uintptr_t)graphic->frames.byDirection[slot];
     }
 
     if (screenAnchored)
@@ -498,7 +499,7 @@ bool GmObject_HitTest(GM_OBJECT *obj, int x, int y)
     sprite = &g_PoolTop[-obj->spriteIndex].sprite;
     if (sprite->x > x || sprite->y > y)
         return false;
-    image = sprite->frame->image;
+    image = GM_FRAME_IMAGE(sprite->frame);
     return image->width + sprite->x >= x && image->height + sprite->y >= y;
 }
 
@@ -721,9 +722,11 @@ void GmTile_Place(GM_RULE_CELL cell, int tileX, int tileY)
         if (g_CurObject != NULL && obj < g_CurObject)
             obj->underTile.flags |= GMUT_SKIP_TICK;
 
-        /* Переменные до 4 байт хранятся прямо в поле vars. */
+        /* Переменные до 4 байт хранятся прямо в поле vars: слот формата — 4 байта
+           и на LP64 (поле шире, но в записи сохранения живёт ровно его младшее
+           двойное слово; сравнение с sizeof разошлось бы на LP64 — поле 8 байт). */
         varsSize = cls->varsSizeMinus1 + 1u;
-        if (varsSize <= sizeof(obj->vars))
+        if (varsSize <= 4)
         {
             obj->vars = NULL;
             vars = (uint8_t *)&obj->vars;
@@ -1081,7 +1084,7 @@ bool GmCursor_SetGraphic(int graphicIndex, bool redraw)
     if (graphic->dirMode == 1)
         g_CursorSprite.frame = graphic->frames.list;
     else
-        g_CursorSprite.frame = graphic->frames.byDirection[0];
+        g_CursorSprite.frame = (GM_FRAME *)(uintptr_t)graphic->frames.byDirection[0];
     return true;
 }
 

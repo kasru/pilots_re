@@ -411,12 +411,14 @@ static GM_RULE_ITEM *GmRule_ScriptSlot(GM_RULE *rule)
     return &rule->words[word];
 }
 
-/* Список кадров графики для направления index1 (у шрифтов и графики без направлений — общий). */
-static GM_FRAME **GmGraphic_FrameListSlot(GM_GRAPHIC *graphic, int direction)
+/* Список кадров графики для направления index1 (у шрифтов и графики без направлений — общий).
+   Возвращает адрес слота: поля списка в рантайм-структуре или ячейки таблицы в образе —
+   в обоих случаях слот 4 байта на всех архитектурах (адреса списка ниже 2 ГБ). */
+static uint32_t *GmGraphic_FrameListSlot(GM_GRAPHIC *graphic, int direction)
 {
     if (graphic->isFont || graphic->dirMode <= 1)
-        return &graphic->frames.list;
-    return &graphic->frames.byDirection[direction];
+        return (uint32_t *)&graphic->frames.list;
+    return graphic->frames.byDirection + direction;
 }
 
 /*
@@ -472,7 +474,16 @@ bool GmLoad_ApplyRecord(GM_RECORD_TYPE type, int slot, int index1, int index2, i
         break;
 
     case GMREC_CLASS:
+#if UINTPTR_MAX == 0xFFFFFFFFu
         GmLoad_CopyRecord(&g_Classes[slot]);
+#else
+        /* Запись класса в файле — 4 скалярных байта (kind, ориентации правил, слой,
+           размер переменных); указатели скриптов и правил задают отдельные записи-
+           фикстапы. Копируется ровно префикс — как копией g_RecordSize байт на x86:
+           тело записи указатели не трогает, а слот при повторной загрузке эпизода
+           обновляется теми же записями, что и в первый раз. */
+        memcpy(&g_Classes[slot], g_LoadPtr, 4);
+#endif
         break;
     case GMREC_CLASS_CREATE_SCRIPT:
         g_Classes[slot].createScript = bytes + dataOffset;
@@ -484,13 +495,16 @@ bool GmLoad_ApplyRecord(GM_RECORD_TYPE type, int slot, int index1, int index2, i
         g_Classes[slot].rules = data;
         break;
     case GMREC_RULE:
-        g_Classes[slot].rules[index1] = data;
+        /* Таблица правил в образе: 4-байтовые слоты (см. GM_RULES_SET). */
+        GM_RULES_SET(g_Classes[slot].rules, index1, data);
         break;
     case GMREC_RULE_PRECONDITION:
-        g_Classes[slot].rules[index1]->items[0].script = bytes + dataOffset;
+        GM_RULES_AT(g_Classes[slot].rules, index1)->items[0].script =
+            (uint32_t)(uintptr_t)(bytes + dataOffset);
         break;
     case GMREC_RULE_SCRIPT:
-        GmRule_ScriptSlot(g_Classes[slot].rules[index1])->script = bytes + dataOffset;
+        GmRule_ScriptSlot(GM_RULES_AT(g_Classes[slot].rules, index1))->script =
+            (uint32_t)(uintptr_t)(bytes + dataOffset);
         break;
 
     case GMREC_CLASS_SET_MEMBERS:
@@ -511,10 +525,13 @@ bool GmLoad_ApplyRecord(GM_RECORD_TYPE type, int slot, int index1, int index2, i
         g_Graphics[slot].frames.list = data;
         break;
     case GMREC_GRAPHIC_DIR_FRAMES:
-        *GmGraphic_FrameListSlot(&g_Graphics[slot], index1) = data;
+        /* Слот таблицы направлений — 4 байта (адрес списка кадров в образе). */
+        *GmGraphic_FrameListSlot(&g_Graphics[slot], index1) = (uint32_t)(uintptr_t)data;
         break;
     case GMREC_FRAME_IMAGE:
-        (*GmGraphic_FrameListSlot(&g_Graphics[slot], index1))[index2].image = data;
+        /* Массив кадров в образе: слоты картинок по 4 байта, шаг кадра 8. */
+        ((GM_FRAME *)(uintptr_t)*GmGraphic_FrameListSlot(&g_Graphics[slot], index1))[index2].image =
+            (uint32_t)(uintptr_t)data;
         break;
 
     case GMREC_SOUND:

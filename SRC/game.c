@@ -117,7 +117,7 @@ bool GmRender_Flush(void)
                 {
                     const GM_SPRITE *sprite = sprites[i];
                     const GM_FRAME *frame = sprite->frame;
-                    GM_IMAGE *image = frame->image;
+                    GM_IMAGE *image = GM_FRAME_IMAGE(frame);
                     GM_SPRITE_FLAGS flags = sprite->flags;
                     int drawX = sprite->x - g_ScrollX;
                     int drawY = sprite->y - g_ScrollY;

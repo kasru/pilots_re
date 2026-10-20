@@ -198,8 +198,16 @@ bool Host_AviPlay(void)
 {
     MCI_PLAY_PARMS playParms = { 0 };
 
-    /* Оригинал передаёт только младшее слово описателя окна (Windows узнаёт окно и по нему). */
+    /* Оригинал передаёт только младшее слово описателя окна (Windows узнаёт окно и по нему):
+       32-разрядный mciavi32 при нераспознанном слове откатывается на родителя окна AVI, и
+       уведомление доходит. На LP64 mciavi32 обращается по dwCallback целиком — обрезанное
+       слово не называет окно, MM_MCINOTIFY никогда не приходит и игра висит на последнем
+       кадре. Там передаём весь описатель. */
+#if defined(_WIN64)
+    playParms.dwCallback = (DWORD_PTR)g_MainWindow;
+#else
     playParms.dwCallback = (uint16_t)(uintptr_t)g_MainWindow;
+#endif
     return Host_MciSend(MCI_PLAY, MCI_NOTIFY, (DWORD_PTR)&playParms);
 }
 
@@ -876,6 +884,20 @@ bool Host_InitVideo(GM_ARENA *arena, GM_GAME_HEADER *header, GM_SETTINGS *settin
         g_Window.arenaMem = GlobalLock(g_Window.hArenaMem);
     }
     arena->freePtr = g_Window.arenaMem;
+    /* wvsprintfA понимает только подмножество CRT-спецификаторов (без 'z'),
+       поэтому старшие 32 бита считаются отдельно и только там, где указатель
+       их вообще имеет (на x86 сдвиг на 32 — UB). */
+    {
+        unsigned arenaHigh = 0;
+#if UINTPTR_MAX != 0xFFFFFFFFu
+        arenaHigh = (unsigned)((uintptr_t)g_Window.arenaMem >> 32);
+#endif
+        DBG_LOG("Host_InitVideo: arena %u bytes at 0x%08X%08X (%s 2 ГБ)",
+                (unsigned)arena->freeBytes,
+                arenaHigh,
+                (unsigned)(uintptr_t)g_Window.arenaMem,
+                (uintptr_t)g_Window.arenaMem < 0x80000000u ? "ниже" : "ВЫШЕ");
+    }
     return g_Window.arenaMem != NULL;
 }
 

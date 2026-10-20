@@ -122,7 +122,8 @@ bool GmSave_WriteInt(uint32_t value)
 
 /*
  * Сдвинуть указатели кадров у сохранённых спрайтов на delta: при записи — в смещения
- * от начала арены, при чтении — обратно в адреса. Экземпляры объектов не трогаются.
+ * от начала арены (обратно — тут же после записи; при чтении смещения превращаются
+ * в адреса в GmSave_ExpandPoolEntries). Экземпляры объектов не трогаются.
  */
 void GmSave_RebaseSpriteFrames(GM_POOL_ENTRY *records, int count, int delta)
 {
@@ -130,6 +131,49 @@ void GmSave_RebaseSpriteFrames(GM_POOL_ENTRY *records, int count, int delta)
     {
         if ((records->flags & GMOBJ_INSTANCE) == 0)
             records->sprite.frame = (GM_FRAME *)((uintptr_t)records->sprite.frame + (uintptr_t)delta);
+    }
+}
+
+/*
+ * Запись пула в файле — 16 байт x86-раскладки: 12 байт скаляров и четвёртое двойное
+ * слово (у спрайта смещение кадра от начала арены, у экземпляра слот переменных).
+ * Рантайм-запись на LP64 шире (указатели по 8 байт), поэтому блоки состояния
+ * сжимаются при записи и разворачиваются при чтении — в обоих случаях по рантайм-
+ * указателю entry и отдельным байтам формата, а не сырым копированием структуры.
+ * На x86 те же функции дают байт-в-байт прежний файл.
+ */
+static void GmSave_CompressPoolEntries(uint8_t *dst, const GM_POOL_ENTRY *entry, int count)
+{
+    for (; count != 0; count--, entry++)
+    {
+        uint8_t scalars[12];
+        uint32_t slot = (entry->flags & GMOBJ_INSTANCE)
+            ? (uint32_t)(uintptr_t)entry->object.vars
+            : (uint32_t)(uintptr_t)entry->sprite.frame;
+
+        memcpy(scalars, entry, sizeof(scalars));
+        memcpy(dst, scalars, sizeof(scalars));
+        memcpy(dst + 12, &slot, sizeof(slot));
+        dst += 16;
+    }
+}
+
+static void GmSave_ExpandPoolEntries(GM_POOL_ENTRY *entry, const uint8_t *src, int count, int arenaBase)
+{
+    for (; count != 0; count--, entry++)
+    {
+        uint8_t scalars[12];
+        uint32_t slot;
+
+        memcpy(scalars, src, sizeof(scalars));
+        memcpy(&slot, src + 12, sizeof(slot));
+        memset(entry, 0, sizeof(GM_POOL_ENTRY));
+        memcpy(entry, scalars, sizeof(scalars));
+        if ((entry->flags & GMOBJ_INSTANCE) == 0)
+            entry->sprite.frame = (GM_FRAME *)(uintptr_t)(slot + (uint32_t)arenaBase);
+        else
+            entry->object.vars = (uint8_t *)(uintptr_t)slot;
+        src += 16;
     }
 }
 
@@ -267,10 +311,20 @@ bool GmSaveGame_Load(int slot)
 
         stateSize = sizeof(GM_POOL_ENTRY) * (uint32_t)value + sizeof(GM_TILE) * (uint32_t)g_MapTileCount;
         room->savedState = GmHeap_Alloc(stateSize);
-        Host_SaveRead(room->savedState, stateSize);
 
-        entry = (GM_POOL_ENTRY *)((GM_TILE *)room->savedState + g_MapTileCount);
-        GmSave_RebaseSpriteFrames(entry, value, (int)(intptr_t)g_Arena.freePtr);
+        /* Блок в файле форматного размера (16 байт на запись): читаем в черновик
+           и разворачиваем в рантайм-раскладку блока состояния. */
+        {
+            uint32_t tileBytes = sizeof(GM_TILE) * (uint32_t)g_MapTileCount;
+            uint32_t fmtSize = 16u * (uint32_t)value + tileBytes;
+            uint8_t *fmt = GmHeap_Alloc(fmtSize);
+
+            Host_SaveRead(fmt, fmtSize);
+            memcpy(room->savedState, fmt, tileBytes);
+            entry = (GM_POOL_ENTRY *)((GM_TILE *)room->savedState + g_MapTileCount);
+            GmSave_ExpandPoolEntries(entry, fmt + tileBytes, value, (int)(intptr_t)g_Arena.freePtr);
+            GmHeap_Free(fmt);
+        }
         for (count = value; count != 0; count--, entry++)
         {
             if ((entry->flags & GMOBJ_INSTANCE) && (entry->flags & GMOBJ_VARS_ALLOCATED))
@@ -338,8 +392,18 @@ bool GmSaveGame_Save(int slot)
             GmSave_WriteInt(roomIndex);
             GmSave_WriteInt((uint32_t)count);
             GmSave_RebaseSpriteFrames(entry, count, -arenaBase);
-            Host_SaveWrite(room->savedState,
-                           sizeof(GM_POOL_ENTRY) * (uint32_t)count + sizeof(GM_TILE) * (uint32_t)g_MapTileCount);
+            {
+                /* Сжимаем рантайм-записи в формат (16 байт) в черновике: блок
+                   состояния нужен в исходном виде ещё ниже по коду. */
+                uint32_t tileBytes = sizeof(GM_TILE) * (uint32_t)g_MapTileCount;
+                uint32_t fmtSize = 16u * (uint32_t)count + tileBytes;
+                uint8_t *fmt = GmHeap_Alloc(fmtSize);
+
+                memcpy(fmt, room->savedState, tileBytes);
+                GmSave_CompressPoolEntries(fmt + tileBytes, entry, count);
+                Host_SaveWrite(fmt, fmtSize);
+                GmHeap_Free(fmt);
+            }
             GmSave_RebaseSpriteFrames(entry, count, arenaBase);
 
             for (; count != 0; count--, entry++)

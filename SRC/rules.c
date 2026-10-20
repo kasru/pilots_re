@@ -214,6 +214,11 @@ static void Object_ShowRestSprite(GM_OBJECT *obj)
    или RULES_YIELD. */
 static int Object_RunRules(GM_RULE **rule)
 {
+    /* Таблица правил лежит в образе: 4-байтовые слоты на всех архитектурах
+       (см. GM_RULES_AT) — курсор идёт по слотам; на x86 это прежний обход
+       указателем байт в байт. */
+    const uint32_t *slot = (const uint32_t *)rule;
+
     for (;;)
     {
         uint32_t turn;
@@ -238,7 +243,7 @@ static int Object_RunRules(GM_RULE **rule)
                 g_CurRuleXform += 4;
             g_pfnRuleXform = g_RuleXforms[g_CurRuleXform];
             g_ContinueRules = false;
-            result = GmRule_Run(*rule, false);
+            result = GmRule_Run((GM_RULE *)(uintptr_t)*slot, false);
             if (result != 0)
                 break;
         }
@@ -247,9 +252,9 @@ static int Object_RunRules(GM_RULE **rule)
         if (result > 1 || (result == 1 && !g_ContinueRules))
             return result;
 
-        if (((*rule)->header.ruleFlags & GMRULE_LAST) == 0)
+        if ((((GM_RULE *)(uintptr_t)*slot)->header.ruleFlags & GMRULE_LAST) == 0)
         {
-            ++rule;
+            ++slot;
             continue;
         }
         return result == 0 ? 0 : RULES_YIELD;
@@ -646,7 +651,7 @@ int GmRule_Run(GM_RULE *rule, bool absolute)
 
     if (header.ruleFlags & GMRULE_PRECONDITION)
     {
-        if (!GmVm_Run(item->script))
+        if (!GmVm_Run((const uint8_t *)(uintptr_t)item->script))
             return 0;
         ++item;
     }
@@ -673,7 +678,7 @@ int GmRule_Run(GM_RULE *rule, bool absolute)
         /* Если объекта нет, оригинал слой не запоминает; сравнение ниже тогда не выполняется. */
         uint8_t layerBefore = g_CurObject != NULL ? g_CurObject->layer : 0;
 
-        GmVm_Run(item->script);
+        GmVm_Run((const uint8_t *)(uintptr_t)item->script);
         ++item;
         if (!g_SpriteSetThisStep
             && !g_CurObjectMoved

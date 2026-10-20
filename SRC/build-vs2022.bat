@@ -1,7 +1,11 @@
 @echo off
-rem Сборка Game Maker Player (PILOTS) компилятором MSVC для x86 под VS2022.
-rem   build-vs2022.bat           — выпуск (оптимизация)
-rem   build-vs2022.bat debug     — отладочная сборка
+rem Сборка Game Maker Player (PILOTS) компилятором MSVC под VS2022.
+rem   build-vs2022.bat           — x86, выпуск (оптимизация)
+rem   build-vs2022.bat debug     — x86, отладочная сборка
+rem   build-vs2022.bat [debug] x64 — x64-сборка (out\PILOTS_RE_x64.EXE);
+rem        образ пинится ниже 2 ГБ (/BASE + /DYNAMICBASE:NO): игра хранит
+rem        адреса в 32-разрядных int, и статическим буферам (.bss) тоже
+rem        нужно помещаться в знаковый int32.
 rem То же, что build.bat, но toolset VS2022 (14.44) вместо VS18 (14.50):
 rem на этой машине установлен только VS2022 Community.
 setlocal
@@ -10,9 +14,24 @@ set VCTOOLS=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSV
 set WINSDK=C:\Program Files (x86)\Windows Kits\10
 set SDKVER=10.0.26100.0
 
-set PATH=%VCTOOLS%\bin\Hostx86\x86;%WINSDK%\bin\%SDKVER%\x86;%PATH%
+set ARCH=x86
+set HOSTDIR=Hostx86\x86
+set MACH=X86
+set EXENAME=PILOTS_RE.EXE
+set LNKPLAT=
+set PLATARG=%~2
+if /i "%~1"=="x64" set PLATARG=%~1
+if /i "%PLATARG%"=="x64" (
+    set ARCH=x64
+    set HOSTDIR=Hostx64\x64
+    set MACH=X64
+    set EXENAME=PILOTS_RE_x64.EXE
+    set LNKPLAT=/BASE:0x10000000 /DYNAMICBASE:NO
+)
+
+set PATH=%VCTOOLS%\bin\%HOSTDIR%;%WINSDK%\bin\%SDKVER%\%ARCH%;%PATH%
 set INCLUDE=%VCTOOLS%\include;%WINSDK%\Include\%SDKVER%\ucrt;%WINSDK%\Include\%SDKVER%\um;%WINSDK%\Include\%SDKVER%\shared
-set LIB=%VCTOOLS%\lib\x86;%WINSDK%\Lib\%SDKVER%\ucrt\x86;%WINSDK%\Lib\%SDKVER%\um\x86
+set LIB=%VCTOOLS%\lib\%ARCH%;%WINSDK%\Lib\%SDKVER%\ucrt\%ARCH%;%WINSDK%\Lib\%SDKVER%\um\%ARCH%
 
 rem SDL2: заголовки/библиотека/ DLL. /external:W0 гасит предупреждения
 rem в заголовках SDL при /W4 /WX; /external:I добавляет путь поиска как внешний.
@@ -35,13 +54,13 @@ if errorlevel 1 goto :fail
 rc /nologo /fo out\pilots.res pilots.rc
 if errorlevel 1 goto :fail
 
-link /nologo /OUT:out\PILOTS_RE.EXE /SUBSYSTEM:WINDOWS /MACHINE:X86 %LFLAGS% /LIBPATH:"%SDL2%\lib\x86" ^
+link /nologo /OUT:out\%EXENAME% /SUBSYSTEM:WINDOWS /MACHINE:%MACH% %LNKPLAT% %LFLAGS% /LIBPATH:"%SDL2%\lib\%ARCH%" ^
     out\*.obj out\pilots.res kernel32.lib user32.lib gdi32.lib winmm.lib SDL2.lib
 if errorlevel 1 goto :fail
 
-copy /y "%SDL2%\lib\x86\SDL2.dll" out\ >nul
+copy /y "%SDL2%\lib\%ARCH%\SDL2.dll" out\ >nul
 
-echo SUCCESS: out\PILOTS_RE.EXE
+echo SUCCESS: out\%EXENAME%
 popd
 exit /b 0
 
