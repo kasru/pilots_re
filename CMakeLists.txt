@@ -7,9 +7,8 @@
 #   cmake -S . -B build64                    native (x86_64) - the LP64 layout
 #                                             of the generated game-struct headers
 #
-# Not ported yet: libADLMIDI (the music). The Nintendo Switch .nro step is at
-# the bottom and the console runtime lives in switch_libnx.c / __SWITCH__
-# branches of the port layer.
+# The Nintendo Switch .nro step is at the bottom and the console runtime
+# lives in switch_libnx.c / __SWITCH__ branches of the port layer.
 #
 # Keeping the build dirs separate matters: SDL2 and libavcodec must come from
 # the matching architecture, so a build dir is tied to one of them for good.
@@ -146,9 +145,62 @@ pkg_check_modules(AV REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil l
 
 target_link_libraries(PILOT_RV PRIVATE PkgConfig::SDL2 PkgConfig::AV m)
 
-# libADLMIDI (the midiOut replacement carrying the music) is NOT ported yet -
-# restore the adlmidi block from the sdl2 branch's CMakeLists (tag v0.1) when
-# it is.
+# ---- libADLMIDI: the OPL3 synth under midiOut (the music) ----
+# Source list and defines as the sdl2 branch's .bat/CMake builds (tag v0.1): the
+# sequencer and every emulator except Nuked/DOSBox are compiled out - the game
+# feeds realtime events through midiOutShortMsg and renders with adl_generate,
+# so no sequencer path ever runs. Windows does not come through CMake (the
+# .bat builds keep winmm midiOut there, like the original), so this is Linux
+# and Switch only - sdl_backend.c guards SdlMidi_* with #ifndef _WIN32.
+set(ADLMIDI_OPTS
+  ADLMIDI_DISABLE_MIDI_SEQUENCER
+  BWMIDI_DISABLE_XMI_SUPPORT
+  ADLMIDI_DISABLE_OPAL_EMULATOR
+  ADLMIDI_DISABLE_JAVA_EMULATOR
+  ADLMIDI_DISABLE_ESFMU_EMULATOR
+  ADLMIDI_DISABLE_MAME_OPL2_EMULATOR
+  ADLMIDI_DISABLE_YMFM_EMULATOR)
+
+set(ADLMIDI_CXX_SOURCES
+  ${THIRD_PARTY}/libADLMIDI/src/adlmidi.cpp
+  ${THIRD_PARTY}/libADLMIDI/src/adlmidi_load.cpp
+  ${THIRD_PARTY}/libADLMIDI/src/adlmidi_midiplay.cpp
+  ${THIRD_PARTY}/libADLMIDI/src/adlmidi_opl3.cpp
+  ${THIRD_PARTY}/libADLMIDI/src/adlmidi_private.cpp
+  ${THIRD_PARTY}/libADLMIDI/src/inst_db.cpp
+  ${THIRD_PARTY}/libADLMIDI/src/chips/dosbox_opl2.cpp
+  ${THIRD_PARTY}/libADLMIDI/src/chips/dosbox_opl3.cpp
+  ${THIRD_PARTY}/libADLMIDI/src/chips/dosbox/dbopl.cpp
+  ${THIRD_PARTY}/libADLMIDI/src/chips/nuked_opl3.cpp
+  ${THIRD_PARTY}/libADLMIDI/src/chips/nuked_opl3_fast.cpp
+  ${THIRD_PARTY}/libADLMIDI/src/chips/nuked_opl2.cpp
+  ${THIRD_PARTY}/libADLMIDI/src/chips/nuked_cqm.cpp)
+
+set(ADLMIDI_C_SOURCES
+  ${THIRD_PARTY}/libADLMIDI/src/wopl/wopl_file.c
+  ${THIRD_PARTY}/libADLMIDI/src/models/model_ail.c
+  ${THIRD_PARTY}/libADLMIDI/src/models/model_apogee.c
+  ${THIRD_PARTY}/libADLMIDI/src/models/model_dmx.c
+  ${THIRD_PARTY}/libADLMIDI/src/models/model_generic.c
+  ${THIRD_PARTY}/libADLMIDI/src/models/model_hmi_sos.c
+  ${THIRD_PARTY}/libADLMIDI/src/models/model_msadlib.c
+  ${THIRD_PARTY}/libADLMIDI/src/models/model_oconnell.c
+  ${THIRD_PARTY}/libADLMIDI/src/models/model_win9x.c
+  ${THIRD_PARTY}/libADLMIDI/src/chips/nuked/nukedopl3.c
+  ${THIRD_PARTY}/libADLMIDI/src/chips/nuked_fast/nukedopl3_fast.c
+  ${THIRD_PARTY}/libADLMIDI/src/chips/nuked/nukedopl2.c
+  ${THIRD_PARTY}/libADLMIDI/src/chips/nuked_cqm/cqm.c)
+
+add_library(adlmidi STATIC ${ADLMIDI_CXX_SOURCES} ${ADLMIDI_C_SOURCES})
+target_include_directories(adlmidi PUBLIC ${THIRD_PARTY}/libADLMIDI/include)
+target_compile_definitions(adlmidi PRIVATE ${ADLMIDI_OPTS})
+# The lib stays optimized in a Debug game build too (the .bat builds gave it
+# /O2 against a /Od game): Nuked OPL3 is cycle-accurate and this is audio
+# rendered on a 10 ms timer - an unoptimized debug build is where music would
+# start underrunning while everything else looks fine.
+target_compile_options(adlmidi PRIVATE -O2)
+
+target_link_libraries(PILOT_RV PRIVATE adlmidi)
 
 if(PILOTS_M32)
   message(STATUS "PILOT_RV: 32-bit (-m32), build dir ${CMAKE_BINARY_DIR}")

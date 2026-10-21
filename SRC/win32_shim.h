@@ -475,6 +475,7 @@ typedef struct tWAVEFORMAT {
 
 /* real mmeapi.h/mmsyscom.h values (win32_shim.c's waveOut/midiOut shims) */
 #define MMSYSERR_NOERROR 0
+#define MMSYSERR_ERROR   1               /* generic failure; real mmsystem.h value */
 #define WAVE_MAPPER      ((UINT)-1)
 #define MIDI_MAPPER      ((UINT)-1)
 #define CALLBACK_NULL    0x00000000u
@@ -814,6 +815,16 @@ void SdlWave_Clear(void);
 void SdlWave_Pause(int pause);
 unsigned int SdlWave_Queued(void);
 void WinShim_WavePump(void);          /* retire drained WAVEHDRs (win32_shim.c, from the pumps) */
+
+/* ---- libADLMIDI synth behind the midiOut shims (sdl_backend.c): the music
+       through the same seam the wave already uses - wave.c keeps its winmm
+       protocol and the device under midiOut* is this. Non-Windows only:
+       on Windows midiOut* is the real winmm. ---- */
+int  SdlMidi_Open(void);
+void SdlMidi_Close(void);
+void SdlMidi_Reset(void);
+void SdlMidi_ShortMsg(unsigned int packed); /* midiOutShortMsg word: status | data1<<8 | data2<<16 */
+void SdlMidi_Pump(void);               /* render PCM on the timer tick (ShimTimerProc) */
 
 /* ---- MCI video playback (mci_ffmpeg.c) ---- */
 void WinShim_VideoPump(void);        /* decode+present+MM_MCINOTIFY; from PeekMessageA's SDL pump */

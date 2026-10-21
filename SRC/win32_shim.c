@@ -1602,6 +1602,13 @@ static Uint32 ShimTimerProc(Uint32 interval, void *param)
   (void)param;
   if ( s_TimerCallback )
     s_TimerCallback((UINT)s_TimerId, 0, 0, 0, 0);
+  /* Этот тик разобрал дорожку и загнал события в синтез (midiOutShortMsg ->
+     SdlMidi_ShortMsg) — теперь тот же тик рендерит их в PCM, как в v0.1, где
+     таймерный колбэк audio.c делал и то и другое. Вызов стоит здесь, а не в
+     wave.c, потому что игровой код не трогаем: шов — winmm-протокол. Зовётся
+     только пока жив таймер (GmMidi_Play..GmMidi_Halt) — это и есть «дорожка
+     играет», отдельный флаг кормления здесь не нужен. */
+  SdlMidi_Pump();
   return interval;                         /* periodic */
 }
 
@@ -1799,15 +1806,18 @@ void WinShim_WavePump(void)
 }
 
 /*
- * midiOut: silent stubs until the libADLMIDI synth is ported. The music
- * path as a whole already runs - GmMidi_Open succeeds, the 10 ms timer ticks,
- * GmMidi_Pump parses the track and every message lands here in the void - so
- * all the timing and looping behaviour is exercised, only the sound is
- * missing. The open must SUCCEED: a failed one makes GmMidi_Open bail and the
- * game would never even start a track, which is a different (worse) behavior
- * than quiet music.
+ * midiOut over libADLMIDI (SdlMidi_* in sdl_backend.c): wave.c keeps the winmm
+ * protocol byte-for-byte - the open hands back a handle, short messages flow,
+ * reset cuts the sounding notes - and the device under it is the OPL3 synth in
+ * this same process, 10 ms timer and all (ShimTimerProc pulls SdlMidi_Pump
+ * after each tick's messages). On Windows none of this file exists: midiOut*
+ * there is the real winmm, same as the original game played through.
+ *
+ * midiOutSetVolume/midiOutGetVolume stay placeholders: port-main applies the
+ * music volume to note velocity in wave.c (g_MidiVolume) by design - the
+ * original's device volume is what modern Windows cannot do - and no call
+ * site reaches these two.
  */
-static unsigned s_MidiStubMsgs;         /* counted, reported once on close */
 
 MMRESULT midiOutOpen(HMIDIOUT *phmo, UINT uDeviceID, DWORD_PTR dwCallback,
                      DWORD_PTR dwInstance, DWORD dwFlags)
@@ -1816,6 +1826,9 @@ MMRESULT midiOutOpen(HMIDIOUT *phmo, UINT uDeviceID, DWORD_PTR dwCallback,
     (void)dwCallback;
     (void)dwInstance;
     (void)dwFlags;
+    if (!SdlMidi_Open())
+        return MMSYSERR_ERROR;             /* отказ устройства - как отказ устройства в оригинале:
+                                               игра продолжит без музыки, а не «успех в пустоту» */
     if (phmo)
         *phmo = (HMIDIOUT)(intptr_t)2;
     return MMSYSERR_NOERROR;
@@ -1824,8 +1837,7 @@ MMRESULT midiOutOpen(HMIDIOUT *phmo, UINT uDeviceID, DWORD_PTR dwCallback,
 MMRESULT midiOutClose(HMIDIOUT hMidiOut)
 {
     (void)hMidiOut;
-    DBG_LOG("midiOutClose: %u stub messages sent (no synth yet)", s_MidiStubMsgs);
-    s_MidiStubMsgs = 0;
+    SdlMidi_Close();
     return MMSYSERR_NOERROR;
 }
 
@@ -1840,14 +1852,14 @@ MMRESULT midiOutGetID(HMIDIOUT hMidiOut, LPUINT puDeviceID)
 MMRESULT midiOutShortMsg(HMIDIOUT hMidiOut, DWORD dwMsg)
 {
     (void)hMidiOut;
-    (void)dwMsg;
-    ++s_MidiStubMsgs;
+    SdlMidi_ShortMsg((unsigned int)dwMsg); /* status | data1<<8 | data2<<16 - то же упакованное слово */
     return MMSYSERR_NOERROR;
 }
 
 MMRESULT midiOutReset(HMIDIOUT hMidiOut)
 {
     (void)hMidiOut;
+    SdlMidi_Reset();
     return MMSYSERR_NOERROR;
 }
 

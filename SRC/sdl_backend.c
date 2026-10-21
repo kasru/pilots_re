@@ -20,6 +20,7 @@
 
 #ifndef _WIN32
 #include <signal.h>    /* SIGUSR1: headless-прогон завершается чисто (scripts/diag_hang.sh) */
+#include "adlmidi.h"   /* OPL3-синтез за midiOut-шимом: музыка игры (SdlMidi_*) */
 #endif
 
 /* ========================================================================== */
@@ -98,6 +99,8 @@ static LPARAM SdlPackPoint(int x, int y)
 static SDL_Texture *s_VideoTex;     /* кадр фильма (SdlBackendVideoFrame) */
 static int s_VideoTexW, s_VideoTexH;
 static SDL_AudioDeviceID s_WaveDev; /* SDL-устройство за waveOut-шимом (win32_shim.c) */
+static SDL_AudioDeviceID s_MidiDev; /* ...а за midiOut-шимом: своё, только при PILOTS_SHARE_AUDIO=0;
+                                      в дележе синтез пишет в своё кольцо s_MidiRing */
 
 /* Общий микшер (фича порта): одно SDL-устройство на все источники — волну игры,
    MIDI и звук фильма. Что это не теория, показано на Switch: у консоли один
@@ -359,8 +362,12 @@ int SdlBackendStartup(void)
 void SdlBackendShutdown(void)
 {
 #ifndef _WIN32
-    /* Сначала волна: SDL_CloseAudioDevice дожидается коллбэка, дальше можно
-       гасить видео. */
+    /* Сначала музыка: SdlMidi_Close гасит синтез и его устройство, если оно
+       своё (в дележе кольцо сбрасывается, общее устройство закроется ниже).
+       Обычно она уже отработана через midiOutClose (ShutdownMultimedia) —
+       вызов идемпотентен. Дальше волна: SDL_CloseAudioDevice дожидается
+       коллбэка, дальше можно гасить видео. */
+    SdlMidi_Close();
     if (s_WaveDev)
     {
         SDL_CloseAudioDevice(s_WaveDev);
@@ -1761,6 +1768,29 @@ static void MixRing_Reset(MixRing *ring)
     ring->r = ring->w;               /* сбросить очередь, счётчики ведутся дальше */
 }
 
+/* Положить в кольцо N стерео-кадров из готового S16-буфера. Продюсер —
+   синтез (SdlMidi_Pump на потоке таймера), потребитель — колбэк выше; ровно
+   одна продюсерская запись на кольцо, читатель видит только кадры, дописанные
+   до открутки w, так что volatile здесь и есть вся синхронизация. */
+static unsigned int MixRingWrite(MixRing *ring, const short *frames, unsigned int n)
+{
+    unsigned int room = MixRingFree(ring);
+    unsigned int i;
+    unsigned int pos;
+
+    if (n > room)
+        n = room;
+    pos = ring->w & SDL_MIX_MASK;
+    for (i = 0; i < n; ++i)
+    {
+        ring->pcm[pos * 2] = frames[i * 2];
+        ring->pcm[pos * 2 + 1] = frames[i * 2 + 1];
+        pos = (pos + 1) & SDL_MIX_MASK;
+    }
+    ring->w += n;
+    return n;
+}
+
 /* SDL-колбэк: читает кольца источников и пишет смешанный S16-поток. */
 static void SdlAudioMix(void *userdata, Uint8 *stream, int len)
 {
@@ -2046,6 +2076,316 @@ void SdlMix_MovieClose(void)
         MixRing_Reset(&s_MovieRing);   /* skip-кино: своё сбросить, чужое не тронуть */
     s_MovieRate = 0;
     s_MovieSrcFrames = 0;
+}
+
+/* ========================================================================== */
+/* MIDI: музыка игры через libADLMIDI (OPL3-эмуляция) вместо midiOut           */
+/*                                                                            */
+/* Волна игры уже идёт через этот же шов (waveOut -> win32_shim.c -> SdlWave), */
+/* и midiOut устроен так же: wave.c держит протокол WinMM байт в байт (от-     */
+/* крытие, 10-мс timeSetEvent, midiOutShortMsg, сброс), а за ним стоит synth.  */
+/* Поток тактовой линии: SDL_AddTimer (win32_shim.c) гоняет GmMidi_TimerProc   */
+/* на своём потоке, тот разбирает дорожку и шлёт слова сюда, а SdlMidi_Pump в  */
+/* том же тике (ShimTimerProc, win32_shim.c) подмазывает PCM в очередь — как  */
+/* в v0.1, где таймерный колбэк «рендерит PCM поверх событий». Состояние       */
+/* синтеза трогают оба потока (таймерный — ShortMsg/Pump, игровой — Open/      */
+/* Close/Reset), поэтому каждая точка входа берёт s_MidiCS. Критическая секция */
+/* заводится один раз и не удаляется никогда: таймерный колбэк может быть в    */
+/* полёте, пока игра рушит звук (у оригинала была та же безобидная гонка с      */
+/* закрытым midiOut-хэндлом, а удалённая CS была бы UB).                       */
+/*                                                                            */
+/* Отступления от v0.1 ровно два, оба — из устройства:                         */
+/*  - у v0.1 флаг s_MidiFeed стоял между StartMidiPlayback и ResetMidi, а здесь */
+/*    SdlMidi_Pump зовут только из ShimTimerProc, т.е. только пока жив таймер   */
+/*    трека (Play..Halt) — сам таймер и есть этот флаг;                         */
+/*  - громкость музыки v0.1 применял к PCM (midiOutSetVolume приходил из        */
+/*    audio.c), а port-main применяет её к силе нот в wave.c и midiOutSetVolume  */
+/*    не зовёт вовсе — масштабирование в Pump было бы мёртвым кодом.            */
+/* ========================================================================== */
+
+#define SDL_MIDI_RATE          44100
+#define SDL_MIDI_BANK          68  /* «WOPL (4op bank by James Alan Nguyen and Wohlstand)», GM-набор;
+                                      0 = AIL «The Fat Man» (заводской дефолт); см. adl_getBankNames() */
+#define SDL_MIDI_CHUNK_SAMPLES 1024 /* adl_generate считает сэмплы, кадр = два: 512 кадров ~ 11.6 мс */
+#define SDL_MIDI_QUEUE_TARGET  (128 * 1024) /* ~0.7 с PCM запаса поверх провалов игрового цикла */
+
+static struct ADL_MIDIPlayer *s_Synth;
+static CRITICAL_SECTION s_MidiCS;
+static int s_MidiCSReady;
+static short s_MidiChunk[SDL_MIDI_CHUNK_SAMPLES];
+static unsigned int s_MidiMsgCount;      /* диагностика: сообщений с открытия/последнего сброса */
+static int s_MidiFirstMsgLogged;
+static int s_MidiFirstAudioLogged;
+
+static void MidiLock(void)
+{
+    if (s_MidiCSReady)
+        EnterCriticalSection(&s_MidiCS);
+}
+
+static void MidiUnlock(void)
+{
+    if (s_MidiCSReady)
+        LeaveCriticalSection(&s_MidiCS);
+}
+
+/* Куда идёт готовый PCM синтеза: в устройство своё — в его очередь, в дележе —
+   в кольцо микшера. Две формы одного и того же, чтобы три места, которым это
+   знать, спросили один вопрос, а не проверяли оба условия каждый раз. */
+static int MidiSinkReady(void)
+{
+    return s_MidiDev || (s_SharedAudio && s_MidiRing.pcm != 0);
+}
+
+static void MidiSinkClear(void)
+{
+    if (s_MidiDev)
+        SDL_ClearQueuedAudio(s_MidiDev);
+    else if (s_SharedAudio && s_MidiRing.pcm)
+        MixRing_Reset(&s_MidiRing);
+}
+
+static int MidiSinkWrite(const short *frames, unsigned int n)
+{
+    if (s_MidiDev)
+        return SDL_QueueAudio(s_MidiDev, frames, n * 2 * sizeof(short)) == 0;
+    return MixRingWrite(&s_MidiRing, frames, n) == n;
+}
+
+static unsigned int MidiSinkBacklog(void)
+{
+    if (s_MidiDev)
+        return SDL_GetQueuedAudioSize(s_MidiDev);
+    return (s_MidiRing.w - s_MidiRing.r) * 4;  /* байты — те же единицы, что у очереди SDL */
+}
+
+/* midiOutOpen: открыть синтез. Неудача обязана быть неудачей: провал сюда ->
+   GmMidi_Open откатывается, и игра вообще не начнёт дорожку — это другое (и
+   худшее) поведение, чем тихая музыка. */
+int SdlMidi_Open(void)
+{
+    SDL_AudioSpec want;
+    SDL_AudioSpec have;
+
+    if (s_Synth)
+        return 1;
+    if (!s_MidiCSReady)
+    {
+        InitializeCriticalSection(&s_MidiCS);
+        s_MidiCSReady = 1;
+    }
+    if (!(SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO))
+    {
+        if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0)
+        {
+            DBG_LOG("SdlMidi_Open: SDL_InitSubSystem(AUDIO) failed: %s", SDL_GetError());
+            return 0;
+        }
+    }
+    SDL_zero(want);
+    want.freq = SDL_MIDI_RATE;
+    want.format = AUDIO_S16SYS;
+    want.channels = 2;
+    want.samples = 1024;
+    want.callback = 0;                   /* push-режим: PCM подмазывает SdlMidi_Pump */
+    if (SdlShareAudioWanted())
+    {
+        /* Устройства своего нет: у консоли один вывод на процесс, а формат
+           микшера и есть этот — PCM синтезу некуда конвертировать, нужно лишь
+           кольцо для суммирования. Кто первый — тот открыл устройство. */
+        if (!SdlMix_Open("midi"))
+            return 0;
+    }
+    else
+    {
+        s_MidiDev = SDL_OpenAudioDevice(0, 0, &want, &have, 0); /* без подмены формата */
+        if (!s_MidiDev)
+        {
+            DBG_LOG("SdlMidi_Open: SDL_OpenAudioDevice failed: %s", SDL_GetError());
+            return 0;
+        }
+        if (have.freq != SDL_MIDI_RATE || have.format != AUDIO_S16SYS || have.channels != 2)
+        {
+            DBG_LOG("SdlMidi_Open: device gave %d Hz / 0x%X / %dch, refusing", have.freq, have.format, have.channels);
+            SDL_CloseAudioDevice(s_MidiDev);
+            s_MidiDev = 0;
+            return 0;
+        }
+    }
+    s_Synth = adl_init(SDL_MIDI_RATE);
+    if (!s_Synth)
+    {
+        DBG_LOG("SdlMidi_Open: adl_init failed: %s", adl_errorString());
+        if (s_MidiDev)
+        {
+            SDL_CloseAudioDevice(s_MidiDev);
+            s_MidiDev = 0;
+        }
+        return 0;
+    }
+    if (adl_switchEmulator(s_Synth, ADLMIDI_EMU_NUKED) < 0)
+        DBG_LOG("SdlMidi_Open: Nuked emulator unavailable (%s), keeping %s",
+                adl_errorString(), adl_chipEmulatorName(s_Synth));
+    if (adl_setBank(s_Synth, SDL_MIDI_BANK) < 0)
+        DBG_LOG("SdlMidi_Open: bank %d unavailable (%s), keeping the default one",
+                SDL_MIDI_BANK, adl_errorString());
+    s_MidiMsgCount = 0;
+    s_MidiFirstMsgLogged = 0;
+    s_MidiFirstAudioLogged = 0;
+    if (s_MidiDev)
+        SDL_PauseAudioDevice(s_MidiDev, 0);
+    DBG_LOG("SdlMidi_Open: libADLMIDI ready: emu=%s bank=%d rate=%d%s",
+            adl_chipEmulatorName(s_Synth), SDL_MIDI_BANK, SDL_MIDI_RATE,
+            s_SharedAudio ? ", sharing the wave device" : "");
+    return 1;
+}
+
+/* midiOutClose: гаснуть (идемпотентно — ShutdownMultimedia мог закрыть раньше). */
+void SdlMidi_Close(void)
+{
+    MidiLock();
+    if (s_Synth)
+    {
+        adl_close(s_Synth);
+        s_Synth = 0;
+    }
+    if (s_SharedAudio && s_MidiRing.pcm)
+        MixRing_Reset(&s_MidiRing);      /* устройство общее: SdlBackendShutdown закроет его */
+    if (s_MidiDev)
+    {
+        SDL_CloseAudioDevice(s_MidiDev);
+        s_MidiDev = 0;
+    }
+    MidiUnlock();
+}
+
+/* midiOutReset: снять все звучащие ноты и выбросить уже отрендеренный PCM —
+   GmMidi_Halt зовёт его уже убитым таймером, так что идущих Pump'ов после
+   сброса не будет (кроме одного в полёте — он уйдёт в тишину паникнутого
+   синтеза, ровно как у оригинала с закрытым устройством). */
+void SdlMidi_Reset(void)
+{
+    MidiLock();
+    if (s_Synth)
+        adl_panic(s_Synth);
+    if (MidiSinkReady())
+        MidiSinkClear();
+    if (s_MidiMsgCount)
+    {
+        /* Тайминг-зависимая диагностика, а НЕ инвариант: печатается только если
+           10-мс таймер успел прокрутиться с прошлого сброса, поэтому между
+           спаренными Stop/Start одна архитектура может молчать, пока другая
+           поймает тик (и наоборот). Мерялось под одним скриптом кликов: обе
+           архитектуры выдают идентичную последовательность сбросов и
+           идентичные счётчики — различается лишь тик в щели stop/start.
+           Не принимать за проверку архитектуры. */
+        DBG_LOG("SdlMidi_Reset: %u messages processed", s_MidiMsgCount);
+        s_MidiMsgCount = 0;
+    }
+    MidiUnlock();
+}
+
+/* Слово из GmMidi_Pump, упакованное как midiOutShortMsg: status | data1<<8 | data2<<16. */
+void SdlMidi_ShortMsg(unsigned int packed)
+{
+    unsigned int status = packed & 0xFF;
+    unsigned int data1 = (packed >> 8) & 0xFF;
+    unsigned int data2 = (packed >> 16) & 0xFF;
+    unsigned int channel = status & 0x0F;
+
+    MidiLock();
+    if (s_Synth)
+    {
+        ++s_MidiMsgCount;
+        if (!s_MidiFirstMsgLogged)
+        {
+            s_MidiFirstMsgLogged = 1;
+            DBG_LOG("SdlMidi_ShortMsg: first message 0x%02X", status);
+        }
+        switch (status & 0xF0)
+        {
+        case 0x80:                         /* note off (velocity отпускания в data2 отбрасывается) */
+            adl_rt_noteOff(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1);
+            break;
+        case 0x90:                         /* note on; velocity 0 == note off, как в оригинале */
+            if (data2)
+                adl_rt_noteOn(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1, (ADL_UInt8)data2);
+            else
+                adl_rt_noteOff(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1);
+            break;
+        case 0xA0:                         /* полифонический aftertouch */
+            adl_rt_noteAfterTouch(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1, (ADL_UInt8)data2);
+            break;
+        case 0xB0:                         /* control change */
+            adl_rt_controllerChange(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1, (ADL_UInt8)data2);
+            break;
+        case 0xC0:                         /* program change (2-байтовое) */
+            adl_rt_patchChange(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1);
+            break;
+        case 0xD0:                         /* channel aftertouch (2-байтовое) */
+            adl_rt_channelAfterTouch(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data1);
+            break;
+        case 0xE0:                         /* pitch bend: data1 = LSB, data2 = MSB */
+            adl_rt_pitchBendML(s_Synth, (ADL_UInt8)channel, (ADL_UInt8)data2, (ADL_UInt8)data1);
+            break;
+        default:                           /* системные сюда не доходят (GmMidi_Pump их не шлёт) */
+            break;
+        }
+    }
+    MidiUnlock();
+}
+
+/* Подмазать PCM в очередь. Зовётся из ShimTimerProc (win32_shim.c) каждые
+   10 мс, т.е. только пока жив таймер трека: этот поток кормит синтез даже
+   когда игровой цикл занят загрузкой, а глубина очереди гасит дрожание
+   таймера. Цикл доводит очередь до цели (саморегуляция: полная — пропуск,
+   пустая — доливка не больше 16 чанков за тик). */
+void SdlMidi_Pump(void)
+{
+    unsigned int queued;
+    int guard = 0;
+    int generated;
+
+    MidiLock();
+    if (!s_Synth || !MidiSinkReady())
+    {
+        MidiUnlock();
+        return;
+    }
+    queued = MidiSinkBacklog();
+    while (queued < SDL_MIDI_QUEUE_TARGET && guard < 16)
+    {
+        int i;
+        generated = adl_generate(s_Synth, SDL_MIDI_CHUNK_SAMPLES, s_MidiChunk);
+        if (generated <= 0)
+            break;
+        if (!s_MidiFirstAudioLogged)
+        {
+            /* Тоже тайминг-зависимое, не инвариант архитектуры: число ненулевых
+               сэмплов в ПЕРВОМ чанке зависит от того, сколько MIDI-событий
+               успело дойти до синтеза, т.е. от того, когда впервые выстрелил
+               10-мс таймер. Тот же бинарь даёт 937 или 941 от прогона к
+               прогону; накатавший 10 с холостых старт даёт 937 на ОБЕИХ
+               архитектурах. Архитектурно-независимы — лог SdlMidi_Open
+               (emu / bank / rate) и status-байт первого сообщения. */
+            int nonzero = 0;
+            for (i = 0; i < generated; ++i)
+            {
+                if (s_MidiChunk[i] != 0)
+                    ++nonzero;
+            }
+            if (nonzero)
+            {
+                s_MidiFirstAudioLogged = 1;
+                DBG_LOG("SdlMidi_Pump: first audible PCM (%d of %d samples nonzero)", nonzero, generated);
+            }
+        }
+        if (!MidiSinkWrite(s_MidiChunk, (unsigned int)generated / 2))
+            break;
+        queued += (unsigned int)generated * sizeof(short);
+        ++guard;
+    }
+    MidiUnlock();
 }
 
 /* Игровая PCM входит, микшер-кадры добавляются: один U8-сэмпл становится
