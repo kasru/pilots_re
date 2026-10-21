@@ -126,6 +126,12 @@ echo "   synth opens: ${n:-0}"
 
 echo "== 3. entering scene 1 (first toolbar square)"
 acquire 10
+# The pointer must sit on the target BEFORE the click: a synthetic click
+# (XSendEvent) does not move the pointer, and SDL derives the button event's
+# position from its own cursor state - updated by motion events only; the
+# engine picks the click's target by the cursor. Without the warp the click
+# lands at (5,5) and the game never leaves the startup screen.
+$X warp "$ID" 42 448 >/dev/null
 $X fake-click "$ID" 42 448 >/dev/null     # windowed is the identity: window px == game px
 sleep 2
 if ! kill -0 "$P" 2>/dev/null; then
@@ -134,11 +140,13 @@ if ! kill -0 "$P" 2>/dev/null; then
 fi
 
 echo "== 4. the music path"
-# Scene 1's script starts a track (opcode 16 -> GmMidi_Play): the 10 ms timer
-# begins, GmMidi_Pump parses events into midiOutShortMsg words and the synth
-# both receives them and renders them. The first message's status byte and the
-# nonzero count of the first chunk are timing-dependent (a 10 ms timer tick
-# decides how many events got there) - only their PRESENCE is asserted.
+# The track is the game's own (opcode 16 -> GmMidi_Play, started by the
+# startup screen's script and re-played by GmAudio_Restart after the
+# movies): the 10 ms timer runs, GmMidi_Pump parses events into
+# midiOutShortMsg words and the synth both receives them and renders them.
+# The first message's status byte and the nonzero count of the first chunk
+# are timing-dependent (a 10 ms timer tick decides how many events got
+# there) - only their PRESENCE is asserted.
 wait_log "SdlMidi_ShortMsg: first message" 30; check $? "the synth took its first midiOutShortMsg"
 wait_log "SdlMidi_Pump: first audible PCM" 10; check $? "the synth rendered its first audible PCM"
 # The mixer's own 5 s report: frames actually handed over AND a peak, so the

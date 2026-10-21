@@ -145,6 +145,13 @@ overlay startup
 
 echo "== 3. entering scene 1 (first toolbar square)"
 acquire 10
+# The pointer must sit on the target BEFORE the click: a synthetic click
+# (XSendEvent) does not move the pointer, and SDL derives the button event's
+# position from its own cursor state - updated by motion events only; the
+# engine picks the click's target by the cursor. Without the warp the click
+# lands at (5,5) and "scene 1" below silently measures the startup screen
+# again (both counts were 7 - the harness passed while entering nothing).
+$X warp "$ID" 42 448 >/dev/null
 $X fake-click "$ID" 42 448 >/dev/null     # windowed is the identity: window px == game px
 sleep 6
 if ! kill -0 "$P" 2>/dev/null; then
@@ -153,9 +160,8 @@ if ! kill -0 "$P" 2>/dev/null; then
 fi
 
 echo "== 4. overlay in scene 1"
-acquire 10
-$X warp "$ID" 5 5 >/dev/null              # the click moved the pointer; refocus
-overlay scene1
+acquire 10                                # the pointer is on the toolbar square,
+overlay scene1                            # inside the window: focus never left
 
 echo "== 5. shutdown"
 kill -USR1 "$P" 2>/dev/null; sleep 3; kill -9 "$P" 2>/dev/null; wait "$P" 2>/dev/null
