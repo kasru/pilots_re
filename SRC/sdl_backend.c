@@ -88,6 +88,32 @@ static void SdlCollectHotspots(void); /* наполнить s_HotspotX/Y из п
 static void SdlDrawHotspots(void);    /* белые маркеры поверх показанного кадра */
 static void SdlUpdateHotspots(void);  /* сэмпл Ctrl раз в памп */
 
+/* ---- Индикатор загрузки (фича порта) ----
+   Сцена грузится внутри собственного цикла игры: секундами читает и ничего
+   не рисует — на экране это неотличимо от зависания, так оно и было
+   доложено. Обернуть тот цикл порт не может (он игровой), но каждое чтение
+   идёт через шим: чтение при неподвижном экране — единственное
+   доказательство загрузки, какое есть. Одна тишина на экране не считается:
+   покойный экран тоже молчит и просто не читает. Часы — последний БЛИТ
+   игры (s_LastGameBlit), а не последний презент: смена раскладки и
+   собственный перевспринт спиннера тоже показывают кадр, и любой из них
+   обнулял часы — так реальная 40-секундная загрузка шрифта измерилась в
+   первой версии как «40 с и 0 КБ прочитано». Бьёт в эти часы шимный _read
+   (SdlBackendLoadBeat, тело в не-Windows-хвосте файла): на Windows чтение
+   идёт в CRT напрямую и индикатор там никогда не заводится. */
+#define SDL_LOAD_QUIET_MS 1000u    /* такая тишина на экране + чтения = загрузка */
+#define SDL_LOAD_SPIN_MS  120u     /* собственный кадр спиннера */
+#define SDL_LOAD_ACTIVE_MS 800u    /* чтения старше этого уже не признак загрузки */
+static Uint32 s_LastGameBlit;      /* последний блит игры: часы тишины */
+static Uint32 s_LoadStart;         /* 0 = загрузки не замечено */
+static Uint32 s_LoadSpinTick;      /* последний кадр спиннера */
+static Uint32 s_LoadBeatTick;      /* последнее чтение игры */
+static unsigned long s_IdleBytes;  /* прочитано с того блита */
+static int s_LoadPhase;            /* вращает метки кольца */
+
+static void SdlDrawSpinner(void);   /* процедурное кольцо меток поверх кадра */
+static void SdlBackendFrameShown(void); /* игра блитнула: итог и сброс */
+
 /* Точка -> LPARAM мышиного сообщения (x в младшем слове, y в старшем). Общий
    путь: wndproc на Windows и очередь шима на остальных платформах. */
 static LPARAM SdlPackPoint(int x, int y)
@@ -572,6 +598,8 @@ void SdlBackendPresentRect(const void *bits, int bmpHeight, int stride, int x, i
 
     if (!s_Shadow || !bits || stride <= 0 || bmpHeight <= 0)
         return;
+    if (s_LoadStart)
+        SdlBackendFrameShown();     /* игра блитует: дождалась, чего ждала */
     /* Обрезка к границам кадра (как BitBlt к DC окна). */
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
@@ -590,6 +618,10 @@ void SdlBackendPresentRect(const void *bits, int bmpHeight, int stride, int x, i
         for (col = 0; col < w; col++)
             d[col] = s_PaletteLut[s[col]];
     }
+    /* Игра нарисовала: обе часы загрузки обнуляются здесь и нигде больше
+       (см. SdlBackendLoadBeat) — блит, а не презент, как часы тишины. */
+    s_LastGameBlit = SDL_GetTicks();
+    s_IdleBytes = 0;
     s_Dirty = true;
 }
 
@@ -714,6 +746,76 @@ static void SdlUpdateHotspots(void)
     }
 }
 
+/* Процедурное кольцо меток с затухающим хвостом — вид busy-индикатора везде.
+   Рисуется процедурно, а не картинкой из иконки игры, нарочно: .ico
+   вырезается из PILOTS.EXE (это игровые данные, и только Windows-сборка
+   держит его рядом с exe), а объяснить зависание обязан сам порт —
+   индикатор не может зависеть от необязательного файла. Размеры берутся от
+   картинки, так что кольцо читается и на консольных 1280x720, и в окне
+   640x480, и сидит внутри rect картинки, а не в letterbox — туда, куда
+   никто не смотрит. */
+static void SdlDrawSpinner(void)
+{
+    static const short dx[8] = { 8, 6, 0, -6, -8, -6, 0, 6 }; /* единичный восьмиугольник: радиус / 8 */
+    static const short dy[8] = { 0, -6, -8, -6, 0, 6, 8, 6 };
+    int r = s_PicH / 22;
+    int cx = s_PicX + s_PicW / 2;
+    int cy = s_PicY + s_PicH - 2 * r - 6;
+    float size;
+    SDL_Rect bar;
+    SDL_FRect dot;
+    int i;
+
+    if (r < 8)
+        r = 8;
+    size = (float)(r / 2 < 2 ? 2 : r / 2);
+    /* Тёмная полоска под метками: кадры игры светлые и тёмные в том же
+       месте, белым меткам нужна своя подложка, чтобы читаться на обоих. */
+    bar.x = cx - r * 3;
+    bar.y = cy - r - 4;
+    bar.w = r * 6;
+    bar.h = r * 2 + 8;
+    SDL_SetRenderDrawBlendMode(s_Renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(s_Renderer, 0, 0, 0, 130);
+    SDL_RenderFillRect(s_Renderer, &bar);
+    for (i = 0; i < 8; ++i)
+    {
+        int age = (s_LoadPhase - i) & 7;    /* метку только что прошли головой кольца */
+        int alpha = 245 - age * 30;
+        float d = (float)(r * 8 - size) / 16.0f; /* радиус кольца минус половина метки */
+
+        dot.x = (float)(cx + dx[i] * r / 8 - d);
+        dot.y = (float)(cy + dy[i] * r / 8 - d);
+        dot.w = size;
+        dot.h = size;
+        SDL_SetRenderDrawColor(s_Renderer, 255, 255, 255, (Uint8)(alpha < 45 ? 45 : alpha));
+        SDL_RenderFillRectF(s_Renderer, &dot);
+    }
+    SDL_SetRenderDrawColor(s_Renderer, 255, 255, 255, 255);
+    SDL_SetRenderDrawBlendMode(s_Renderer, SDL_BLENDMODE_NONE); /* как оставил FlushPresent */
+}
+
+/* Игра блитнула, т.е. нарисовала и дождалась того, чего ждала: индикатор
+   уходит вместе с заменившим его кадром, а тут проходит итог того, через
+   что игра прошла. Если чтения уже остановились, метки не рисовались
+   (SdlBackendFlushPresent сверяет свежесть s_LoadBeatTick): крутиться, когда
+   никто не читает, — враньё, зависание это совсем другое. */
+static void SdlBackendFrameShown(void)
+{
+    Uint32 now = SDL_GetTicks();
+
+    if (!s_LoadStart)
+        return;
+    if ((now - s_LoadBeatTick) >= SDL_LOAD_ACTIVE_MS)
+        DBG_LOG("SdlLoad: the screen stood still %u s with %lu KB read, the reads stopped %u ms before the picture moved again",
+                (unsigned)((now - s_LoadStart) / 1000u), s_IdleBytes / 1024ul,
+                (unsigned)(now - s_LoadBeatTick));
+    else
+        DBG_LOG("SdlLoad: the screen stood still %u s with %lu KB read, and the game is drawing again",
+                (unsigned)((now - s_LoadStart) / 1000u), s_IdleBytes / 1024ul);
+    s_LoadStart = 0;
+}
+
 /* Показать теневой кадр, если он грязный (иначе no-op). Один RenderPresent
    на кадр; Host_Flush после уже показанного кадра ничего не делает. Кадр
    кладётся в rect картинки: в обычном окне это всё окно (как в оригинале),
@@ -734,6 +836,9 @@ void SdlBackendFlushPresent(void)
     SDL_RenderCopy(s_Renderer, s_Texture, NULL, &dst);
     if (s_HotspotHeld && s_HotspotCount)          /* Ctrl зажат: отметить кликабельное */
         SdlDrawHotspots();
+    if (s_LoadStart && (SDL_GetTicks() - s_LoadBeatTick) < SDL_LOAD_ACTIVE_MS)
+        SdlDrawSpinner(); /* игра грузит: сказать об этом поверх неподвижного
+                             кадра — и только пока чтения доказывают, что так */
     SDL_RenderPresent(s_Renderer);
     s_Dirty = false;
     if (!s_PresentedOnce)
@@ -1211,8 +1316,8 @@ void SdlBackendSetNativeMovie(int on)
 /* Очередь сообщений здесь одна — та, что держит win32_shim.c: PeekMessageA   */
 /* её дренирует, DispatchMessageA зовёт Host_MainWndProc напрямую. Ни одного  */
 /* реального окна нет, так что весь ввод — это перевод SDL-событий в WM_*.    */
-/* Координаты везде тождественны (окно всегда 640×480 в оконном виде;         */
-/* полноэкранный layout с масштабированием не переносится).                     */
+/* Координаты мыши проходят SdlMapMousePoint (px окна -> px игры; в оконном  */
+/* виде это тождество, в fullscreen — карта на letterboxed-картинку).          */
 /* ========================================================================== */
 
 #ifndef _WIN32
@@ -2653,10 +2758,52 @@ void SdlBackendNoteFramePoll(void)
 {
 }
 
-/* Индикатор загрузки не перенесён; сейчас байты просто проходят мимо. */
+/* Шим зовёт это после каждого успешного чтения. Большинство чтений обычные —
+   игра читает, пока рисует, и экран тогда не неподвижен, так что здесь
+   ничего не происходит. Ловится одно: секунда тишины на экране И
+   двигающиеся байты — форма загрузки, которую игрок не отличит от
+   зависания (так оно и было доложено). Часы — последний блит игры
+   (s_LastGameBlit), нарочно не последний презент: смена раскладки или
+   собственный перевспринт спиннера тоже показывают кадр, и каждый из них
+   останавливал индикатор после одного шага и обнулял счётчик байтов — так
+   реальная 40-секундная загрузка шрифта в первой версии измерилась как
+   «40 с и 0 КБ прочитано». */
 void SdlBackendLoadBeat(unsigned int bytes)
 {
-    (void)bytes;
+    static Uint32 s_QuietMs;    /* PILOTS_LOAD_QUIET_MS, 0 = ещё не прочитано */
+    Uint32 still;
+    Uint32 now = SDL_GetTicks();
+
+    if (!s_Texture || !s_Renderer)
+        return;
+    if (!s_QuietMs)
+    {
+        char *e = getenv("PILOTS_LOAD_QUIET_MS");
+        unsigned long v = e ? strtoul(e, 0, 10) : 0;
+        s_QuietMs = (v >= 50u && v <= 60000u) ? (Uint32)v : SDL_LOAD_QUIET_MS;
+        DBG_LOG("SdlLoad: a screen still for %u ms while the game reads counts as loading", s_QuietMs);
+    }
+    s_LoadBeatTick = now;
+    if (!s_LastGameBlit)
+        return;                 /* на экране ещё ничего не было: накладывать не на что */
+    s_IdleBytes += bytes;       /* считаются от последнего блита, а не от момента
+                                   пересечения порога: смысл числа — во что обошёл ждал */
+    still = now - s_LastGameBlit;
+    if (still < s_QuietMs)
+        return;                 /* игра недавно рисовала: обычное чтение */
+    if (!s_LoadStart)
+    {
+        s_LoadStart = s_LastGameBlit; /* неподвижность началась с того кадра */
+        DBG_LOG("SdlLoad: nothing drawn for %u ms while the game read %lu bytes - showing a spinner",
+                (unsigned)still, s_IdleBytes);
+    }
+    if ((now - s_LoadSpinTick) >= SDL_LOAD_SPIN_MS)
+    {
+        s_LoadSpinTick = now;
+        ++s_LoadPhase;
+        s_Dirty = true;         /* форс-показ: во время загрузки никто больше не покажет кадр */
+        SdlBackendFlushPresent();
+    }
 }
 
 #endif /* !_WIN32 */
