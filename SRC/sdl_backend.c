@@ -68,6 +68,25 @@ static int SdlPictureTransformed(void);
 static int SdlMapMousePoint(int *x, int *y); /* px окна -> px игры; 0 = вне картинки */
 static int SdlFloorDiv(int a, int b);
 
+/* ---- Оверлей кликабельного (фича порта): Ctrl зажат — отметить объекты, в
+   которые попал бы hit-test клика. Клавиша читается через GetAsyncKeyState:
+   на Windows это настоящий user32 (там wndproc отдаёт игре WM_KEYDOWN и SDL
+   своего состояния не видит), на остальных платформах — шим на SDL_GetModState
+   (win32_shim.c); polling опубликованного сообщения никогда бы не совпал. */
+#define HOTSPOT_MAX 128
+static int s_HotspotHeld;             /* Ctrl зажат на последнем пампе */
+static int s_HotspotPrev;             /* ... и на пампе перед ним */
+static int s_HotspotCount;            /* маркеры к следующей отрисовке */
+static int s_HotspotX[HOTSPOT_MAX];   /* центр объекта, px игры (экран) */
+static int s_HotspotY[HOTSPOT_MAX];
+/* R на консоли — второй источник «зажато», та же картинка, что даёт Ctrl.
+   Вне __SWITCH__ его никто не выставляет; один байт, читается безусловно. */
+static int s_PadOverlayHeld;
+
+static void SdlCollectHotspots(void); /* наполнить s_HotspotX/Y из пула объектов */
+static void SdlDrawHotspots(void);    /* белые маркеры поверх показанного кадра */
+static void SdlUpdateHotspots(void);  /* сэмпл Ctrl раз в памп */
+
 /* Точка -> LPARAM мышиного сообщения (x в младшем слове, y в старшем). Общий
    путь: wndproc на Windows и очередь шима на остальных платформах. */
 static LPARAM SdlPackPoint(int x, int y)
@@ -124,7 +143,7 @@ static int s_StickX = -1;
 static int s_StickY;
 static unsigned int s_LastMovePost; /* мс последнего отправленного хода */
 static int s_MovePending;           /* стик ушёл после последнего отправленного */
-static int s_RLedgesLogged;         /* L/R/'-' без привязки: репорты ограничены */
+static int s_RLedgesLogged;         /* L без привязки: репорт о ребре ограничен */
 #endif
 #endif
 
@@ -567,6 +586,127 @@ void SdlBackendPresentRect(const void *bits, int bmpHeight, int stride, int x, i
     s_Dirty = true;
 }
 
+/* Кликабельное, как его видит сама игра: пул объектов тем же обходом, что
+   GmObject_ProcessInput у hitObject (objects.c) — instance-объекты, чей класс
+   вообще реагирует на указатель (POINTABLE — hover/клик, FOCUSABLE — фокус;
+   v0.1 читал те же два из канала спрайта). Положение — центр спрайта в px
+   карты минус скролл, т.е. на экране. Только чтение и без побочных эффектов:
+   в отличие от настоящего прохода сюда ничего не пишется, игра не замечает,
+   что мы тут были. */
+static void SdlCollectHotspots(void)
+{
+    GM_POOL_ENTRY *entry;
+
+    s_HotspotCount = 0;
+    if (!g_PoolTop || !g_PoolBottom)
+        return;                                    /* ещё ничего не загружено */
+    for (entry = g_PoolTop; entry > g_PoolBottom; --entry)
+    {
+        GM_OBJECT *obj = &entry->object;
+        const GM_CLASS *cls;
+        const GM_SPRITE *sprite;
+        const GM_IMAGE *image;
+        int x, y;
+
+        if ((obj->flags & (GMOBJ_USED | GMOBJ_INSTANCE)) != (GMOBJ_USED | GMOBJ_INSTANCE))
+            continue;
+        cls = &g_Classes[obj->classIndex];
+        if (cls->kind != GMCLASS_POINTABLE && cls->kind != GMCLASS_FOCUSABLE)
+            continue;
+        if (obj->spriteIndex == GM_POOL_NONE)
+            continue;                              /* объект без спрайта: не кликабелен */
+        sprite = &g_PoolTop[-obj->spriteIndex].sprite;
+        if (!sprite->frame)
+            continue;
+        /* Тот же слот-кадр, что читает GmObject_HitTest (objects.c) — оверлей
+           обязан совпадать с hit-test'ом, который отражает, а не спорить с ним. */
+        image = GM_FRAME_IMAGE(sprite->frame);
+        if (!image->width || !image->height)
+            continue;
+        x = sprite->x + image->width / 2 - g_ScrollX;
+        y = sprite->y + image->height / 2 - g_ScrollY;
+        if (x < 0 || y < 0 || x >= s_GameClientW || y >= s_GameClientH)
+            continue;                              /* центр за кадром: нечего помечать */
+        if (s_HotspotCount >= HOTSPOT_MAX)
+            break;
+        s_HotspotX[s_HotspotCount] = x;            /* центр попадает внутрь того, что кликабельно */
+        s_HotspotY[s_HotspotCount] = y;
+        ++s_HotspotCount;
+    }
+}
+
+/* Белые маркеры ПОВЕРХ показанного кадра, в клиентских px окна: игровой радиус
+   в fullscreen растянулся бы по X и Y по-разному и диск превратился бы в
+   эллипс, а один радиус в оконных px остаётся кругом и растёт вместе с
+   картинкой. У SDL нет круглая примитива — диск заливается построчно, как
+   SdlBackendDrawGrid рисует линиями. 8-битный буфер, палитра и dirty-регионы
+   здесь не трогаются: рендерер пересоздаётся на каждый презент, так что
+   маркеры исчезают просто тем, что их не нарисовали снова (и появляются —
+   принудительным презентом в SdlUpdateHotspots на пустающей картинке). */
+static void SdlDrawHotspots(void)
+{
+    int r, r2, i;
+
+    if (!s_HotspotCount)
+        return;
+    /* ~4.5 игровых px: масштабируется вместе с картинкой, зажат к разумному —
+       крайние значения либо невидимы, либо клякса. Один радиус по X и Y —
+       чтобы был круг. */
+    r = s_GameClientH > 0 ? (9 * s_PicH + s_GameClientH) / (2 * s_GameClientH) : 5;
+    if (r < 2)
+        r = 2;
+    if (r > 16)
+        r = 16;
+    r2 = r * r;
+    SDL_SetRenderDrawColor(s_Renderer, 255, 255, 255, 255);
+    for (i = 0; i < s_HotspotCount; ++i)
+    {
+        int cx = s_HotspotX[i], cy = s_HotspotY[i];
+        int dy;
+
+        SdlBackendGameToClient(&cx, &cy);
+        for (dy = -r; dy <= r; ++dy)
+        {
+            int half = 0;
+
+            while ((half + 1) * (half + 1) + dy * dy <= r2)
+                ++half;
+            SDL_RenderDrawLine(s_Renderer, cx - half, cy + dy, cx + half, cy + dy);
+        }
+    }
+}
+
+/* Сэмпл Ctrl и обновление списка маркеров, раз в памп. Принудительный презент
+   на смене состояния — то, что делает фичу рабочей: игра презентует по блиту,
+   а на покоящемся экране блита нет, — без него маркеры либо никогда не
+   появились бы, либо никогда не исчезли. Оба ребра в этом нуждаются: вниз —
+   показать, вверх — стереть. */
+static void SdlUpdateHotspots(void)
+{
+    int ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    int held = ctrl || s_PadOverlayHeld;          /* и руль консоли — второй источник */
+    int prevCount = s_HotspotCount;
+    int toggled = held != s_HotspotPrev;
+    static const char *s_Src = "Ctrl";            /* имя на спуске, остаётся и на подъёме */
+
+    if (held)
+        s_Src = ctrl ? "Ctrl" : "pad R";
+    s_HotspotHeld = held;
+    if (held)
+        SdlCollectHotspots();
+    else
+        s_HotspotCount = 0;
+    if (toggled || s_HotspotCount != prevCount)
+        DBG_LOG("SdlUpdateHotspots: %s %s, %d interactive object(s)",
+                s_Src, held ? "down" : "up", s_HotspotCount);
+    s_HotspotPrev = held;
+    if (toggled && s_Texture && s_Renderer)
+    {
+        s_Dirty = true;                            /* форс: сцена ничего не блитовала */
+        SdlBackendFlushPresent();
+    }
+}
+
 /* Показать теневой кадр, если он грязный (иначе no-op). Один RenderPresent
    на кадр; Host_Flush после уже показанного кадра ничего не делает. Кадр
    кладётся в rect картинки: в обычном окне это всё окно (как в оригинале),
@@ -585,6 +725,8 @@ void SdlBackendFlushPresent(void)
     dst.w = s_PicW > 0 ? s_PicW : s_TexW;
     dst.h = s_PicH > 0 ? s_PicH : s_TexH;
     SDL_RenderCopy(s_Renderer, s_Texture, NULL, &dst);
+    if (s_HotspotHeld && s_HotspotCount)          /* Ctrl зажат: отметить кликабельное */
+        SdlDrawHotspots();
     SDL_RenderPresent(s_Renderer);
     s_Dirty = false;
     if (!s_PresentedOnce)
@@ -604,6 +746,7 @@ void SdlBackendFlushPresent(void)
    (перевод SDL-событий в WM_* + фильм + волна). */
 void SdlBackendPumpEvents(void)
 {
+    SdlUpdateHotspots();                           /* Ctrl зажат — отметить кликабельное */
 #ifndef _WIN32
     WinShim_PumpSDLToQueue();
 #else
@@ -1431,16 +1574,19 @@ static void SdlPollSwitchControls(void)
         DBG_LOG("SdlSwitchControls: '-' (minus) pressed -> the port's picture toggle");
         SdlBackendToggleStretch();
     }
-    /* L/R — пока без привязки, репорт о ребре ограничен: мёртвая кнопка тихой
-       быть не должна, но и залить лог ею нельзя. */
-    if ((buttons & (SWITCH_PAD_L | SWITCH_PAD_R))
-            != (s_PrevButtons & (SWITCH_PAD_L | SWITCH_PAD_R))
+    /* R (правый плечевой) — оверлей кликабельного, та же картинка, что даёт
+       Ctrl: состояние держится, пока кнопка зажата, а строку «pad R down»
+       пишет и рисует SdlUpdateHotspots следующим пампом (он идёт до опроса
+       пада — один памп задержки, как v0.1). L — по-прежнему без привязки, но
+       мёртвая кнопка тихой быть не должна: репорт о ребре ограничен. */
+    s_PadOverlayHeld = (buttons & SWITCH_PAD_R) != 0;
+    if ((buttons & SWITCH_PAD_L) != (s_PrevButtons & SWITCH_PAD_L)
         && s_RLedgesLogged < 8)
     {
         ++s_RLedgesLogged;
-        DBG_LOG("SdlSwitchControls: L/R edge, prev=0x%X now=0x%X (no binding); %d edge line(s) of 8",
-                s_PrevButtons & (SWITCH_PAD_L | SWITCH_PAD_R),
-                buttons & (SWITCH_PAD_L | SWITCH_PAD_R),
+        DBG_LOG("SdlSwitchControls: L edge, prev=0x%X now=0x%X (no binding); %d edge line(s) of 8",
+                s_PrevButtons & SWITCH_PAD_L,
+                buttons & SWITCH_PAD_L,
                 s_RLedgesLogged);
     }
 

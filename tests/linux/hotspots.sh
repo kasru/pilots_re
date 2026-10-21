@@ -65,6 +65,17 @@ acquire() {                                         # acquire <seconds> -> 0 if 
   return 1
 }
 key() { $X xtest-key "$1" "$2" >/dev/null; }        # key <Control_L> <down|up>
+have_n() {                                       # have_n <pattern> <count> -> 0 if >= count matches
+  [ "$(grep -c -F -- "$1" "$LOG" 2>/dev/null)" -ge "$2" ]
+}
+wait_log_n() {                                   # wait_log_n <pattern> <count> <seconds>
+  n=$(( $3 * 5 ))
+  while [ "$n" -gt 0 ]; do
+    have_n "$1" "$2" && return 0
+    sleep 0.2; n=$((n - 1))
+  done
+  return 1
+}
 # Marker count of the most recent edge, or "" when that edge is not the last one logged.
 # Reading the log and not the pixels: the scene animates by itself, so two idle frames
 # always differ a little even with the overlay off.
@@ -85,12 +96,14 @@ overlay() {                                         # overlay <label>
   [ -n "$N" ] && [ "$N" -eq 0 ]; check $? "$1: Ctrl up clears them (count=${N:-none})"
 }
 
-# The scratch run dir with the data file and NO movies - the same contract the Windows
-# rundir.ps1 keeps. With the real MOVIES/ in the CWD the startup plays INTRO (~34 s) and
-# then START (~50 s), both INSIDE GameMainLoop, and during a movie the game pumps SDL
-# through PeekMessageA only: SdlUpdateHotspots (the overlay sampler, in
-# SdlBackendPumpEvents) does not run at all, so no Ctrl edge is ever logged - measured
-# with a call counter, frozen for 4 s of held Ctrl while KEYDBG saw the key fine.
+# The scratch run dir with the data file. The "no movies" half of the old contract
+# does NOT reach port-main: .AVI/.BMP are looked up next to the EXE (g_ExecutablePath),
+# so the rundir's lack of MOVIES changes nothing and START.AVI plays right after the
+# loop is entered. During that modal cycle the game pumps SDL through PeekMessageA
+# only (Host_PlayAvi), SdlBackendPumpEvents - and with it SdlUpdateHotspots, the
+# overlay sampler - does not run at all, so a Ctrl edge sent during the movie is
+# never logged. Hence the wait for "PlayAvi: end" below: the startup screen's overlay
+# needs a live main loop, and the movie's own end marker is what says there is one.
 REPO=$(pwd)
 RUN=/tmp/pilots_hotspots_rundir
 rm -rf "$RUN"; mkdir -p "$RUN"
@@ -119,8 +132,12 @@ $X warp "$ID" 5 5 >/dev/null
 # objects do, and reading the overlay during that window just reads an empty stack.
 echo "== 1. waiting for the menu"
 wait_log "ENTER: GameMainLoop" 40; check $? "game reached its main loop"
-# The startup screen's own loads run for ~3 s after the loop is entered; with no movies
-# they are the only thing left to wait for, and an empty stack reads as count=0.
+# INTRO plays before the loop and START inside it (both next to the EXE, see above);
+# the overlay sampler does not run during either modal cycle, so the first Ctrl edge
+# may only be sent after the SECOND "PlayAvi: end" - the one that means the startup
+# screen is up over a live main loop - plus the ~3 s of its own loads, during which
+# an empty stack reads as count=0.
+wait_log_n "PlayAvi: end" 2 90; check $? "the startup movie ended (both movies played)"
 sleep 5
 
 echo "== 2. overlay on the startup screen"
