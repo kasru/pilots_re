@@ -803,6 +803,8 @@ void SdlBackendSetCursorVisible(int visible);
 void SdlBackendClientToGame(int *x, int *y); /* window client px -> game px (identity windowed) */
 void SdlBackendGameToClient(int *x, int *y); /* game px -> window client px */
 void SdlBackendNoteFramePoll(void);       /* main.c polled the cursor: the profile's frame counter */
+void SdlBackendDispatchBegin(void);       /* the game's wndproc is running: the profile's rect split */
+void SdlBackendDispatchEnd(void);
 void SdlBackendLoadBeat(unsigned int bytes); /* the shim's _read saw bytes; a still screen = loading */
 void SdlBackendVideoFrame(const void *bgra, int srcw, int srch,
                           int x, int y, int w, int h); /* one MCI movie frame (mci_ffmpeg.c) */

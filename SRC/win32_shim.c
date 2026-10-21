@@ -1196,7 +1196,12 @@ LRESULT DispatchMessageA(const MSG *lpMsg)
     return 0;
   saved = s_InDispatch;
   s_InDispatch = 1;
+  SdlBackendDispatchBegin();              /* counter, not a flag: SendMessageA re-enters here and an
+                                             unconditional end would drop the outer dispatch mid-way;
+                                             rects blitted while we are in here are the profile's
+                                             message path (the cursor of UpdateCursorPosition) */
   r = Host_MainWndProc(lpMsg->hwnd, lpMsg->message, lpMsg->wParam, lpMsg->lParam);
+  SdlBackendDispatchEnd();
   s_InDispatch = saved;
   return r;
 }
