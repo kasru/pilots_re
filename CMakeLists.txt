@@ -7,8 +7,9 @@
 #   cmake -S . -B build64                    native (x86_64) - the LP64 layout
 #                                             of the generated game-struct headers
 #
-# Not ported yet (restore both from the sdl2 branch's CMakeLists when they are):
-# libADLMIDI (music) and the Nintendo Switch .nro step.
+# Not ported yet: libADLMIDI (the music). The Nintendo Switch .nro step is at
+# the bottom and the console runtime lives in switch_libnx.c / __SWITCH__
+# branches of the port layer.
 #
 # Keeping the build dirs separate matters: SDL2 and libavcodec must come from
 # the matching architecture, so a build dir is tied to one of them for good.
@@ -124,6 +125,9 @@ set(GAME_SOURCES
   ${GAME_DIR}/rules.c
   ${GAME_DIR}/save.c
   ${GAME_DIR}/sdl_backend.c
+  # switch_libnx.c is #ifdef __SWITCH__ all the way down and compiles to nothing
+  # elsewhere; it is listed everywhere for symmetry, as win32_shim.c is.
+  ${GAME_DIR}/switch_libnx.c
   ${GAME_DIR}/text.c
   ${GAME_DIR}/vm.c
   ${GAME_DIR}/wave.c
@@ -142,10 +146,9 @@ pkg_check_modules(AV REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil l
 
 target_link_libraries(PILOT_RV PRIVATE PkgConfig::SDL2 PkgConfig::AV m)
 
-# libADLMIDI (the midiOut replacement carrying the music) and the Switch .nro
-# step are NOT ported yet - each is ported separately. When they are, restore
-# the adlmidi block and the nx_create_nro block from the sdl2 branch's
-# CMakeLists (tag v0.1 / branch tip).
+# libADLMIDI (the midiOut replacement carrying the music) is NOT ported yet -
+# restore the adlmidi block from the sdl2 branch's CMakeLists (tag v0.1) when
+# it is.
 
 if(PILOTS_M32)
   message(STATUS "PILOT_RV: 32-bit (-m32), build dir ${CMAKE_BINARY_DIR}")

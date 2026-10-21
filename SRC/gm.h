@@ -1835,6 +1835,27 @@ void SdlBackendDrawGrid(int colorref);
 void SdlBackendPumpEvents(void);
 void SdlBackendParseCmdLine(const char *cmdLine);
 
+/* ========================================================================== */
+/* Nintendo Switch (switch_libnx.c). Всё под __SWITCH__: на других платформах  */
+/* файл — пустая TU. Биты пада читаются напрямую из hid (в SDL2 этой сборки нет */
+/* драйвера npad), конвертируются в мышиные сообщения в sdl_backend.c.          */
+/* ========================================================================== */
+#ifdef __SWITCH__
+void SdlSwitchAttachDebugChannel(void);           /* живой лог: stderr -> nxlink-хост */
+void SdlSwitchReportEnvironment(void);            /* где код/кипа/стек, сколько памяти */
+void *SdlSwitchMapLowMemory(size_t bytes);        /* пул движка ниже 2 ГБ (алиас) */
+void SdlSwitchUnmapLowMemory(void);               /* отдать алиас лоадеру при выходе */
+
+#define SWITCH_PAD_A 0x0001u
+#define SWITCH_PAD_B 0x0002u
+#define SWITCH_PAD_X 0x0004u
+#define SWITCH_PAD_Y 0x0008u
+#define SWITCH_PAD_L 0x0010u
+#define SWITCH_PAD_R 0x0020u
+#define SWITCH_PAD_MINUS 0x0040u
+void SdlSwitchPollPad(int *stickX, int *stickY, unsigned int *buttons);
+#endif /* __SWITCH__ */
+
 int GmWave_GetVolume(void);
 int GmMidi_GetVolume(void);
 

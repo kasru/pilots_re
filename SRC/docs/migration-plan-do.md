@@ -7,9 +7,9 @@
 
 - **P0** — ветка `port-main` от `main`, инфраструктура (`tests/`, `third_party`, `.gitignore`, `AGENTS.md`), разведка архитектуры — **выполнено**.
 - **P1** — SDL2 на Windows x86: окно/презент/ввод через SDL на основе `host.c`, восстановление `debug_log.h` и дебаг-маркеров, сборка с SDL2, окно 640×480. MCI-видео и winmm-звук остаются как есть — **выполнено**.
-- **P2** — LP64/x64: снятие 32-битных `_Static_assert`, pointer-as-int, x64-сборка.
-- **P3** — Linux (CMake, win32_shim/mci_ffmpeg, SDL-аудио).
-- **P4** — Switch (`switch_libnx`, пад, low-memory).
+- **P2** — LP64/x64: снятие 32-битных `_Static_assert`, pointer-as-int, x64-сборка — **выполнено**.
+- **P3** — Linux (CMake, win32_shim/mci_ffmpeg, SDL-аудио) — **выполнено**.
+- **P4** — Switch (`switch_libnx`, пад, low-memory) — **выполнено** (сборка `.nro` зелёная на всех конфигурациях; запуск на консоли — когда она проснётся).
 - **P5** — фичи порта по одной с харнессами (fullscreen/stretch, hotspots, cursor keepalive, movie sound, libADLMIDI MIDI, `-datapath`, load-индикатор, профиль лупы, coalescing, стик-курсор).
 - **P6** — полная матрица тестов зелёная (Windows x86/x64, Linux, Switch).
 

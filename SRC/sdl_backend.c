@@ -41,6 +41,19 @@ static SDL_Texture *s_VideoTex;     /* кадр фильма (SdlBackendVideoFra
 static int s_VideoTexW, s_VideoTexH;
 static SDL_AudioDeviceID s_WaveDev; /* SDL-устройство за waveOut-шимом (win32_shim.c) */
 static volatile sig_atomic_t s_Usr1Quit;
+#ifdef _DEBUG
+static int s_FingerLogged;          /* первые касания — в лог, для отладки */
+#endif
+#ifdef __SWITCH__
+/* Курсор со стика консоли: клиентские px игры, -1 до первого опроса (тогда
+   паркуется по центру картинки). Ход мышью от стика троттлится — см.
+   комментарий у SdlPollSwitchControls. */
+static int s_StickX = -1;
+static int s_StickY;
+static unsigned int s_LastMovePost; /* мс последнего отправленного хода */
+static int s_MovePending;           /* стик ушёл после последнего отправленного */
+static int s_RLedgesLogged;         /* L/R/'-' без привязки: репорты ограничены */
+#endif
 #endif
 
 /* ========================================================================== */
@@ -125,6 +138,13 @@ static void SdlSigUsr1Handler(int sig)
    Истина — успех. */
 int SdlBackendStartup(void)
 {
+#ifdef __SWITCH__
+    /* Самое первое: живой лог (stderr -> nxlink-хост, если запущено через
+       netloader) и отчёт о памяти процесса — читать их можно с любой точки
+       дальше, а упасть можно в любой. */
+    SdlSwitchAttachDebugChannel();
+    SdlSwitchReportEnvironment();
+#endif
     SDL_SetMainReady();             /* главная функция наша, не SDL_main */
 #ifndef _WIN32
     s_Usr1Quit = 0;
@@ -146,6 +166,12 @@ int SdlBackendStartup(void)
         return 0;
 #endif
     }
+#ifdef __SWITCH__
+    /* Касания конвертируются в мышиные сообщения сами, в SdlDispatchSdlEvent —
+       там палец проходит через те же координатные пути, что и настоящая мышь.
+       Синтез SDL выключаем, иначе один тап дошёл бы до игры дважды. */
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+#endif
     DBG_LOG("SDL video driver: %s", SDL_GetCurrentVideoDriver());
 #ifndef _WIN32
     DBG_LOG("SDL audio driver: %s", SDL_GetCurrentAudioDriver());
@@ -192,6 +218,13 @@ void SdlBackendShutdown(void)
         s_Window = NULL;
     }
     SDL_Quit();
+#ifdef __SWITCH__
+    /* Самым последним: алиас низкого пула держит страницы, которые hbloader
+       забирает себе, когда приложение возвращает управление — незакрытый алиас
+       роняет сам лоадер, и его отчёт без единого смещения PILOT_RV читается
+       как «игра упала на выходе». См. SdlSwitchUnmapLowMemory. */
+    SdlSwitchUnmapLowMemory();
+#endif
 }
 
 /* Создать окно клиентского размера clientW×clientH с заголовком title, подклассить
@@ -395,10 +428,36 @@ void SdlBackendPumpEvents(void)
 #endif
 }
 
-/* Разбор командной строки. Заглушка: разбор (в т.ч. -datapath) добавляется отдельно. */
+#ifdef __SWITCH__
+/* hbmenu не передаёт командную строку, так что -datapath на консоли недоступен,
+   а движок ищет .\PILOTS.EXE от текущего каталога (при запуске из hbmenu это
+   корень SD). Фоллбэк на стандартное homebrew-место — но только если данные
+   действительно в нём: кто держит их в другом месте, получает прежнее
+   поведение, а если там ничего нет — текущий каталог не трогается (фоллбэк
+   только добавляет случай, ничего не отнимая). Путь идёт через шим
+   (GetFileAttributesA/SetCurrentDirectoryA в win32_shim.c), как и весь путь
+   игры: обход без учёта регистра один на все файлы. */
+static void SdlSwitchDefaultDataPath(void)
+{
+    char probe[MAX_PATH];
+
+    strcpy(probe, "sdmc:/switch/pilots");
+    strcat(probe, "/PILOTS.EXE");
+    if (GetFileAttributesA(probe) == (DWORD)-1)
+        return;
+    if (SetCurrentDirectoryA("sdmc:/switch/pilots"))
+        DBG_LOG("SdlBackendParseCmdLine: no -datapath on the Switch, using sdmc:/switch/pilots");
+}
+#endif
+
+/* Разбор командной строки. Пока здесь только фоллбэк пути данных на консоли;
+   остальной разбор (в т.ч. -datapath) добавляется отдельно. */
 void SdlBackendParseCmdLine(const char *cmdLine)
 {
     (void)cmdLine;
+#ifdef __SWITCH__
+    SdlSwitchDefaultDataPath();
+#endif
 }
 
 /* ========================================================================== */
@@ -483,6 +542,12 @@ static void SdlPostQuitRequest(void)
         PostQuitMessage(0);
 }
 
+/* Точка -> LPARAM мышиного сообщения (x в младшем слове, y в старшем). */
+static LPARAM SdlPackPoint(int x, int y)
+{
+    return (LPARAM)(((DWORD)(Uint16)y << 16) | (Uint16)x);
+}
+
 static void SdlDispatchSdlEvent(const SDL_Event *ev)
 {
     switch (ev->type)
@@ -544,6 +609,42 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
         }
         break;
 
+    case SDL_FINGERDOWN:
+    case SDL_FINGERUP:
+    case SDL_FINGERMOTION:
+        {
+            /* Тачскрин: SDL отдаёт палец нормированным к окну, дальше это
+               мышиный путь — WM_SETCURSOR, ход, и для касания ещё и клик
+               (палец есть левая кнопка, а не наведение). Своя конвертация;
+               синтез SDL из пальца выключен в SdlBackendStartup. */
+            int mx, my, ww = s_TexW, wh = s_TexH;
+
+            if (!g_MainWindow)
+                break;
+            if (s_Window)
+                SDL_GetWindowSize(s_Window, &ww, &wh);
+            mx = (int)(ev->tfinger.x * ww);
+            my = (int)(ev->tfinger.y * wh);
+#ifdef _DEBUG
+            if (s_FingerLogged < 6)
+            {
+                s_FingerLogged++;
+                DBG_LOG("touch: type=%d window %dx%d -> (%d,%d)", ev->type, ww, wh, mx, my);
+            }
+#endif
+            PostMessageA(g_MainWindow, WM_SETCURSOR, (WPARAM)g_MainWindow, HTCLIENT);
+            PostMessageA(g_MainWindow, WM_MOUSEMOVE, 0, SdlPackPoint(mx, my));
+#ifdef __SWITCH__
+            s_StickX = mx;              /* после пальца стик продолжает от него */
+            s_StickY = my;
+#endif
+            if (ev->type == SDL_FINGERDOWN)
+                PostMessageA(g_MainWindow, WM_LBUTTONDOWN, 0, SdlPackPoint(mx, my));
+            else if (ev->type == SDL_FINGERUP)
+                PostMessageA(g_MainWindow, WM_LBUTTONUP, 0, SdlPackPoint(mx, my));
+        }
+        break;
+
     case SDL_WINDOWEVENT:
         if (ev->window.event == SDL_WINDOWEVENT_CLOSE && g_MainWindow)
             PostMessageA((HWND)g_MainWindow, WM_CLOSE, 0, 0);
@@ -554,6 +655,146 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
     }
 }
 
+#ifdef __SWITCH__
+/* Стик и кнопки консоли -> те же мышиные сообщения, что шлёт настоящая мышь
+   (SdlDispatchSdlEvent делает то же для SDL-событий): игра не отличает одно от
+   другого — тот же WM_SETCURSOR перед ходом, те же координаты в LPARAM.
+
+   Поток ХОДОВ троттлится, и вся история в этом слове. Каждый WM_MOUSEMOVE
+   гоняет wndproc по UpdateCursorPosition -> RenderDirtyRegions СИНХРОННО, а
+   стик шлёт сообщение на каждый памп, пока держат: замерено 343-650
+   сообщений/с, и на том уровне один проход dirty-region замораживал анимацию
+   сцены под двигающимся курсором (сам цикл оставался здоровым). MOVE_MIN_INTERVAL_MS
+   сводит поток к частоте настоящей мыши: курсор перекрашивается в её ритме, а
+   сцена живёт.
+
+   Скорость стика интегрируется по МИЛЛИСЕКУНДАМ, а не по пампу: памп на
+   консоли что угодно — 50-60/с в покое, до 143924/с на загруженной карте
+   уровней — и «пиксель за памп» прибивал курсор к краю картинки за 37 мс
+   (замер: «дёргано, с рывками, кончаясь у краёв»). Здесь скорость курсора —
+   свойство одного стика, памп её не касается. */
+#define STICK_DEADZONE 3000         /* из 0x7FFF: покоящийся стик дрейфует на сотни */
+#define STICK_SPEED_PX_PER_SEC 640  /* px/секунду при полном отклонении: пересекает картинку за секунду */
+#define MOVE_MIN_INTERVAL_MS 50     /* троттл-интервал: 50 мс — частота отчёта настоящей мыши */
+
+/* Клик кнопкой пада по позиции КУРСОРА (не кнопки — движок щупает именно её).
+   Нажатие несёт WM_MOUSEMOVE перед собой: ход может отстать на один интервал
+   троттла, а клик должен попасть туда, куда целится игрок. */
+static void SdlPostPadClick(UINT downMsg, UINT upMsg, int down)
+{
+    if (!down)
+    {
+        PostMessageA(g_MainWindow, upMsg, 0, SdlPackPoint(s_StickX, s_StickY));
+        return;
+    }
+    PostMessageA(g_MainWindow, WM_SETCURSOR, (WPARAM)g_MainWindow, HTCLIENT);
+    PostMessageA(g_MainWindow, WM_MOUSEMOVE, 0, SdlPackPoint(s_StickX, s_StickY));
+    PostMessageA(g_MainWindow, downMsg, 0, SdlPackPoint(s_StickX, s_StickY));
+}
+
+static void SdlPollSwitchControls(void)
+{
+    static unsigned int s_PrevButtons;
+    static unsigned int s_LastStickPoll;       /* мс предыдущего опроса — стик
+                                                  интегрируется по ВРЕМЕНИ */
+    static long long s_StickAccX, s_StickAccY; /* недобор субпикселя: слабое
+                                                  отклонение должно ползти, а не
+                                                  стоять до выплаты целого пикселя */
+    int sx, sy;
+    unsigned int buttons;
+    int dx, dy, nx, ny;
+    unsigned int now;
+    int dt;
+    long long ax, ay;
+
+    if (!g_MainWindow)
+        return;
+    if (s_StickX < 0)
+    {
+        s_StickX = s_TexW / 2; /* центр — единственная точка, гарантированно внутри */
+        s_StickY = s_TexH / 2;
+    }
+
+    SdlSwitchPollPad(&sx, &sy, &buttons);
+
+    if (sx > -STICK_DEADZONE && sx < STICK_DEADZONE)
+        sx = 0;                                /* курсор, ползущий сам по себе, хуже мёртвой зоны */
+    if (sy > -STICK_DEADZONE && sy < STICK_DEADZONE)
+        sy = 0;
+    now = SDL_GetTicks();
+    dt = (int)(now - s_LastStickPoll);
+    s_LastStickPoll = now;
+    if (dt < 0 || dt > 100)
+        dt = 100;                              /* первый опрос и зависание одинаково: никогда не швырять */
+    ax = s_StickAccX + (long long)sx * STICK_SPEED_PX_PER_SEC * dt;
+    ay = s_StickAccY - (long long)sy * STICK_SPEED_PX_PER_SEC * dt; /* стик вверх, y клиента вниз */
+    dx = (int)(ax / (1000 * 0x7FFF));
+    dy = (int)(ay / (1000 * 0x7FFF));
+    s_StickAccX = ax - (long long)dx * (1000 * 0x7FFF);
+    s_StickAccY = ay - (long long)dy * (1000 * 0x7FFF);
+
+    nx = s_StickX + dx;
+    ny = s_StickY + dy;
+    if (nx < 0)
+        nx = 0;
+    if (ny < 0)
+        ny = 0;
+    if (nx > s_TexW - 1)
+        nx = s_TexW - 1;
+    if (ny > s_TexH - 1)
+        ny = s_TexH - 1;
+    if (nx != s_StickX || ny != s_StickY)
+    {
+        s_StickX = nx;
+        s_StickY = ny;
+        s_MovePending = 1;                     /* уходит ниже, как разрешит троттл */
+    }
+    /* Троттл-ход: позиция СЕЙЧАС, никогда хвост: одного сообщения хватает сколько
+       угодно пропущенных пампов, а флаг добьёт конечную точку в пределах одного
+       интервала после того, как стик отпустили. */
+    if (s_MovePending && SDL_GetTicks() - s_LastMovePost >= MOVE_MIN_INTERVAL_MS)
+    {
+        s_MovePending = 0;
+        s_LastMovePost = SDL_GetTicks();
+        PostMessageA(g_MainWindow, WM_SETCURSOR, (WPARAM)g_MainWindow, HTCLIENT);
+        PostMessageA(g_MainWindow, WM_MOUSEMOVE, 0, SdlPackPoint(s_StickX, s_StickY));
+    }
+
+    /* Каждое ребро — строка в лог: «игра закрылась сама» должно читаться рядом
+       с тем, что делал игрок. A — левый клик, B — правый. X/Y/L/R/'-' привязки
+       пока не имеют; репорт о ребре ограничен, но мёртвая кнопка тихой быть не
+       должна. */
+    if ((buttons & SWITCH_PAD_A) != (s_PrevButtons & SWITCH_PAD_A))
+    {
+        DBG_LOG("SdlSwitchControls: A %s -> left click at (%d,%d)",
+                (buttons & SWITCH_PAD_A) ? "down" : "up", s_StickX, s_StickY);
+        SdlPostPadClick(WM_LBUTTONDOWN, WM_LBUTTONUP, (buttons & SWITCH_PAD_A) != 0);
+    }
+    if ((buttons & SWITCH_PAD_B) != (s_PrevButtons & SWITCH_PAD_B))
+    {
+        DBG_LOG("SdlSwitchControls: B %s -> right click at (%d,%d)",
+                (buttons & SWITCH_PAD_B) ? "down" : "up", s_StickX, s_StickY);
+        SdlPostPadClick(WM_RBUTTONDOWN, WM_RBUTTONUP, (buttons & SWITCH_PAD_B) != 0);
+    }
+    if ((buttons & (SWITCH_PAD_X | SWITCH_PAD_Y)) != (s_PrevButtons & (SWITCH_PAD_X | SWITCH_PAD_Y)))
+        DBG_LOG("SdlSwitchControls: X/Y edge, prev=0x%X now=0x%X (no binding, ignored)",
+                s_PrevButtons & (SWITCH_PAD_X | SWITCH_PAD_Y),
+                buttons & (SWITCH_PAD_X | SWITCH_PAD_Y));
+    if ((buttons & (SWITCH_PAD_L | SWITCH_PAD_R | SWITCH_PAD_MINUS))
+            != (s_PrevButtons & (SWITCH_PAD_L | SWITCH_PAD_R | SWITCH_PAD_MINUS))
+        && s_RLedgesLogged < 8)
+    {
+        ++s_RLedgesLogged;
+        DBG_LOG("SdlSwitchControls: L/R/'-' edge, prev=0x%X now=0x%X (no binding); %d edge line(s) of 8",
+                s_PrevButtons & (SWITCH_PAD_L | SWITCH_PAD_R | SWITCH_PAD_MINUS),
+                buttons & (SWITCH_PAD_L | SWITCH_PAD_R | SWITCH_PAD_MINUS),
+                s_RLedgesLogged);
+    }
+
+    s_PrevButtons = buttons;
+}
+#endif /* __SWITCH__ */
+
 /* Слить SDL в очередь шима: события -> WM_*, затем соник-службы — фильм
    (WinShim_VideoPump, mci_ffmpeg.c) и волна (WinShim_WavePump, win32_shim.c).
    Именно сюда встаёт и главный цикл игры, и модальный цикл Host_PlayAvi. */
@@ -561,6 +802,13 @@ int WinShim_PumpSDLToQueue(void)
 {
     SDL_Event ev;
 
+#ifdef __SWITCH__
+    /* Пад и здесь, а не только из главного цикла: именно в эту pump ходит
+       модальный цикл Host_PlayAvi (ожидание g_VideoPlaying через PeekMessageA),
+       и без опроса здесь стик с кнопками оглохли бы ровно на время фильма —
+       а A это и есть пропуск интро. */
+    SdlPollSwitchControls();
+#endif
     if (s_Usr1Quit)
     {
         s_Usr1Quit = 0;
