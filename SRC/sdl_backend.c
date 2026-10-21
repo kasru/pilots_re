@@ -18,6 +18,10 @@
 #include <SDL.h>
 #include <SDL_syswm.h>
 
+#ifndef _WIN32
+#include <signal.h>    /* SIGUSR1: headless-прогон завершается чисто (scripts/diag_hang.sh) */
+#endif
+
 /* ========================================================================== */
 /* Состояние                                                                  */
 /* ========================================================================== */
@@ -31,6 +35,13 @@ static int s_TexW, s_TexH;
 static bool s_Dirty;                /* теневой кадр ждёт показа */
 static bool s_PresentedOnce;        /* первый показ уже случился */
 static WNDPROC s_OrigWndProc;       /* wndproc SDL до подкласса */
+
+#ifndef _WIN32
+static SDL_Texture *s_VideoTex;     /* кадр фильма (SdlBackendVideoFrame) */
+static int s_VideoTexW, s_VideoTexH;
+static SDL_AudioDeviceID s_WaveDev; /* SDL-устройство за waveOut-шимом (win32_shim.c) */
+static volatile sig_atomic_t s_Usr1Quit;
+#endif
 
 /* ========================================================================== */
 /* Оконная процедура: игровой набор сообщений → Host_MainWndProc, остальное → SDL */
@@ -99,22 +110,67 @@ static LRESULT CALLBACK SdlGameWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
 /* Жизненный цикл SDL и окно                                                  */
 /* ========================================================================== */
 
-/* Инициализировать SDL (видео). Истина — успех. */
+#ifndef _WIN32
+/* SIGUSR1: headless-прогон (контейнер без WM) завершается через обычный
+   выход из главного цикла — обработчик лишь поднимает флаг, а pump превращает
+   его в PostQuitMessage. */
+static void SdlSigUsr1Handler(int sig)
+{
+    (void)sig;
+    s_Usr1Quit = 1;
+}
+#endif
+
+/* Инициализировать SDL (видео; на не-Windows ещё и аудио — за waveOut-шимом).
+   Истина — успех. */
 int SdlBackendStartup(void)
 {
     SDL_SetMainReady();             /* главная функция наша, не SDL_main */
+#ifndef _WIN32
+    s_Usr1Quit = 0;
+    signal(SIGUSR1, SdlSigUsr1Handler);
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0)
+#else
     if (SDL_Init(SDL_INIT_VIDEO) != 0)
+#endif
     {
         DBG_ERR("SDL_Init failed: %s", SDL_GetError());
+#ifndef _WIN32
+        /* Без звука игра всё равно идёт — пробуем только видео. */
+        if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
+        {
+            DBG_ERR("SDL_InitSubSystem(VIDEO) failed: %s", SDL_GetError());
+            return 0;
+        }
+#else
         return 0;
+#endif
     }
     DBG_LOG("SDL video driver: %s", SDL_GetCurrentVideoDriver());
+#ifndef _WIN32
+    DBG_LOG("SDL audio driver: %s", SDL_GetCurrentAudioDriver());
+#endif
     return 1;
 }
 
 /* Уничтожить рендерер, окно и завершить SDL. */
 void SdlBackendShutdown(void)
 {
+#ifndef _WIN32
+    /* Сначала волна: SDL_CloseAudioDevice дожидается коллбэка, дальше можно
+       гасить видео. */
+    if (s_WaveDev)
+    {
+        SDL_CloseAudioDevice(s_WaveDev);
+        s_WaveDev = 0;
+    }
+    if (s_VideoTex)
+    {
+        SDL_DestroyTexture(s_VideoTex);
+        s_VideoTex = NULL;
+        s_VideoTexW = s_VideoTexH = 0;
+    }
+#endif
     if (s_Shadow)
     {
         SDL_free(s_Shadow);
@@ -142,7 +198,9 @@ void SdlBackendShutdown(void)
    его wndproc и создать рендерер/текстуру/теневой кадр. Возвращает HWND окна. */
 HWND SdlBackendCreateWindow(int clientW, int clientH, const char *title, int resizable)
 {
+#ifdef _WIN32
     SDL_SysWMinfo wmi;
+#endif
     HWND hwnd;
     /* Окно создаётся скрытым: игра сама показывает его через ShowWindow
        (Host_ShowWindowOrIntro / Host_PlayAvi), и этот переход hidden→visible как
@@ -160,6 +218,14 @@ HWND SdlBackendCreateWindow(int clientW, int clientH, const char *title, int res
         return NULL;
     }
 
+#ifndef _WIN32
+    /* HWND для игры — просто жетон: сообщения до неё доходят через очередь шима
+       (PostMessageA + DispatchMessageA -> Host_MainWndProc), подкласс не нужен, а
+       сам жетон обязан пережить усечение до слова, которое host.c кладёт в
+       MCI_PLAY_PARMS.dwCallback (там его узнаёт MciResolveCallbackHwnd по низкому
+       слову WinShimMainWindow()). X11-идентификатор для этого не годится. */
+    hwnd = WinShimMainWindow();
+#else
     SDL_VERSION(&wmi.version);
     if (!SDL_GetWindowWMInfo(s_Window, &wmi))
     {
@@ -170,6 +236,7 @@ HWND SdlBackendCreateWindow(int clientW, int clientH, const char *title, int res
 
     /* Подкласс: сохраняем wndproc SDL, свои сообщения перехватываем. */
     s_OrigWndProc = (WNDPROC)SetWindowLongPtrA(hwnd, GWLP_WNDPROC, (LONG_PTR)SdlGameWndProc);
+#endif
 
     s_Renderer = SDL_CreateRenderer(s_Window, -1, SDL_RENDERER_ACCELERATED);
     if (!s_Renderer)
@@ -311,15 +378,21 @@ void SdlBackendFlushPresent(void)
 /* События                                                                    */
 /* ========================================================================== */
 
-/* Выбросить накопленные SDL-события. Игровой ввод идёт Win32-сообщениями через
-   подкласс, поэтому здесь просто дренируем очередь SDL. */
+/* Выбросить накопленные SDL-события. На Windows игровые сообщения идут через
+   подкласс wndproc, поэтому здесь просто дренируем очередь SDL; на остальных
+   платформах очередь шима — единственная, так что сюда встаёт полный насос
+   (перевод SDL-событий в WM_* + фильм + волна). */
 void SdlBackendPumpEvents(void)
 {
+#ifndef _WIN32
+    WinShim_PumpSDLToQueue();
+#else
     SDL_Event ev;
     while (SDL_PollEvent(&ev))
     {
         /* Пусто: WM_CLOSE/WM_DESTROY игра получает через подклассwndproc. */
     }
+#endif
 }
 
 /* Разбор командной строки. Заглушка: разбор (в т.ч. -datapath) добавляется отдельно. */
@@ -327,3 +400,367 @@ void SdlBackendParseCmdLine(const char *cmdLine)
 {
     (void)cmdLine;
 }
+
+/* ========================================================================== */
+/* Не-Windows: SDL-события -> WM_* в очередь шима                             */
+/*                                                                            */
+/* Очередь сообщений здесь одна — та, что держит win32_shim.c: PeekMessageA   */
+/* её дренирует, DispatchMessageA зовёт Host_MainWndProc напрямую. Ни одного  */
+/* реального окна нет, так что весь ввод — это перевод SDL-событий в WM_*.    */
+/* Координаты везде тождественны (окно всегда 640×480 в оконном виде;         */
+/* полноэкранный layout с масштабированием не переносится).                     */
+/* ========================================================================== */
+
+#ifndef _WIN32
+
+/* SDL keysym -> Win32 виртуальный код. Буквы/цифры/знаки препинания совпадают
+   с ASCII, а тот в свою очередь совпадает с VK — остаётся только специальные. */
+static WPARAM SdlKeysymToVk(SDL_Keycode k)
+{
+    switch (k)
+    {
+    case SDLK_RETURN:     return VK_RETURN;
+    case SDLK_ESCAPE:     return VK_ESCAPE;
+    case SDLK_BACKSPACE:  return VK_BACK;
+    case SDLK_TAB:        return VK_TAB;
+    case SDLK_SPACE:      return VK_SPACE;
+    case SDLK_DELETE:     return VK_DELETE;
+    case SDLK_INSERT:     return VK_INSERT;
+    case SDLK_HOME:       return VK_HOME;
+    case SDLK_END:        return VK_END;
+    case SDLK_PAGEUP:     return VK_PRIOR;
+    case SDLK_PAGEDOWN:   return VK_NEXT;
+    case SDLK_RIGHT:      return VK_RIGHT;
+    case SDLK_LEFT:       return VK_LEFT;
+    case SDLK_UP:         return VK_UP;
+    case SDLK_DOWN:       return VK_DOWN;
+    case SDLK_LSHIFT:
+    case SDLK_RSHIFT:     return VK_SHIFT;
+    case SDLK_LCTRL:
+    case SDLK_RCTRL:      return VK_CONTROL;
+    case SDLK_LALT:
+    case SDLK_RALT:       return VK_MENU;
+    case SDLK_CAPSLOCK:   return VK_CAPITAL;
+    case SDLK_PAUSE:      return VK_PAUSE;
+    case SDLK_NUMLOCKCLEAR: return VK_NUMLOCK;
+    case SDLK_SCROLLLOCK: return VK_SCROLL;
+    default: break;
+    }
+    if (k >= SDLK_F1 && k <= SDLK_F12)
+        return (WPARAM)(VK_F1 + (k - SDLK_F1));
+    if (k >= 0 && k < 128)
+        return (WPARAM)k;
+    return 0;
+}
+
+/* Одно SDL-событие -> WM_* в очередь шима (те же сообщения, что на Windows
+   прислал бы реальный ввод в реальное окно). */
+
+/* Просьба выйти: то же, что закрыл окно пользователем. Пока идёт фильм,
+   закрывается AVI-ребёнок, а не главное окно: только так фильм останавливается
+   чисто (WM_CLOSE -> g_AviQuitRequested -> MCI_STOP -> MM_MCINOTIFY -> выход из
+   модального цикла Host_PlayAvi). Один WM_QUIT в этот цикл попадает зря -
+   GetMessageA вернёт 0, а сообщение будет снято и потеряно (так написан
+   оригинал), после чего игра продолжит работу и уже никогда не закроется. */
+static void SdlPostQuitRequest(void)
+{
+    static int s_QuitRequested;
+
+    if (s_QuitRequested)
+        return;
+    s_QuitRequested = 1;
+    if (g_hAviWindow)
+    {
+        DBG_LOG("SdlPostQuitRequest: WM_CLOSE -> AVI child");
+        PostMessageA((HWND)g_hAviWindow, WM_CLOSE, 0, 0);
+    }
+    else if (g_MainWindow)
+    {
+        DBG_LOG("SdlPostQuitRequest: WM_CLOSE -> main window");
+        PostMessageA((HWND)g_MainWindow, WM_CLOSE, 0, 0);
+    }
+    else
+        PostQuitMessage(0);
+}
+
+static void SdlDispatchSdlEvent(const SDL_Event *ev)
+{
+    switch (ev->type)
+    {
+    case SDL_QUIT:
+        /* Крестик окна. Игра закрывается своим путём (WM_CLOSE -> Host_CloseWindow
+           -> WM_DESTROY -> PostQuitMessage); во время фильма закрывается AVI-ребёнок. */
+        SdlPostQuitRequest();
+        break;
+
+    case SDL_TEXTINPUT:
+        /* Каждый байт — WM_CHAR, как его выдал бы TranslateMessage. */
+        {
+            const char *p = ev->text.text;
+            while (*p)
+                PostMessageA((HWND)g_MainWindow, WM_CHAR, (WPARAM)(unsigned char)*p++, 0);
+        }
+        break;
+
+    case SDL_KEYDOWN:
+    case SDL_KEYUP:
+        {
+            WPARAM vk = SdlKeysymToVk(ev->key.keysym.sym);
+            if (!vk)
+                break;
+            PostMessageA((HWND)g_MainWindow,
+                         ev->type == SDL_KEYDOWN ? WM_KEYDOWN : WM_KEYUP,
+                         vk, 0);
+        }
+        break;
+
+    case SDL_MOUSEMOTION:
+        /* WM_SETCURSOR перед каждым движением — так приходит настоящая мышь и
+           так игра знает, что курсор в клиенте. */
+        PostMessageA((HWND)g_MainWindow, WM_SETCURSOR, (WPARAM)g_MainWindow, HTCLIENT);
+        PostMessageA((HWND)g_MainWindow, WM_MOUSEMOVE, 0,
+                     (LPARAM)(((DWORD)(Uint16)ev->motion.y << 16) | (Uint16)ev->motion.x));
+        break;
+
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP:
+        {
+            /* Средняя кнопка — та же правая: у игры их всего две. wParam несёт
+               модификаторы остальных кнопок, но host.c читает из мышиных
+               сообщений только координаты из lParam. */
+            int right = ev->button.button != SDL_BUTTON_LEFT;
+            UINT msg;
+            WPARAM wp = 0;
+
+            if (right)
+                msg = ev->type == SDL_MOUSEBUTTONDOWN ? WM_RBUTTONDOWN : WM_RBUTTONUP;
+            else
+                msg = ev->type == SDL_MOUSEBUTTONDOWN ? WM_LBUTTONDOWN : WM_LBUTTONUP;
+            if (ev->type == SDL_MOUSEBUTTONDOWN)
+                wp = right ? 2 : 1;              /* MK_RBUTTON / MK_LBUTTON */
+            PostMessageA((HWND)g_MainWindow, WM_SETCURSOR, (WPARAM)g_MainWindow, HTCLIENT);
+            PostMessageA((HWND)g_MainWindow, msg, wp,
+                         (LPARAM)(((DWORD)(Uint16)ev->button.y << 16) | (Uint16)ev->button.x));
+        }
+        break;
+
+    case SDL_WINDOWEVENT:
+        if (ev->window.event == SDL_WINDOWEVENT_CLOSE && g_MainWindow)
+            PostMessageA((HWND)g_MainWindow, WM_CLOSE, 0, 0);
+        break;
+
+    default:
+        break;
+    }
+}
+
+/* Слить SDL в очередь шима: события -> WM_*, затем соник-службы — фильм
+   (WinShim_VideoPump, mci_ffmpeg.c) и волна (WinShim_WavePump, win32_shim.c).
+   Именно сюда встаёт и главный цикл игры, и модальный цикл Host_PlayAvi. */
+int WinShim_PumpSDLToQueue(void)
+{
+    SDL_Event ev;
+
+    if (s_Usr1Quit)
+    {
+        s_Usr1Quit = 0;
+        DBG_LOG("WinShim_PumpSDLToQueue: SIGUSR1, quitting");
+        SdlPostQuitRequest();               /* одна просьба на прогон — внутри флаг */
+    }
+    while (SDL_PollEvent(&ev))
+        SdlDispatchSdlEvent(&ev);
+    WinShim_VideoPump();                         /* MM_MCINOTIFY и кадры фильма */
+    WinShim_WavePump();                          /* дозрели ли WAVEHDR'ы */
+    return 0;
+}
+
+/* ========================================================================== */
+/* SDL-устройство волны за waveOut-шимом (win32_shim.c)                       */
+/*                                                                            */
+/* Формат жёстко игровой: 11025 Гц, моно, U8 — wave.c другого не шлёт.        */
+/* Устройство без колбэка: волна идёт в очередь, а дозрели заголовков         */
+/* WinShim_WavePump меряет по SDL_GetQueuedAudioSize.                          */
+/* ========================================================================== */
+
+int SdlWave_Open(void)
+{
+    SDL_AudioSpec want, have;
+
+    if (s_WaveDev)
+        return 1;
+    if (!(SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO))
+    {
+        if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0)
+        {
+            DBG_LOG("SdlWave_Open: SDL_InitSubSystem(AUDIO) failed: %s", SDL_GetError());
+            return 0;
+        }
+    }
+    SDL_zero(want);
+    want.freq = 11025;                           /* формат волны игры: 11025/U8/моно */
+    want.format = AUDIO_U8;
+    want.channels = 1;
+    want.samples = 1024;
+    want.callback = NULL;                        /* очередь, а не колбэк */
+    s_WaveDev = SDL_OpenAudioDevice(NULL, SDL_FALSE, &want, &have, 0);
+    if (!s_WaveDev)
+    {
+        DBG_LOG("SdlWave_Open: SDL_OpenAudioDevice failed: %s", SDL_GetError());
+        return 0;
+    }
+    if (have.freq != want.freq || have.format != want.format || have.channels != want.channels)
+    {
+        DBG_LOG("SdlWave_Open: device gave %d Hz/%d/%d, want %d/%d/%d - closing",
+                have.freq, have.format, have.channels,
+                want.freq, want.format, want.channels);
+        SDL_CloseAudioDevice(s_WaveDev);
+        s_WaveDev = 0;
+        return 0;
+    }
+    SDL_PauseAudioDevice(s_WaveDev, 0);
+    DBG_LOG("SdlWave_Open: %d Hz, %d channels, %d samples/buffer",
+            have.freq, have.channels, have.samples);
+    return 1;
+}
+
+void SdlWave_Close(void)
+{
+    if (s_WaveDev)
+    {
+        SDL_CloseAudioDevice(s_WaveDev);
+        s_WaveDev = 0;
+    }
+}
+
+int SdlWave_Queue(const void *data, unsigned int len)
+{
+    if (!s_WaveDev || !data || !len)
+        return 0;
+    return SDL_QueueAudio(s_WaveDev, data, len) == 0;
+}
+
+void SdlWave_Clear(void)
+{
+    if (s_WaveDev)
+        SDL_ClearQueuedAudio(s_WaveDev);
+}
+
+void SdlWave_Pause(int pause)
+{
+    if (s_WaveDev)
+        SDL_PauseAudioDevice(s_WaveDev, pause ? 1 : 0);
+}
+
+unsigned int SdlWave_Queued(void)
+{
+    return s_WaveDev ? SDL_GetQueuedAudioSize(s_WaveDev) : 0;
+}
+
+/* ========================================================================== */
+/* Кадр фильма (mci_ffmpeg.c) и мелкие хуки для win32_shim.c                  */
+/* ========================================================================== */
+
+/* Показать один кадр MCI-воспроизведения: под игрой (если теневой кадр грязный)
+   и поверх — сам кадр в прямоугольнике окна AVI-ребёнка. Прямоугольник здесь
+   игровой/оконный без пересчёта: без полноэкранного layout они совпадают. */
+void SdlBackendVideoFrame(const void *bgra, int srcw, int srch, int x, int y, int w, int h)
+{
+    SDL_Rect dst;
+
+    if (!s_Renderer || !bgra || srcw <= 0 || srch <= 0)
+        return;
+    if (w <= 0)
+        w = srcw;                                /* MoveWindow(0×0) = натуральный размер */
+    if (h <= 0)
+        h = srch;
+    if (!s_VideoTex || s_VideoTexW != srcw || s_VideoTexH != srch)
+    {
+        if (s_VideoTex)
+            SDL_DestroyTexture(s_VideoTex);
+        s_VideoTex = SDL_CreateTexture(s_Renderer, SDL_PIXELFORMAT_ARGB8888,
+                                       SDL_TEXTUREACCESS_STREAMING, srcw, srch);
+        s_VideoTexW = srcw;
+        s_VideoTexH = srch;
+        if (!s_VideoTex)
+        {
+            DBG_ERR("SdlBackendVideoFrame: SDL_CreateTexture failed: %s", SDL_GetError());
+            return;
+        }
+    }
+    SDL_UpdateTexture(s_VideoTex, NULL, bgra, srcw * 4);
+    if (s_Dirty)
+        SdlBackendFlushPresent();                /* подложка (BMP-фон фильма) под кадром */
+    dst.x = x;
+    dst.y = y;
+    dst.w = w;
+    dst.h = h;
+    SDL_RenderCopy(s_Renderer, s_VideoTex, NULL, &dst);
+    SDL_RenderPresent(s_Renderer);
+}
+
+void SdlBackendShowWindow(int show)
+{
+    if (!s_Window)
+        return;
+    if (show)
+    {
+        SDL_ShowWindow(s_Window);
+        SDL_RaiseWindow(s_Window);
+    }
+    else
+        SDL_HideWindow(s_Window);
+}
+
+int SdlBackendIsMinimized(void)
+{
+    return s_Window && (SDL_GetWindowFlags(s_Window) & SDL_WINDOW_MINIMIZED) != 0;
+}
+
+/* Стили оригинального окна: фиксированное окно с рамкой и заголовком. */
+DWORD SdlBackendGetWinStyle(void)
+{
+    return 0x020A0000u;                          /* WS_OVERLAPPED | WS_VISIBLE | WS_CAPTION | WS_SYSMENU */
+}
+
+void SdlBackendSetCursorVisible(int visible)
+{
+    SDL_ShowCursor(visible ? SDL_ENABLE : SDL_DISABLE);
+}
+
+void SdlBackendGetClientSize(int *w, int *h)
+{
+    int W = 0, H = 0;
+    if (s_Window)
+        SDL_GetWindowSize(s_Window, &W, &H);
+    if (w)
+        *w = W;
+    if (h)
+        *h = H;
+}
+
+/* Окно и игра в одном и том же пикселе: fullscreen-масштабирование не
+   перенесено, до тех пор обе стороны — тождественные преобразования. */
+void SdlBackendClientToGame(int *x, int *y)
+{
+    (void)x;
+    (void)y;
+}
+
+void SdlBackendGameToClient(int *x, int *y)
+{
+    (void)x;
+    (void)y;
+}
+
+/* Счётчик опросов указателя для профиля лупы — профиль тоже приедет отдельно. */
+void SdlBackendNoteFramePoll(void)
+{
+}
+
+/* Индикатор загрузки не перенесён; сейчас байты просто проходят мимо. */
+void SdlBackendLoadBeat(unsigned int bytes)
+{
+    (void)bytes;
+}
+
+#endif /* !_WIN32 */

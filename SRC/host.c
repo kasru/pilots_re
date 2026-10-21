@@ -897,6 +897,7 @@ bool Host_InitVideo(GM_ARENA *arena, GM_GAME_HEADER *header, GM_SETTINGS *settin
                 arenaHigh,
                 (unsigned)(uintptr_t)g_Window.arenaMem,
                 (uintptr_t)g_Window.arenaMem < 0x80000000u ? "ниже" : "ВЫШЕ");
+        (void)arenaHigh;    /* DBG_LOG в release — no-op, а сдвиг старших 32 бит на x86 — UB */
     }
     return g_Window.arenaMem != NULL;
 }
