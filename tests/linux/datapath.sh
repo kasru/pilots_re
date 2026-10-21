@@ -2,11 +2,14 @@
 # -datapath <dir> - where the game looks for its resources. Linux counterpart of
 # tests/windows/datapath.ps1.
 #
-# Without the switch nothing changes: the engine asks for .\PILOTS.EXE and
-# .\movies\... as it always did, resolved against the process CWD. With it,
-# WinMain changes the working directory BEFORE the game opens anything, so every
-# CWD-relative lookup follows at once while main.c still strcpy's the literal
-# ".\PILOTS.EXE" - no game-code change, one place in the port layer.
+# The switch makes WinMain change the working directory BEFORE the game opens
+# anything, so every CWD-relative lookup follows at once: with it the engine
+# builds its data path literally like the original did (".\PILOTS.EXE"), and
+# saves/movies follow g_ExecutablePath into the same directory. Without the
+# switch port-main's own default applies: the rebuilt exe carries no game data
+# of its own, so the data file is the PILOTS.EXE next to it - a copy in the CWD
+# is deliberately ignored. A directory that cannot be taken falls back to that
+# default instead of dying.
 #
 # The Linux-specific half is the shim: SetCurrentDirectoryA lives in
 # win32_shim.c next to GetFullPathNameA, and resolves its argument the same way
@@ -16,6 +19,10 @@
 # The debug log follows the image (/proc/self/exe via GetModuleFileNameA), not
 # the CWD, so every case reads the same file - which is what makes the checks
 # below possible at all.
+#
+# port-main markers: every real file open goes through ShimOpenWin (win32_shim.c)
+# which logs the resolved fullPath and the fd, and the main loop announces itself
+# as "ENTER: GameMainLoop" (DBG_ENTER in host.c).
 #
 #   sh tests/linux/datapath.sh
 # Needs: a built $BUILDDIR/PILOT_RV and SRC/ with the original game data.
@@ -59,8 +66,11 @@ mkdir -p "$RUN" "$DATA" "$EMPTY"     # $EMPTY stays empty on purpose
 ln -sfn "$PWD/SRC/PILOTS.EXE" "$RUN/PILOTS.EXE"
 ln -sfn "$PWD/SRC/PILOTS.EXE" "$DATA/PILOTS.EXE"
 
-resolved() { sed -n "s/.*Game_OpenFile: fullPath='\(.*\)'.*/\1/p" "$LOG" | tail -n1; }
-openfd()   { sed -n 's/.*Game_OpenFile: fd=\(-\{0,1\}[0-9][0-9]*\).*/\1/p' "$LOG" | tail -n1; }
+# Both helpers look at the DATA FILE's own open (PILOTS.EXE), not at the last
+# open in the log: the intro movie opens its INTRO.BMP next to the exe, and
+# that one line would otherwise answer both questions in every case.
+resolved() { sed -n "s/.*fullPath='\([^']*\)'.*/\1/p" "$LOG" | grep -i 'PILOTS\.EXE' | tail -n1; }
+openfd()   { grep -i 'PILOTS\.EXE' "$LOG" | sed -n 's/.*fd=\(-\{0,1\}[0-9][0-9]*\).*/\1/p' | tail -n1; }
 endswith() {
   # The engine always builds Win-style paths and the shim formats fullPath as
   # one too, so /tmp/x comes back as \tmp\x. Normalise the separators before
@@ -69,16 +79,18 @@ endswith() {
 }
 
 # run <workdir> [args...] - leaves $REACHED = 1 when the main loop was reached.
+# REACH_N bounds the wait: the intro plays ~34 s first, a case with no data
+# never gets there at all, so those cases can cap it low (REACH_N=60).
 run() {
   wd=$1; shift
   : > "$LOG"
   ( cd "$wd" && exec "$EXE" "$@" ) >/tmp/pilots_dp.out 2>&1 &
   P=$!
   REACHED=0
-  n=150                                   # ~30 s: the menu is a few seconds in
+  n=${REACH_N:-400}
   while [ "$n" -gt 0 ]; do
     kill -0 "$P" 2>/dev/null || break
-    have "auxMainLoop: startResourceId" && { REACHED=1; break; }
+    have "ENTER: GameMainLoop" && { REACHED=1; break; }
     sleep 0.2; n=$((n - 1))
   done
   sleep 0.5
@@ -86,11 +98,15 @@ run() {
   wait "$P" 2>/dev/null
 }
 
-echo "== 1. default: run from the data dir, no switch"
+echo "== 1. default, no switch: the data file comes from NEXT TO THE EXE"
+# port-main keeps the original engine's lookup for saves/movies (they follow
+# g_ExecutablePath), but the rebuilt exe itself carries no game data, so
+# without the switch the data file is the PILOTS.EXE beside it - a copy of the
+# data in the CWD is deliberately NOT what gets opened.
 run "$RUN"
 [ -n "$(resolved)" ]; check $? "data file path was resolved"
-endswith "$(resolved)" "/pilots rundir/PILOTS.EXE"
-check $? "resolved against the CWD ($(resolved))"
+endswith "$(resolved)" "/$BUILDDIR/PILOTS.EXE"
+check $? "resolved next to the exe, not against the CWD ($(resolved))"
 [ "$(openfd)" -gt 0 ] 2>/dev/null; check $? "data file opened (fd=$(openfd))"
 [ "$REACHED" = 1 ]; check $? "reached the main loop"
 
@@ -104,19 +120,20 @@ check $? "resolved into -datapath ($(resolved))"
 [ "$(openfd)" -gt 0 ] 2>/dev/null; check $? "data file opened (fd=$(openfd))"
 [ "$REACHED" = 1 ]; check $? "reached the main loop"
 
-echo "== 3. no switch, started from an empty dir (the case -datapath exists for)"
+echo "== 3. no switch, empty dir: the exe-relative default still works"
 run "$EMPTY"
-endswith "$(resolved)" "/pilots empty dir/PILOTS.EXE"
-check $? "resolved against the empty CWD ($(resolved))"
-[ "$(openfd)" -le 0 ] 2>/dev/null; check $? "data file refused (fd=$(openfd))"
-[ "$REACHED" = 0 ]; check $? "did NOT reach the main loop"
+endswith "$(resolved)" "/$BUILDDIR/PILOTS.EXE"
+check $? "resolved next to the exe anyway ($(resolved))"
+[ "$(openfd)" -gt 0 ] 2>/dev/null; check $? "data file opened (fd=$(openfd))"
+[ "$REACHED" = 1 ]; check $? "reached the main loop"
 
-echo "== 4. -datapath pointing nowhere falls back instead of dying"
+echo "== 4. -datapath pointing nowhere falls back to the default instead of dying"
 run "$EMPTY" -datapath "$TMP/pilots no such dir"
 have "cannot use it, keeping the current directory"
 check $? "reports that it could not take the directory"
-endswith "$(resolved)" "/pilots empty dir/PILOTS.EXE"
-check $? "fell back to the CWD ($(resolved))"
+endswith "$(resolved)" "/$BUILDDIR/PILOTS.EXE"
+check $? "fell back to the exe-relative default ($(resolved))"
+[ "$REACHED" = 1 ]; check $? "reached the main loop"
 
 echo "== 5. -fullscreen still parses after the tokenizer rewrite"
 run "$RUN" -fullscreen

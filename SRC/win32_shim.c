@@ -40,7 +40,7 @@
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
 
-#include <unistd.h>
+#include <unistd.h>  /* getcwd() for the open-path log line below */
 #include <fcntl.h>
 #include <stdarg.h>
 #include <sys/stat.h>
@@ -175,13 +175,42 @@ static int ShimOpenWin(const char *win_path, int of, int mode)
   char up[MAX_PATH * 2];
   char ci[MAX_PATH * 2];
   struct stat st;
+  int fd;
 
   ShimPathToUnix(win_path, up, sizeof up);
   if ( stat(up, &st) == 0 )
-    return open(up, of, mode);
-  if ( ShimResolveUnixCI(win_path, ci, sizeof ci) && stat(ci, &st) == 0 )
-    return open(ci, of, mode);
-  return open(up, of, mode);
+    fd = open(up, of, mode);
+  else if ( ShimResolveUnixCI(win_path, ci, sizeof ci) && stat(ci, &st) == 0 )
+    fd = open(ci, of, mode);
+  else
+    fd = open(up, of, mode);
+  /* Где лежит реально открытый файл — та же диагностика, что v0.1 вела в
+     Game_OpenFile: именно по этой строке tests/linux/datapath.sh видит, что
+     файл данных ушёл за -datapath, а не остался в exe-каталоге. Относительный
+     запрос (".\PILOTS.EXE" после -datapath) для лога дополняется до CWD —
+     но не через realpath: тот развернул бы симлинк и показал путь, которым
+     движок НЕ спрашивал файл (в логе обязан стоять его собственный запрос). */
+#ifdef _DEBUG
+  {
+    char abs[MAX_PATH * 2];
+    char cwd[MAX_PATH];
+
+    WinShim_ResolvePath(win_path, abs, sizeof abs);
+    if (abs[0] != '/' && getcwd(cwd, sizeof cwd) != NULL)
+    {
+      const char *rel = (abs[0] == '.' && abs[1] == '/') ? abs + 2 : abs;
+      size_t cl = strlen(cwd);
+      if (cl + 1 + strlen(rel) + 1 <= sizeof abs)
+      {
+        cwd[cl] = '/';
+        strcpy(cwd + cl + 1, rel);
+        strcpy(abs, cwd);
+      }
+    }
+    DBG_LOG("ShimOpenWin: open '%s' -> fullPath='%s' fd=%d", win_path, abs, fd);
+  }
+#endif
+  return fd;
 }
 
 /* in-place '/' -> '\' (GetModuleFileNameA result for debug_log path handling) */

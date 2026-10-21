@@ -130,7 +130,7 @@ check $? "picture ${EPW}x${EPH} at (${EPX},${EPY}) (aspect kept, centred)"
 grep -F "SdlUpdateLayout: " "$LOG" | tail -n 3 | sed 's/^/   /'
 
 echo "== 3. click the centre of the movie"
-wait_log "PlayIntroVideo: g_MCIDeviceID" 60
+wait_log "PlayAvi: MCI device" 60
 check $? "movie opened"
 sleep 3                                     # let a frame with content be on screen
 command -v ffmpeg >/dev/null 2>&1 && \
@@ -150,7 +150,7 @@ CH=$(echo "$G" | sed 's/.* \([0-9]*\)x\([0-9]*\)$/\2/')
 CX=$((CW / 2)); CY=$((CH / 2))
 echo "   clicking $CX,$CY of ${CW}x${CH} (the picture is centred, so this is game 320,240)"
 $X fake-click "$ID" "$CX" "$CY"
-wait_log "PlayIntroVideo: wait loop ended" 15
+wait_log "PlayAvi: end " 15
 check $? "movie stopped by the click"
 have "-> game (320,240)"; check $? "click mapped to game (320,240)"
 

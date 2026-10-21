@@ -1833,7 +1833,17 @@ void SdlBackendUpdatePalette(const uint8_t *rgb, int count);
 void SdlBackendClearBlack(void);
 void SdlBackendDrawGrid(int colorref);
 void SdlBackendPumpEvents(void);
-void SdlBackendParseCmdLine(const char *cmdLine);
+void SdlBackendParseCmdLine(const char *cmdLine); /* -fullscreen, -datapath; на Switch ещё и фоллбэк пути */
+int SdlBackendDataPathGiven(void); /* был -datapath (или применился Switch-фоллбэк): путь игры от CWD */
+
+/* Безрамочный fullscreen (фича порта): -fullscreen / Alt+Enter, '-' — растянуть
+   картинку во весь экран. Обычное окно — тождественные преобразования. */
+void SdlBackendClientToGame(int *x, int *y); /* px окна -> px игры */
+void SdlBackendGameToClient(int *x, int *y); /* px игры -> px окна */
+void SdlBackendSetFullscreen(int on);
+int SdlBackendToggleFullscreen(void);
+int SdlBackendToggleStretch(void);
+void SdlBackendSetNativeMovie(int on); /* на время MCI-фильма держать натуральный размер */
 
 /* ========================================================================== */
 /* Nintendo Switch (switch_libnx.c). Всё под __SWITCH__: на других платформах  */

@@ -307,8 +307,13 @@ LRESULT CALLBACK Host_AviWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
         {
             if (!g_AviWindowPlaced)
             {
+                int avX = g_AviX;
+                int avY = g_AviY;
                 g_AviWindowPlaced = true;
-                MoveWindow(g_hAviWindow, g_AviX, g_AviY,
+                /* Px игры -> px окна: тождественность в обычном окне, в
+                   fullscreen MCI-ребёнок должен сесть в rect картинки. */
+                SdlBackendGameToClient(&avX, &avY);
+                MoveWindow(g_hAviWindow, avX, avY,
                            g_AviWidth ? g_AviWidth : HOST_AVI_DEFAULT_WIDTH,
                            g_AviHeight ? g_AviHeight : HOST_AVI_DEFAULT_HEIGHT, TRUE);
             }
@@ -500,7 +505,14 @@ bool Host_AviOpen(void)
     statusParms.dwItem = MCI_DGV_STATUS_HWND;
     Host_MciSend(MCI_STATUS, MCI_STATUS_ITEM, (DWORD_PTR)&statusParms);
     g_hAviWindow = (HWND)statusParms.dwReturn;
-    MoveWindow(g_hAviWindow, g_AviX, g_AviY, 0, 0, FALSE);
+    {
+        /* Нулевой размер (скрыто до первого WM_PAINT), но координаты уже в
+           px окна — как и в Host_AviWndProc. */
+        int avX = g_AviX;
+        int avY = g_AviY;
+        SdlBackendGameToClient(&avX, &avY);
+        MoveWindow(g_hAviWindow, avX, avY, 0, 0, FALSE);
+    }
     /* В оригинале возвращается младший байт результата Host_LoadAviBackdrop;
        вызывающий результат не проверяет и смотрит на g_AviDeviceId. */
     Host_LoadAviBackdrop(bmpPath);
@@ -563,6 +575,7 @@ bool Host_PlayAvi(const char *name, int x, int y, int width, int height)
         DBG_LOG("PlayAvi: open failed (no device)");
         return false;
     }
+    DBG_LOG("PlayAvi: MCI device %d, avi window %p", (int)g_AviDeviceId, g_hAviWindow);
 
     if (Host_AviPlay())
     {
@@ -578,12 +591,18 @@ bool Host_PlayAvi(const char *name, int x, int y, int width, int height)
                 g_AviPaletteReady = true;
         }
         g_AviPlaying = true;
+        /* Фича порта: mciavi32 рисует ребёнка 1:1 и не масштабируется вслед за
+           картинкой, поэтому в fullscreen картинка падает до натурального
+           размера (только центрирующее смещение) — фон и ребёнок остаются
+           выровненными. */
+        SdlBackendSetNativeMovie(1);
         do
         {
             GetMessageA(&msg, NULL, 0, 0);
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
         } while (g_AviPlaying);
+        SdlBackendSetNativeMovie(0);
     }
 
     Host_MciSendNoParams(MCI_CLOSE, 0);
@@ -1234,6 +1253,7 @@ int Host_CloseSave(void)
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd)
 {
     char exePath[MAX_PATH];
+    char modulePath[MAX_PATH];
     MSG message = { 0 };
     DWORD now;
     bool cursorInWindow;
@@ -1246,16 +1266,32 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     DbgInstallExceptionHandler();
     DBG_ENTER("WinMain");
 
-    GetModuleFileNameA(hInstance, exePath, sizeof(exePath));
-    /* Не в оригинале: пересобранный EXE без данных игры читает их из PILOTS.EXE. */
-    Host_ResolveGameFilePath(exePath);
-
     if (!SdlBackendStartup())
     {
         Host_ErrorBox("SDL_Init failed");
         return 1;
     }
+    /* Разбор командной строки ДО того, как движок открыл хоть один файл —
+       именно это и делает -datapath работающим. */
     SdlBackendParseCmdLine(lpCmdLine);
+
+    GetModuleFileNameA(hInstance, exePath, sizeof(exePath));
+    strcpy(modulePath, exePath);        /* справка намеренно НЕ идёт за -datapath */
+    if (SdlBackendDataPathGiven())
+    {
+        /* -datapath (фича порта): движок живёт в выбранном каталоге — путь
+           данных строится от текущего каталога, буквально как в оригинале
+           («.\PILOTS.EXE»); имена сохранений и поиск AVI выводятся из
+           g_ExecutablePath, так что уходят за ключом тоже. Разрешение пути —
+           за шимом (регистронезависимый обход, как у всех открытий). */
+        strcpy(exePath, ".\\PILOTS.EXE");
+    }
+    else
+    {
+        /* Без ключа: пересобранный EXE без данных игры читает их из PILOTS.EXE
+           рядом с собой (в оригинале данные дописаны в хвост собственного exe). */
+        Host_ResolveGameFilePath(exePath);
+    }
 
     g_hAppInstance = hInstance;
     g_Window.nShowCmd = nShowCmd;
@@ -1295,7 +1331,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 0;
     }
     DBG_LOG("GmGame_Initialize: ok");
-    Host_SetHelpPath(exePath);
+    Host_SetHelpPath(modulePath);       /* .hlp рядом с exe, а не за -datapath (как в v0.1) */
 
     DBG_ENTER("GameMainLoop");
     for (;;)

@@ -36,6 +36,45 @@ static bool s_Dirty;                /* теневой кадр ждёт пока
 static bool s_PresentedOnce;        /* первый показ уже случился */
 static WNDPROC s_OrigWndProc;       /* wndproc SDL до подкласса */
 
+/* ---- безрамочный fullscreen (фича порта: -fullscreen / Alt+Enter) ----
+   В обычном (оконном) режиме, как в оригинале, картинка И есть окно: каждое
+   преобразование ниже — тождественное, игра ничего не замечает. В fullscreen
+   окно покрывает экран, и игровая картинка масштабируется под него с
+   сохранением пропорций и центрируется: s_PicX/Y/W/H — где она лежит в
+   клиентских px окна, а мышиные координаты проходят через этот rect, поэтому
+   игра продолжает жить в своём пространстве 640×480 — поле вокруг картинки
+   ведёт себя ровно как «мышь ушла из окна» в оригинале (сообщение не шлётся).
+   Режим native-фильма: на Windows кино играет в настоящем дочернем окне
+   mciavi32, которое рисует 1:1 и не умеет масштабироваться, поэтому на время
+   фильма картинка держит натуральный размер и только центрируется — фон и
+   ребёнок остаются выровненными. */
+static int s_Fullscreen;            /* запрошен SDL_WINDOW_FULLSCREEN_DESKTOP */
+static int s_NativeMovie;           /* держать картинку натурального размера (MCI-ребёнок Windows) */
+static int s_StretchPic;            /* '-' (фича порта): во весь экран, пропорции не сохраняются */
+static int s_DataPathGiven;         /* -datapath (или Switch-фоллбэк) сменил CWD: путь игры
+                                       строится от текущего каталога, как в оригинале */
+static int s_PicX;                  /* начало картинки, клиентские px окна */
+static int s_PicY;
+static int s_PicW;                  /* размер картинки, клиентские px окна */
+static int s_PicH;
+static int s_GameClientW;           /* закреплённый логический клиент игры: */
+static int s_GameClientH;           /*   g_Window.clientWidth/Height обнуляются собственным WM_SIZE
+                                       игры при сворачивании (SIZE_MINIMIZED -> 0,0) и не могут
+                                       служить источником для восстановления */
+
+static void SdlUpdateLayout(void);  /* куда ложится картинка */
+static void SdlApplyFullscreen(void); /* SDL-сторона s_Fullscreen (no-op до окна) */
+static int SdlPictureTransformed(void);
+static int SdlMapMousePoint(int *x, int *y); /* px окна -> px игры; 0 = вне картинки */
+static int SdlFloorDiv(int a, int b);
+
+/* Точка -> LPARAM мышиного сообщения (x в младшем слове, y в старшем). Общий
+   путь: wndproc на Windows и очередь шима на остальных платформах. */
+static LPARAM SdlPackPoint(int x, int y)
+{
+    return (LPARAM)(((DWORD)(Uint16)y << 16) | (Uint16)x);
+}
+
 #ifndef _WIN32
 static SDL_Texture *s_VideoTex;     /* кадр фильма (SdlBackendVideoFrame) */
 static int s_VideoTexW, s_VideoTexH;
@@ -58,7 +97,12 @@ static int s_RLedgesLogged;         /* L/R/'-' без привязки: репо
 
 /* ========================================================================== */
 /* Оконная процедура: игровой набор сообщений → Host_MainWndProc, остальное → SDL */
+/*                                                                            */
+/* Только Windows: подкласс реального окна — это единственный путь, которым    */
+/* игра получает сообщения на той платформе. На остальных сообщения падают в  */
+/* очередь шима (SdlDispatchSdlEvent делает это из SDL-событий).               */
 /* ========================================================================== */
+#ifdef _WIN32
 
 /* Сообщения, которые движок обрабатывает сам (Host_MainWndProc / Host_AviWndProc).
    MM_WOM_DONE и MM_MCINOTIFY — это уведомления winmm/MCI, обязательны. */
@@ -103,21 +147,101 @@ static LRESULT CALLBACK SdlGameWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         return 0;
     }
 
+    /* '-' (фича порта): картинка во весь экран вместо сохранения пропорций.
+       Проглатывается: у игры нет привязки к этой клавише, переключение — дело
+       порта. Alt+Enter обрабатывается в WM_SYSKEYDOWN ниже, так же. */
+    if (msg == WM_KEYDOWN && (wParam == VK_OEM_MINUS || wParam == VK_SUBTRACT))
+    {
+        SdlBackendToggleStretch();
+        return 0;
+    }
+
+    /* Alt+Enter: переключатель безрамочного fullscreen (фича порта). */
+    if (msg == WM_SYSKEYDOWN && wParam == VK_RETURN)
+    {
+        SdlBackendToggleFullscreen();
+        return 0;                              /* проглочено: игра не должна увидеть Enter */
+    }
+    if (msg == WM_SYSKEYDOWN || msg == WM_SYSCHAR)
+    {
+        if (msg == WM_SYSCHAR && wParam == 13)
+            return 0;                          /* TranslateMessage достраивает это из Alt+Enter */
+        return CallWindowProcA(s_OrigWndProc, hWnd, msg, wParam, lParam);
+    }
+
+    /* Мышиные сообщения: px окна -> px игры (тождественность в обычном окне).
+       Точка вне картинки — как будто мышь ушла из окна: сообщение не шлётся. */
+    if (msg == WM_MOUSEMOVE || msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP
+        || msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP)
+    {
+        int cx = (int)(short)LOWORD(lParam);
+        int cy = (int)(short)HIWORD(lParam);
+        int mx = cx;
+        int my = cy;
+        if (!SdlMapMousePoint(&mx, &my))
+            return 0;                           /* поле вокруг картинки: мышь «ушла» */
+#ifdef _DEBUG
+        if ((msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN) && (mx != cx || my != cy))
+            DBG_LOG("SdlGameWndProc: 0x%X client (%d,%d) -> game (%d,%d)",
+                    msg, cx, cy, mx, my);       /* интересно, только пока картинка трансформирована */
+#endif
+        return Host_MainWndProc(hWnd, msg, wParam, SdlPackPoint(mx, my));
+    }
+
     /* Размер и мин/макс рамки: сначала игра (обновляет clientWidth/Height,
-       ограничивает рамку), затем SDL, чтобы его bookkeeping размера совпал. */
-    if (msg == WM_SIZE || msg == WM_GETMINMAXINFO)
+       ограничивает рамку), затем SDL, чтобы его bookkeeping размера совпал.
+       В fullscreen игровой размер пинить нечем: оконный размер — экранной, а
+       клиентские поля игры обязаны остаться логическими 640×480 (иначе они
+       станут clip-границей за фиксированным backbuffer'ом). */
+    if (msg == WM_GETMINMAXINFO && s_Fullscreen)
+        return CallWindowProcA(s_OrigWndProc, hWnd, msg, wParam, lParam);
+
+    if (msg == WM_SIZE)
+    {
+        if (s_Fullscreen)
+            Host_MainWndProc(hWnd, msg, wParam, SdlPackPoint(s_GameClientW, s_GameClientH));
+        else
+            Host_MainWndProc(hWnd, msg, wParam, lParam);
+        SdlUpdateLayout();                      /* окно теперь fullscreen-размера */
+        return CallWindowProcA(s_OrigWndProc, hWnd, msg, wParam, lParam);
+    }
+
+    if (msg == WM_GETMINMAXINFO)
     {
         Host_MainWndProc(hWnd, msg, wParam, lParam);
         return CallWindowProcA(s_OrigWndProc, hWnd, msg, wParam, lParam);
     }
 
+    if (msg == WM_WINDOWPOSCHANGED)
+    {
+        /* Игра первой — это её repaint-путь, WM_SIZE/WM_MOVE переотправляются
+           из него же. Затем SDL: для него это ЕДИНСТВЕННОЕ сообщение, из
+           которого SDL 2.30 узнаёт новый размер окна (его обработчик WM_SIZE
+           шлёт только RESTORED/MINIMIZED/MAXIMIZED, а resize'бэкфера
+           IDXGISwapChain_ResizeBuffers рождается именно из WM_WINDOWPOSCHANGED). */
+        LRESULT gameResult = Host_MainWndProc(hWnd, msg, wParam, lParam);
+        CallWindowProcA(s_OrigWndProc, hWnd, msg, wParam, lParam);
+        return gameResult;
+    }
+
+    if (msg == WM_CHAR && (unsigned int)wParam > 255)
+    {
+        /* Окна SDL — Unicode; оригинальное ANSI-окно отдавало байты cp1251 в wParam. */
+        WCHAR wch = (WCHAR)wParam;
+        char ansi = '?';
+        WideCharToMultiByte(CP_ACP, 0, &wch, 1, &ansi, 1, 0, 0);
+        wParam = (WPARAM)(unsigned char)ansi;
+    }
+
     if (SdlIsGameMessage(msg))
         return Host_MainWndProc(hWnd, msg, wParam, lParam);
 
-    /* WM_WINDOWPOSCHANGED и всё прочее отдаём SDL: тот внутри вызовет
-       DefWindowProc, который пришлёт WM_SIZE назад в этот же подкласс. */
+    /* Всё прочее отдаём SDL: тот внутри вызовет DefWindowProc, который
+       пришлёт WM_SIZE назад в этот же подкласс. */
     return CallWindowProcA(s_OrigWndProc, hWnd, msg, wParam, lParam);
 }
+
+#endif /* _WIN32 */
 
 /* ========================================================================== */
 /* Жизненный цикл SDL и окно                                                  */
@@ -293,6 +417,13 @@ HWND SdlBackendCreateWindow(int clientW, int clientH, const char *title, int res
 
     DBG_LOG("SdlBackendCreateWindow: client=%dx%d resizable=%d hwnd=%p",
             clientW, clientH, resizable, (void *)hwnd);
+
+    /* Закрепить логический клиент игры (см. комментарий у s_GameClientW) и,
+       если -fullscreen уже разобран, применить его теперь — окно есть. */
+    s_GameClientW = clientW;
+    s_GameClientH = clientH;
+    SdlUpdateLayout();                           /* обычное окно: записать тождественный rect */
+    SdlApplyFullscreen();                        /* no-op без -fullscreen */
     return hwnd;
 }
 
@@ -389,15 +520,23 @@ void SdlBackendPresentRect(const void *bits, int bmpHeight, int stride, int x, i
 }
 
 /* Показать теневой кадр, если он грязный (иначе no-op). Один RenderPresent
-   на кадр; Host_Flush после уже показанного кадра ничего не делает. */
+   на кадр; Host_Flush после уже показанного кадра ничего не делает. Кадр
+   кладётся в rect картинки: в обычном окне это всё окно (как в оригинале),
+   в fullscreen — letterboxed-пятно, масштаб рендерером. */
 void SdlBackendFlushPresent(void)
 {
+    SDL_Rect dst;
+
     if (!s_Texture || !s_Renderer || !s_Shadow || !s_Dirty)
         return;
     SDL_UpdateTexture(s_Texture, NULL, s_Shadow, s_TexW * (int)sizeof(uint32_t));
     SDL_SetRenderDrawColor(s_Renderer, 0, 0, 0, 255);
     SDL_RenderClear(s_Renderer);
-    SDL_RenderCopy(s_Renderer, s_Texture, NULL, NULL);
+    dst.x = s_PicX;
+    dst.y = s_PicY;
+    dst.w = s_PicW > 0 ? s_PicW : s_TexW;
+    dst.h = s_PicH > 0 ? s_PicH : s_TexH;
+    SDL_RenderCopy(s_Renderer, s_Texture, NULL, &dst);
     SDL_RenderPresent(s_Renderer);
     s_Dirty = false;
     if (!s_PresentedOnce)
@@ -446,17 +585,425 @@ static void SdlSwitchDefaultDataPath(void)
     if (GetFileAttributesA(probe) == (DWORD)-1)
         return;
     if (SetCurrentDirectoryA("sdmc:/switch/pilots"))
+    {
+        s_DataPathGiven = 1;              /* путь игры от CWD, как после -datapath */
         DBG_LOG("SdlBackendParseCmdLine: no -datapath on the Switch, using sdmc:/switch/pilots");
+    }
 }
 #endif
 
-/* Разбор командной строки. Пока здесь только фоллбэк пути данных на консоли;
-   остальной разбор (в т.ч. -datapath) добавляется отдельно. */
+/* Следующий токен командной строки. Токен в кавычках может содержать пробелы,
+   и кавычки в него не входят. Возвращает 0, когда строка исчерпана, и 1,
+   когда токен прочитан — *len может быть 0 для пустого "" (поэтому вызывающий
+   не должен считать 0 признаком «ничего не найдено»). */
+static int SdlNextToken(const char **pp, const char **ptok, int *len)
+{
+    const char *p = *pp;
+    const char *tok;
+
+    while (*p == ' ' || *p == '\t')
+        ++p;
+    if (!*p)
+        return 0;
+    if (*p == '"')
+    {
+        ++p;
+        tok = p;
+        while (*p && *p != '"')
+            ++p;
+        *len = (int)(p - tok);
+        if (*p == '"')
+            ++p;
+    }
+    else
+    {
+        tok = p;
+        while (*p && *p != ' ' && *p != '\t')
+            ++p;
+        *len = (int)(p - tok);
+    }
+    *ptok = tok;
+    *pp = p;
+    return 1;
+}
+
+/* Весь токен — «-name» (или «/name»), без учёта регистра, и ничего больше. */
+static int SdlArgIs(const char *tok, int len, const char *name)
+{
+    int i;
+
+    for (i = 0; name[i]; ++i)
+    {
+        char a = (i + 1 < len) ? tok[i + 1] : 0;   /* +1 пропускает ведущий - или / */
+        if (a >= 'A' && a <= 'Z')
+            a += 32;
+        if (a != name[i])
+            return 0;
+    }
+    return len == i + 1;
+}
+
+/* -datapath <каталог> (фича порта): сменить рабочий каталог процесса. Всё, что
+   движок ищет, — относительно CWD (.\PILOTS.EXE, .\movies\..., сохранения), так
+   что один SetCurrentDirectoryA уводит за ключом всё разом, и код игры ничего
+   не узнаёт об этом. Без ключа не трогается ничего — как в оригинале. Два
+   файла намеренно следуют exe, а не каталогу: debug-лог и .hlp — оба
+   выводятся из GetModuleFileNameA. SetCurrentDirectoryA на Windows —
+   настоящий kernel32, на остальных платформах — обёртка над chdir из
+   win32_shim.c (там же регистронезависимый обход пути). */
+static void SdlUseDataPath(const char *path, int len)
+{
+    char dir[MAX_PATH];
+
+    if (len >= (int)sizeof(dir))
+        len = (int)sizeof(dir) - 1;
+    memcpy(dir, path, len);
+    dir[len] = '\0';
+    if (!SetCurrentDirectoryA(dir))
+        DBG_LOG("SdlBackendParseCmdLine: -datapath '%s': cannot use it, keeping the current directory", dir);
+    else
+    {
+        s_DataPathGiven = 1;
+        DBG_LOG("SdlBackendParseCmdLine: -datapath '%s': game resources are looked up here", dir);
+    }
+}
+
+/* Был ли ключ -datapath (или применился ли Switch-фоллбэк): WinMain по этому
+   признаку строит путь игры от текущего каталога (как оригинал), а не от
+   каталога своего exe. */
+int SdlBackendDataPathGiven(void)
+{
+    return s_DataPathGiven;
+}
+
+/* Разбор командной строки: -fullscreen и -datapath <каталог>. Зовётся из
+   WinMain (host.c) ДО того, как движок открыл хоть один файл — именно это
+   и делает -datapath работающим. На консоли командной строки нет вовсе,
+   поэтому там просто фоллбэк пути данных. */
 void SdlBackendParseCmdLine(const char *cmdLine)
 {
-    (void)cmdLine;
+    const char *p = cmdLine;
+    const char *tok;
+    int len;
+    int found = 0;
+    int dataPathGiven = 0;
+
+    if (p)
+    {
+        while (SdlNextToken(&p, &tok, &len))
+        {
+            if (len <= 1 || (tok[0] != '-' && tok[0] != '/'))
+                continue;
+            if (SdlArgIs(tok, len, "fullscreen"))
+                found = 1;
+            else if (SdlArgIs(tok, len, "datapath"))
+            {
+                const char *val;
+                int vlen;
+
+                if (SdlNextToken(&p, &val, &vlen) && vlen > 0)
+                {
+                    dataPathGiven = 1;
+                    SdlUseDataPath(val, vlen);
+                }
+                else
+                    DBG_LOG("SdlBackendParseCmdLine: -datapath needs a directory, ignored");
+            }
+        }
+    }
 #ifdef __SWITCH__
-    SdlSwitchDefaultDataPath();
+    if (!dataPathGiven)
+        SdlSwitchDefaultDataPath();
+#else
+    (void)dataPathGiven;
+#endif
+    if (found)
+    {
+        DBG_LOG("SdlBackendParseCmdLine: -fullscreen -> borderless desktop fullscreen, Alt+Enter toggles");
+        SdlBackendSetFullscreen(1);               /* окна ещё нет — запишется, применится в CreateWindow */
+    }
+}
+
+/* ========================================================================== */
+/* Раскладка картинки: обычное окно (тождественность, как в оригинале) и      */
+/* fullscreen (letterbox с сохранением пропорций, '-' — растянуть во весь)    */
+/* ========================================================================== */
+
+#define SDL_FS_MAX_PIN 16384                      /* замена пина максимального размера окна в fullscreen */
+
+/* Деление со знаком вниз: точка слева/выше картинки обязана дать отрицательную
+   игровую координату, а не 0 — главный цикл сравнивает её с клиентским rect. */
+static int SdlFloorDiv(int a, int b)
+{
+    int q = a / b;
+    if ((a % b) != 0 && (a < 0) != (b < 0))
+        --q;
+    return q;
+}
+
+static int SdlPictureTransformed(void)
+{
+    return s_PicW > 0 && s_PicH > 0
+        && (s_PicX != 0 || s_PicY != 0 || s_PicW != s_GameClientW || s_PicH != s_GameClientH);
+}
+
+/* Куда ложится картинка. Обычное окно — это и есть клиент (тождественность,
+   оригинальное поведение). Fullscreen — пятно окна с сохранением пропорций,
+   центрированное; пока играет кино, натуральный размер с центрирующим
+   смещением (MCI-ребёнок Windows рисует 1:1 и не следует масштабу). */
+static void SdlUpdateLayout(void)
+{
+    int w = s_GameClientW;
+    int h = s_GameClientH;
+    int ww, wh;
+    int picW, picH;
+    int newX, newY;
+    int changed;
+
+    if (w <= 0 || h <= 0)
+        return;
+    if (!s_Fullscreen || !s_Window)
+    {
+        /* Обычное окно: картинка И есть клиент. Выход из fullscreen попадает
+           сюда, поэтому путь обязан заметить изменение, а не только записать
+           тождественный rect. */
+        changed = (s_PicX != 0 || s_PicY != 0 || s_PicW != w || s_PicH != h);
+        s_PicX = 0;
+        s_PicY = 0;
+        s_PicW = w;
+        s_PicH = h;
+        if (changed && s_Texture && s_Renderer)
+            SdlBackendFlushPresent();             /* новый rect рисуется только следующим кадром */
+        return;
+    }
+    /* Клиентский rect, а не SDL_GetWindowSize: на Windows SDL узнаёт новый
+       размер только из WM_WINDOWPOSCHANGED, который приходит ПОСЛЕ WM_SIZE —
+       пересчёт происходит внутри обработчика WM_SIZE, где у SDL ещё старый
+       размер (а при старте окно ещё скрыто, когда применяется -fullscreen, и
+       сообщения о размере не было вовсе). */
+    ww = wh = 0;
+#ifdef _WIN32
+    {
+        RECT rc;
+        if (g_MainWindow && GetClientRect((HWND)g_MainWindow, &rc))
+        {
+            ww = rc.right;
+            wh = rc.bottom;
+        }
+    }
+#endif
+    if (ww <= 0 || wh <= 0)
+        SDL_GetWindowSize(s_Window, &ww, &wh);
+    if (ww <= 0 || wh <= 0)
+        return;                                  /* свёрнуто: оставить прошлую раскладку */
+    if (s_NativeMovie)
+    {
+        picW = w;                                /* натуральный размер: MCI-ребёнок 1:1 */
+        picH = h;
+    }
+    else if (s_StretchPic)
+    {
+        picW = ww;                               /* '-' (фича порта): во весь экран, пропорции
+                                                    игры сознательно не сохраняются — в этом
+                                                    смысл клавиши, и клики всё так же идут
+                                                    обратно через этот rect */
+        picH = wh;
+    }
+    else if ((long long)ww * h <= (long long)wh * w)
+    {
+        picW = ww;                               /* окно шире: вписываем по ширине */
+        picH = (int)((long long)ww * h / w);
+        if (picH < 1)
+            picH = 1;
+    }
+    else
+    {
+        picH = wh;                               /* окно выше: вписываем по высоте */
+        picW = (int)((long long)wh * w / h);
+        if (picW < 1)
+            picW = 1;
+    }
+    newX = (ww - picW) / 2;
+    newY = (wh - picH) / 2;
+    changed = (newX != s_PicX || newY != s_PicY || picW != s_PicW || picH != s_PicH);
+    s_PicX = newX;
+    s_PicY = newY;
+    s_PicW = picW;
+    s_PicH = picH;
+    if (changed)
+    {
+        /* Выход рендерера — пространство, в котором SDL_RenderCopy реально
+           рисует: на Windows оно НЕ гарантированно равно клиенту (DPI-масштаб,
+           backbuffer, который SDL ещё не resize'нул). Когда оно меньше ww/wh,
+           копия обрезается и окно показывает только левый верхний угол
+           масштабированной картинки — потому оно и логируется рядом с rect'ом,
+           которому обязано совпасть. */
+        int outW = 0, outH = 0;
+        if (s_Renderer && SDL_GetRendererOutputSize(s_Renderer, &outW, &outH) != 0)
+            outW = outH = 0;
+        DBG_LOG("SdlUpdateLayout: window %dx%d -> picture %dx%d at (%d,%d)%s (renderer output %dx%d)%s",
+                ww, wh, s_PicW, s_PicH, s_PicX, s_PicY,
+                s_NativeMovie ? " (native movie)" : "", outW, outH,
+                s_StretchPic ? " [- stretched]" : "");
+        if (s_Texture && s_Renderer)
+            SdlBackendFlushPresent();             /* раскладка сдвинулась — кадр нужен сейчас */
+    }
+}
+
+/* px окна -> px игры (тождественность, пока картинка — окно). */
+void SdlBackendClientToGame(int *x, int *y)
+{
+    if (!SdlPictureTransformed())
+        return;
+    *x = SdlFloorDiv((*x - s_PicX) * s_GameClientW, s_PicW);
+    *y = SdlFloorDiv((*y - s_PicY) * s_GameClientH, s_PicH);
+    /* Результат вне картинки main.c читает как inputState=0 («стереть курсор,
+       не перерисовывать») — падения на поле вокруг картинки сделаны нарочно,
+       и охота за исчезающим курсором начинается здесь. */
+}
+
+/* px игры -> px окна (позиция MCI-ребёнка на Windows). */
+void SdlBackendGameToClient(int *x, int *y)
+{
+    if (!SdlPictureTransformed())
+        return;
+    *x = s_PicX + (int)((long long)*x * s_PicW / s_GameClientW);
+    *y = s_PicY + (int)((long long)*y * s_PicH / s_GameClientH);
+}
+
+/* Точка мыши для игры; 0 — вне картинки, тогда поле отбрасывается, а не
+   шлётся: игра ведёт себя ровно как при уходе мыши из окна в оригинале
+   (сообщения нет вообще, флаг ввода в главном цикле выключен). */
+static int SdlMapMousePoint(int *x, int *y)
+{
+    if (!SdlPictureTransformed())
+        return 1;
+    SdlBackendClientToGame(x, y);
+    return *x >= 0 && *x < s_GameClientW && *y >= 0 && *y < s_GameClientH;
+}
+
+/* SDL-сторона s_Fullscreen. Идемпотентна и не делает ничего, пока окна нет:
+   WinMain записывает -fullscreen рано, а применяет CreateWindow. */
+static void SdlApplyFullscreen(void)
+{
+    int want = s_Fullscreen ? 1 : 0;
+    int isFs;
+
+    if (!s_Window)
+        return;
+    isFs = (SDL_GetWindowFlags(s_Window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+    if (want != isFs)
+    {
+        if (want)
+        {
+            /* Оба пина размера обязаны уйти первыми: собственный максимум SDL
+               (выставленный при создании окна) и пин игрового WM_GETMINMAXINFO
+               ужали бы fullscreen-резайз обратно к размеру игры. */
+            SDL_SetWindowMaximumSize(s_Window, SDL_FS_MAX_PIN, SDL_FS_MAX_PIN);
+#ifndef _WIN32
+            /* На X11 desktop-fullscreen от SDL — только ПРОСЬБА к оконному
+               менеджеру (_NET_WM_STATE_FULLSCREEN) и bump собственной мысли о
+               размере до границ экрана; само окно он не resize'ит. С WM этого
+               хватает; без него (голый Xvfb — каждый харнесс в tests/linux) X-окно
+               остаётся 640×480 в (320,120), SDL отвечает 1280×720, и весь
+               rect-математике считается по несуществующему окну — доказано
+               отдельным SDL-пробой без единой строчки кода игры. Поэтому
+               геометрию двигаем сами и пока окно ещё обычное: после поднятия
+               флага полноэкранности SDL игнорирует SetWindowSize. Безрамочный
+               fullscreen И ЕСТЬ «окно размером с экран в (0,0)», с WM или без. */
+            {
+                SDL_DisplayMode dm;
+                int di = SDL_GetWindowDisplayIndex(s_Window);
+                if (di < 0)
+                    di = 0;
+                if (SDL_GetDesktopDisplayMode(di, &dm) == 0 && dm.w > 0 && dm.h > 0)
+                {
+                    SDL_SetWindowPosition(s_Window, 0, 0);  /* SDL центрирует окна без WM */
+                    SDL_SetWindowSize(s_Window, dm.w, dm.h);
+                    DBG_LOG("SdlApplyFullscreen: forced X geometry %dx%d at (0,0)", dm.w, dm.h);
+                }
+            }
+#endif
+            if (SDL_SetWindowFullscreen(s_Window, SDL_WINDOW_FULLSCREEN_DESKTOP) != 0)
+                DBG_LOG("SdlApplyFullscreen: SDL_SetWindowFullscreen(DESKTOP) failed: %s", SDL_GetError());
+        }
+        else
+        {
+            SDL_SetWindowFullscreen(s_Window, 0);
+#ifndef _WIN32
+            /* Зеркало входа: флаг SDL снял, а запомненный обычный размер —
+               тот, что мы навязали fullscreen'ом: вернуть игровое окно. */
+            if (s_GameClientW > 0 && s_GameClientH > 0)
+            {
+                SDL_SetWindowSize(s_Window, s_GameClientW, s_GameClientH);
+                SDL_SetWindowPosition(s_Window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+            }
+#endif
+            if (s_GameClientW > 0 && s_GameClientH > 0)
+                SDL_SetWindowMaximumSize(s_Window, s_GameClientW, s_GameClientH);
+        }
+        SdlUpdateLayout();
+        DBG_LOG("SdlApplyFullscreen: %s -> picture %dx%d at (%d,%d)",
+                want ? "on" : "off", s_PicW, s_PicH, s_PicX, s_PicY);
+        if (g_MainWindow)
+            InvalidateRect((HWND)g_MainWindow, 0, 1); /* repaint всего окна на новой геометрии */
+    }
+    SdlUpdateLayout();
+}
+
+void SdlBackendSetFullscreen(int on)
+{
+    int was = s_Fullscreen ? 1 : 0;
+
+    on = on ? 1 : 0;
+    if (on == was && s_Window)
+        return;
+    s_Fullscreen = on;
+    SdlApplyFullscreen();
+}
+
+int SdlBackendToggleFullscreen(void)
+{
+    SdlBackendSetFullscreen(!s_Fullscreen);
+    return s_Fullscreen;
+}
+
+/* '-' (фича порта): между игровой картинкой (letterbox, пропорции сохранены)
+   и той же картинкой, растянутой на весь экран. Второе состояние живёт только
+   в fullscreen, поэтому клавиша подразумевает его: из обычного окна уводит в
+   fullscreen и сразу растянутое, дальше лишь щёлкает между двумя картинками.
+   Alt+Enter остаётся путём обратно в окно, а оконная картинка всегда была и
+   остаётся тождественной. */
+int SdlBackendToggleStretch(void)
+{
+    s_StretchPic = !s_StretchPic;
+    if (s_StretchPic && !s_Fullscreen)
+        SdlBackendSetFullscreen(1);               /* он применяет раскладку и видит stretch */
+    else
+        SdlUpdateLayout();
+    DBG_LOG("SdlBackendToggleStretch: %s -> picture %dx%d at (%d,%d)",
+            s_StretchPic ? "stretched over the screen" : "the game's own aspect, letterboxed",
+            s_PicW, s_PicH, s_PicX, s_PicY);
+    return s_StretchPic;
+}
+
+/* Кино Windows: дочернее окно mciavi32 рисует 1:1 и не масштабируется вслед
+   за картинкой, поэтому на время фильма картинка падает до натурального
+   размера и держит только центрирующее смещение. На остальных платформах
+   кино рисует сам порт (SdlBackendVideoFrame) и масштабируется само — здесь
+   пусто. */
+void SdlBackendSetNativeMovie(int on)
+{
+#ifdef _WIN32
+    on = on ? 1 : 0;
+    if (on == (s_NativeMovie != 0))
+        return;
+    s_NativeMovie = on;
+    SdlUpdateLayout();
+    DBG_LOG("SdlBackendSetNativeMovie: %d -> picture %dx%d at (%d,%d)",
+            on, s_PicW, s_PicH, s_PicX, s_PicY);
+#else
+    (void)on;
 #endif
 }
 
@@ -542,12 +1089,6 @@ static void SdlPostQuitRequest(void)
         PostQuitMessage(0);
 }
 
-/* Точка -> LPARAM мышиного сообщения (x в младшем слове, y в старшем). */
-static LPARAM SdlPackPoint(int x, int y)
-{
-    return (LPARAM)(((DWORD)(Uint16)y << 16) | (Uint16)x);
-}
-
 static void SdlDispatchSdlEvent(const SDL_Event *ev)
 {
     switch (ev->type)
@@ -570,7 +1111,24 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
     case SDL_KEYDOWN:
     case SDL_KEYUP:
         {
-            WPARAM vk = SdlKeysymToVk(ev->key.keysym.sym);
+            WPARAM vk;
+            if (ev->type == SDL_KEYDOWN && ev->key.keysym.sym == SDLK_RETURN
+                && (ev->key.keysym.mod & KMOD_ALT))
+            {
+                /* Alt+Enter: переключатель fullscreen (фича порта) — на том же
+                   месте, где на Windows сидит WM_SYSKEYDOWN. Игра Enter не
+                   видит. */
+                SdlBackendToggleFullscreen();
+                break;
+            }
+            if (ev->type == SDL_KEYDOWN && ev->key.keysym.sym == SDLK_MINUS)
+            {
+                /* '-' (фича порта): картинка во весь экран — то же, что
+                   WM_KEYDOWN/VK_OEM_MINUS на Windows. */
+                SdlBackendToggleStretch();
+                break;
+            }
+            vk = SdlKeysymToVk(ev->key.keysym.sym);
             if (!vk)
                 break;
             PostMessageA((HWND)g_MainWindow,
@@ -581,10 +1139,17 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
 
     case SDL_MOUSEMOTION:
         /* WM_SETCURSOR перед каждым движением — так приходит настоящая мышь и
-           так игра знает, что курсор в клиенте. */
-        PostMessageA((HWND)g_MainWindow, WM_SETCURSOR, (WPARAM)g_MainWindow, HTCLIENT);
-        PostMessageA((HWND)g_MainWindow, WM_MOUSEMOVE, 0,
-                     (LPARAM)(((DWORD)(Uint16)ev->motion.y << 16) | (Uint16)ev->motion.x));
+           так игра знает, что курсор в клиенте. Координаты проходят через rect
+           картинки (тождественность в обычном окне); точка вне картинки —
+           поле вокруг letterbox — отбрасывается, как «мышь ушла из окна». */
+        {
+            int mx = (int)ev->motion.x;
+            int my = (int)ev->motion.y;
+            if (!SdlMapMousePoint(&mx, &my))
+                break;
+            PostMessageA((HWND)g_MainWindow, WM_SETCURSOR, (WPARAM)g_MainWindow, HTCLIENT);
+            PostMessageA((HWND)g_MainWindow, WM_MOUSEMOVE, 0, SdlPackPoint(mx, my));
+        }
         break;
 
     case SDL_MOUSEBUTTONDOWN:
@@ -596,7 +1161,17 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
             int right = ev->button.button != SDL_BUTTON_LEFT;
             UINT msg;
             WPARAM wp = 0;
+            int mx = (int)ev->button.x;
+            int my = (int)ev->button.y;
+            int cx = mx, cy = my;
 
+            if (!SdlMapMousePoint(&mx, &my))
+                break;                          /* поле вокруг картинки: клик «мимо» */
+#ifdef _DEBUG
+            if (ev->type == SDL_MOUSEBUTTONDOWN && (mx != cx || my != cy))
+                DBG_LOG("SdlDispatchSdlEvent: client (%d,%d) -> game (%d,%d)",
+                        cx, cy, mx, my);        /* интересно, только пока картинка трансформирована */
+#endif
             if (right)
                 msg = ev->type == SDL_MOUSEBUTTONDOWN ? WM_RBUTTONDOWN : WM_RBUTTONUP;
             else
@@ -604,8 +1179,7 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
             if (ev->type == SDL_MOUSEBUTTONDOWN)
                 wp = right ? 2 : 1;              /* MK_RBUTTON / MK_LBUTTON */
             PostMessageA((HWND)g_MainWindow, WM_SETCURSOR, (WPARAM)g_MainWindow, HTCLIENT);
-            PostMessageA((HWND)g_MainWindow, msg, wp,
-                         (LPARAM)(((DWORD)(Uint16)ev->button.y << 16) | (Uint16)ev->button.x));
+            PostMessageA((HWND)g_MainWindow, msg, wp, SdlPackPoint(mx, my));
         }
         break;
 
@@ -632,6 +1206,11 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
                 DBG_LOG("touch: type=%d window %dx%d -> (%d,%d)", ev->type, ww, wh, mx, my);
             }
 #endif
+            /* Дальше палец идёт мышиным путём: клиент px окна -> px игры (в
+               обычном окне — тождественность); точка вне картинки, как и мышь,
+               отбрасывается. */
+            if (!SdlMapMousePoint(&mx, &my))
+                break;
             PostMessageA(g_MainWindow, WM_SETCURSOR, (WPARAM)g_MainWindow, HTCLIENT);
             PostMessageA(g_MainWindow, WM_MOUSEMOVE, 0, SdlPackPoint(mx, my));
 #ifdef __SWITCH__
@@ -646,8 +1225,22 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
         break;
 
     case SDL_WINDOWEVENT:
-        if (ev->window.event == SDL_WINDOWEVENT_CLOSE && g_MainWindow)
-            PostMessageA((HWND)g_MainWindow, WM_CLOSE, 0, 0);
+        switch (ev->window.event)
+        {
+        case SDL_WINDOWEVENT_CLOSE:
+            if (g_MainWindow)
+                PostMessageA((HWND)g_MainWindow, WM_CLOSE, 0, 0);
+            break;
+        case SDL_WINDOWEVENT_RESIZED:
+        case SDL_WINDOWEVENT_SIZE_CHANGED:
+            /* Окно сменило размер — картинка должна переложиться. На Windows
+               то же приходит через WM_SIZE/WM_WINDOWPOSCHANGED в подклассе
+               wndproc, здесь это единственная ниточка. */
+            SdlUpdateLayout();
+            break;
+        default:
+            break;
+        }
         break;
 
     default:
@@ -761,9 +1354,8 @@ static void SdlPollSwitchControls(void)
     }
 
     /* Каждое ребро — строка в лог: «игра закрылась сама» должно читаться рядом
-       с тем, что делал игрок. A — левый клик, B — правый. X/Y/L/R/'-' привязки
-       пока не имеют; репорт о ребре ограничен, но мёртвая кнопка тихой быть не
-       должна. */
+       с тем, что делал игрок. A — левый клик, B — правый. X/Y пока без
+       привязки, но мёртвая кнопка тихой быть не должна. */
     if ((buttons & SWITCH_PAD_A) != (s_PrevButtons & SWITCH_PAD_A))
     {
         DBG_LOG("SdlSwitchControls: A %s -> left click at (%d,%d)",
@@ -780,14 +1372,27 @@ static void SdlPollSwitchControls(void)
         DBG_LOG("SdlSwitchControls: X/Y edge, prev=0x%X now=0x%X (no binding, ignored)",
                 s_PrevButtons & (SWITCH_PAD_X | SWITCH_PAD_Y),
                 buttons & (SWITCH_PAD_X | SWITCH_PAD_Y));
-    if ((buttons & (SWITCH_PAD_L | SWITCH_PAD_R | SWITCH_PAD_MINUS))
-            != (s_PrevButtons & (SWITCH_PAD_L | SWITCH_PAD_R | SWITCH_PAD_MINUS))
+    /* '-' (минус Joy-Con): собственный переключатель картинки порта, на том же
+       месте, где на других платформах клавиша '-': игра привязки не имеет и
+       ничего не узнаёт. Только по фронту нажатия, чтобы удержание не мигало
+       между двумя режимами. Из обычного окна первое нажатие уводит в
+       fullscreen и сразу растянутое — «во весь экран» имеет смысл только на
+       всём экране. */
+    if ((buttons & SWITCH_PAD_MINUS) && !(s_PrevButtons & SWITCH_PAD_MINUS))
+    {
+        DBG_LOG("SdlSwitchControls: '-' (minus) pressed -> the port's picture toggle");
+        SdlBackendToggleStretch();
+    }
+    /* L/R — пока без привязки, репорт о ребре ограничен: мёртвая кнопка тихой
+       быть не должна, но и залить лог ею нельзя. */
+    if ((buttons & (SWITCH_PAD_L | SWITCH_PAD_R))
+            != (s_PrevButtons & (SWITCH_PAD_L | SWITCH_PAD_R))
         && s_RLedgesLogged < 8)
     {
         ++s_RLedgesLogged;
-        DBG_LOG("SdlSwitchControls: L/R/'-' edge, prev=0x%X now=0x%X (no binding); %d edge line(s) of 8",
-                s_PrevButtons & (SWITCH_PAD_L | SWITCH_PAD_R | SWITCH_PAD_MINUS),
-                buttons & (SWITCH_PAD_L | SWITCH_PAD_R | SWITCH_PAD_MINUS),
+        DBG_LOG("SdlSwitchControls: L/R edge, prev=0x%X now=0x%X (no binding); %d edge line(s) of 8",
+                s_PrevButtons & (SWITCH_PAD_L | SWITCH_PAD_R),
+                buttons & (SWITCH_PAD_L | SWITCH_PAD_R),
                 s_RLedgesLogged);
     }
 
@@ -938,10 +1543,19 @@ void SdlBackendVideoFrame(const void *bgra, int srcw, int srch, int x, int y, in
     SDL_UpdateTexture(s_VideoTex, NULL, bgra, srcw * 4);
     if (s_Dirty)
         SdlBackendFlushPresent();                /* подложка (BMP-фон фильма) под кадром */
-    dst.x = x;
-    dst.y = y;
-    dst.w = w;
-    dst.h = h;
+    /* Прямоугольник приходит в px игры (это то, во что MoveWindow поставил
+       MCI-окно на Windows), а рендерер рисует в px окна — в обычном окне это
+       тождественность, в fullscreen кадр должен попасть в rect картинки. */
+    {
+        int x2 = x + w;
+        int y2 = y + h;
+        SdlBackendGameToClient(&x, &y);
+        SdlBackendGameToClient(&x2, &y2);
+        dst.x = x;
+        dst.y = y;
+        dst.w = x2 - x;
+        dst.h = y2 - y;
+    }
     SDL_RenderCopy(s_Renderer, s_VideoTex, NULL, &dst);
     SDL_RenderPresent(s_Renderer);
 }
@@ -988,17 +1602,6 @@ void SdlBackendGetClientSize(int *w, int *h)
 
 /* Окно и игра в одном и том же пикселе: fullscreen-масштабирование не
    перенесено, до тех пор обе стороны — тождественные преобразования. */
-void SdlBackendClientToGame(int *x, int *y)
-{
-    (void)x;
-    (void)y;
-}
-
-void SdlBackendGameToClient(int *x, int *y)
-{
-    (void)x;
-    (void)y;
-}
 
 /* Счётчик опросов указателя для профиля лупы — профиль тоже приедет отдельно. */
 void SdlBackendNoteFramePoll(void)
