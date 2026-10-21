@@ -1845,6 +1845,12 @@ int SdlBackendToggleFullscreen(void);
 int SdlBackendToggleStretch(void);
 void SdlBackendSetNativeMovie(int on); /* на время MCI-фильма держать натуральный размер */
 
+/* Звук фильма в общий микшер (sdl_backend.c). Вызывает только mci_ffmpeg.c,
+   т.е. только не-Windows: там кино играет mciavi32 со своим звуком. */
+int SdlMix_MovieOpen(unsigned int rate);
+unsigned int SdlMix_MovieWrite(const unsigned char *src, unsigned int len);
+void SdlMix_MovieClose(void);
+
 /* ========================================================================== */
 /* Nintendo Switch (switch_libnx.c). Всё под __SWITCH__: на других платформах  */
 /* файл — пустая TU. Биты пада читаются напрямую из hid (в SDL2 этой сборки нет */

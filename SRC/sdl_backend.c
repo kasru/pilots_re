@@ -79,6 +79,39 @@ static LPARAM SdlPackPoint(int x, int y)
 static SDL_Texture *s_VideoTex;     /* кадр фильма (SdlBackendVideoFrame) */
 static int s_VideoTexW, s_VideoTexH;
 static SDL_AudioDeviceID s_WaveDev; /* SDL-устройство за waveOut-шимом (win32_shim.c) */
+
+/* Общий микшер (фича порта): одно SDL-устройство на все источники — волну игры,
+   MIDI и звук фильма. Что это не теория, показано на Switch: у консоли один
+   вывод на процесс, второй OpenAudioDevice отклоняется («Audio device already
+   open»), и до динамика доходит только источник, открывшийший первым. Отсюда и
+   «movie asked first» в логе: интро запрашивает звук раньше любых эффектов.
+   Форматы — синтезовые (44100/S16/стерео), конвертация игровой волны ложится
+   на продюсера (SdlWaveAppendShared), а колбэк только суммирует кольца. */
+#define SDL_MIX_RATE   44100                    /* частота микшера: музыка без ресемплинга */
+#define SDL_MIX_RATIO  4                        /* SDL_MIX_RATE / игровые 11025 */
+#define SDL_MIX_SAMPLES 1024
+#define SDL_MIX_RING   32768u                   /* кадров на кольцо, степень двойки: 0.74 с */
+#define SDL_MIX_MASK   (SDL_MIX_RING - 1)
+
+typedef struct
+{
+    short *pcm;                 /* стерео в перемежении, SDL_MIX_RING кадров */
+    volatile unsigned int w;    /* монотонные счётчики кадров: читается только их
+                                   разность, так что переполнение 2^32 безвредно */
+    volatile unsigned int r;
+} MixRing;
+
+static int s_SharedAudio;             /* 1 = одно устройство, кольцо на источник */
+static SDL_AudioDeviceID s_MixDev;    /* это устройство, когда источники делят его */
+static MixRing s_WaveRing;
+static MixRing s_MidiRing;            /* под будущий MIDI: создаётся сразу, пока пустует */
+static MixRing s_MovieRing;           /* PCM фильма, см. SdlMix_MovieOpen */
+static volatile unsigned int s_MovieRate;   /* частота фильма, 0 = кино без звука */
+static unsigned int s_MovieSrcFrames;       /* сэмплов источника сдано с начала фильма */
+static volatile unsigned int s_WaveFramesQueued;  /* оба монотонны: разность / RATIO — */
+static volatile unsigned int s_WaveFramesEaten;   /* длина очереди в игровых байтах */
+static volatile int s_WaveHeld;       /* волна удержана в микшере, а не на устройстве */
+
 static volatile sig_atomic_t s_Usr1Quit;
 #ifdef _DEBUG
 static int s_FingerLogged;          /* первые касания — в лог, для отладки */
@@ -313,6 +346,21 @@ void SdlBackendShutdown(void)
     {
         SDL_CloseAudioDevice(s_WaveDev);
         s_WaveDev = 0;
+    }
+    if (s_MixDev)
+    {
+        /* Общее устройство уходит после своего: закрытие устройства — это и
+           есть остановка колбэка, который читает кольца, так что снимать их
+           можно только потом. */
+        SDL_CloseAudioDevice(s_MixDev);
+        s_MixDev = 0;
+        s_SharedAudio = 0;
+        free(s_WaveRing.pcm);
+        s_WaveRing.pcm = NULL;
+        free(s_MidiRing.pcm);
+        s_MidiRing.pcm = NULL;
+        free(s_MovieRing.pcm);
+        s_MovieRing.pcm = NULL;
     }
     if (s_VideoTex)
     {
@@ -1428,6 +1476,364 @@ int WinShim_PumpSDLToQueue(void)
 }
 
 /* ========================================================================== */
+/* Общий микшер: волна игры, MIDI и звук фильма на одном устройстве.          */
+/*                                                                            */
+/* Первая кого-то попросившая сторона открывает устройство, остальные          */
+/* пользуются им же: форматы синтезовые (44100/S16/стерео), поэтому           */
+/* конвертация игровой волны — на продюсере (SdlWaveAppendShared),            */
+/* а колбэк только читает кольца и суммирует. Звук фильма — третий источник:   */
+/* mci_ffmpeg.c читает аудио-чанки AVI сам (ffmpeg их в demuxer не показывает) */
+/* и ведёт их по видеоклоку. Отдельное кольцо, а не волна, — чтобы skip-кино   */
+/* сбрасывало своё, не трогая ни музыку, ни эффект.                           */
+/*                                                                            */
+/* Зачем делить одно устройство вообще: Switch имеет один вывод на процесс и  */
+/* второй OpenAudioDevice отклоняет (мерено: «Audio device already open»), —   */
+/* до динамика тогда доходит только открывший первым. PILOTS_SHARE_AUDIO=0/1   */
+/* форсирует режим везде, Windows по умолчанию не делит (там звук фильма —     */
+/* mciavi32, свой), Linux/Switch — делят (без микшера звука кино нет вовсе).   */
+/* ========================================================================== */
+
+static unsigned int MixRingFree(MixRing *ring)
+{
+    return SDL_MIX_RING - (ring->w - ring->r);
+}
+
+static int MixRing_New(MixRing *ring)
+{
+    ring->pcm = (short *)malloc(SDL_MIX_RING * 2 * sizeof(short));
+    ring->w = 0;
+    ring->r = 0;
+    return ring->pcm != 0;
+}
+
+static void MixRing_Reset(MixRing *ring)
+{
+    ring->r = ring->w;               /* сбросить очередь, счётчики ведутся дальше */
+}
+
+/* SDL-колбэк: читает кольца источников и пишет смешанный S16-поток. */
+static void SdlAudioMix(void *userdata, Uint8 *stream, int len)
+{
+    short *out = (short *)stream;
+    unsigned int frames = (unsigned int)len / 4;   /* два канала, два байта */
+    unsigned int i;
+#ifdef _DEBUG
+    /* Учёт самого микшера: какой источник реально доходит до колбэка и с какой
+       громкостью. «Музыка играет, эффекты — нет» бывает двух видов — в кольцо
+       ничего не кладут или кладут неслышно малое, — а по логу консоли их не
+       различить, потому-то и меряется. Пики — абсолютные значения смешиваемых
+       сэмплов. */
+    unsigned int waveFrames = 0, midiFrames = 0, movieFrames = 0;
+    int wavePeak = 0, midiPeak = 0, moviePeak = 0, outPeak = 0;
+    static unsigned int s_MixFrames;
+    static unsigned int s_MixSumWave, s_MixSumMidi, s_MixSumMovie;  /* с прошлого отчёта */
+    static int s_MixSumWavePeak, s_MixSumMidiPeak, s_MixSumMoviePeak, s_MixSumOutPeak;
+    static unsigned s_MixLines;
+    int v;
+#endif
+
+    (void)userdata;
+    for (i = 0; i < frames; ++i)
+    {
+        int left = 0, right = 0;
+
+        if (s_WaveRing.pcm && !s_WaveHeld && s_WaveRing.w != s_WaveRing.r)
+        {
+            unsigned int p = (s_WaveRing.r & SDL_MIX_MASK) * 2;
+            left = s_WaveRing.pcm[p];
+            right = s_WaveRing.pcm[p + 1];
+            s_WaveRing.r += 1;
+            s_WaveFramesEaten += 1;
+#ifdef _DEBUG
+            ++waveFrames;
+            v = left < 0 ? -left : left;
+            if (v > wavePeak)
+                wavePeak = v;
+            v = right < 0 ? -right : right;
+            if (v > wavePeak)
+                wavePeak = v;
+#endif
+        }
+        if (s_MidiRing.pcm && s_MidiRing.w != s_MidiRing.r)
+        {
+            unsigned int p = (s_MidiRing.r & SDL_MIX_MASK) * 2;
+            left += s_MidiRing.pcm[p];
+            right += s_MidiRing.pcm[p + 1];
+            s_MidiRing.r += 1;
+#ifdef _DEBUG
+            ++midiFrames;
+            v = s_MidiRing.pcm[p] < 0 ? -s_MidiRing.pcm[p] : s_MidiRing.pcm[p];
+            if (v > midiPeak)
+                midiPeak = v;
+#endif
+        }
+        if (s_MovieRing.pcm && s_MovieRing.w != s_MovieRing.r)
+        {
+            unsigned int p = (s_MovieRing.r & SDL_MIX_MASK) * 2;
+            left += s_MovieRing.pcm[p];
+            right += s_MovieRing.pcm[p + 1];
+            s_MovieRing.r += 1;
+#ifdef _DEBUG
+            ++movieFrames;
+            v = s_MovieRing.pcm[p] < 0 ? -s_MovieRing.pcm[p] : s_MovieRing.pcm[p];
+            if (v > moviePeak)
+                moviePeak = v;
+#endif
+        }
+        if (left > 32767)
+            left = 32767;
+        else if (left < -32768)
+            left = -32768;
+        if (right > 32767)
+            right = 32767;
+        else if (right < -32768)
+            right = -32768;
+        out[i * 2] = (short)left;
+        out[i * 2 + 1] = (short)right;
+#ifdef _DEBUG
+        /* И что уходит на устройство: пики источников могут быть честными, а
+           сам поток — тихим (суммирование в переменную, которую не пишут,
+           выглядит ровно как «источник никто не слышит»), — поэтому меряем
+           там, где пишем. */
+        {
+            int o = left < 0 ? -left : left;
+            int p = right < 0 ? -right : right;
+            if (p > o)
+                o = p;
+            if (o > outPeak)
+                outPeak = o;
+        }
+#endif
+    }
+
+#ifdef _DEBUG
+    s_MixSumWave += waveFrames;
+    s_MixSumMidi += midiFrames;
+    s_MixSumMovie += movieFrames;
+    if (wavePeak > s_MixSumWavePeak)
+        s_MixSumWavePeak = wavePeak;
+    if (midiPeak > s_MixSumMidiPeak)
+        s_MixSumMidiPeak = midiPeak;
+    if (moviePeak > s_MixSumMoviePeak)
+        s_MixSumMoviePeak = moviePeak;
+    if (outPeak > s_MixSumOutPeak)
+        s_MixSumOutPeak = outPeak;
+    s_MixFrames += frames;
+    if (s_MixFrames >= SDL_MIX_RATE * 5u)         /* одна строка на 5 с звука */
+    {
+        /* Пишутся только окна, где была волна или кино, и потолок считает
+           строки, а не время: иначе лимит выжжет музыка, а эффекты на консоли —
+           то, ради чего смотрят, — начнутся позже, и все существующие строки
+           будут говорить «wave 0». */
+        if (s_MixLines < 40 && (s_MixSumWave || s_MixSumMovie))
+        {
+            ++s_MixLines;
+            DBG_LOG("SdlAudioMix: %u s - wave %u frames (peak %d), midi %u frames (peak %d), movie %u frames (peak %d), out peak %d, rings %u/%u/%u frames",
+                    (unsigned)(s_MixFrames / SDL_MIX_RATE), s_MixSumWave, s_MixSumWavePeak,
+                    s_MixSumMidi, s_MixSumMidiPeak, s_MixSumMovie, s_MixSumMoviePeak, s_MixSumOutPeak,
+                    s_WaveRing.w - s_WaveRing.r, s_MidiRing.w - s_MidiRing.r,
+                    s_MovieRing.w - s_MovieRing.r);
+        }
+        s_MixFrames = 0;
+        s_MixSumWave = 0;
+        s_MixSumMidi = 0;
+        s_MixSumMovie = 0;
+        s_MixSumWavePeak = 0;
+        s_MixSumMidiPeak = 0;
+        s_MixSumMoviePeak = 0;
+        s_MixSumOutPeak = 0;
+    }
+#endif
+}
+
+/* Делить одно устройство или нет. На Switch это не выбор (один вывод на
+   процесс). Остальное — по умолчанию вслед за тем, что доступно: на Windows
+   mciavi32 играет звук фильма сам, там двух-устройственный путь остаётся; на
+   Linux и Switch звук кино существует только если существует микшер, там
+   деление — по умолчанию. PILOTS_SHARE_AUDIO=0 или =1 принудительно в обе
+   стороны — так измеряется shared-путь там, где вместо динамика число в логе. */
+static int SdlShareAudioWanted(void)
+{
+#ifdef __SWITCH__
+    return 1;
+#else
+    static int s_Share = -1;
+    if (s_Share < 0)
+    {
+        char *e = getenv("PILOTS_SHARE_AUDIO");
+#ifdef _WIN32
+        s_Share = 0;
+#else
+        s_Share = 1;
+#endif
+        if (e && *e)
+            s_Share = (*e != '0');
+        DBG_LOG("SdlShareAudioWanted: one device for all sources = %d (platform default, PILOTS_SHARE_AUDIO='%s')",
+                s_Share, e ? e : "");
+    }
+    return s_Share;
+#endif
+}
+
+/* Первая попросившая сторона открывает единственное устройство, остальные
+   пользуются им же. Оба формата — синтезовые, конвертация игровой PCM там,
+   откуда она приходит. */
+static int SdlMix_Open(const char *who)
+{
+    SDL_AudioSpec want;
+    SDL_AudioSpec have;
+
+    if (s_MixDev)
+        return 1;
+    if (!(SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO))
+    {
+        if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0)
+        {
+            DBG_LOG("SdlMix_Open: SDL_InitSubSystem(AUDIO) failed: %s", SDL_GetError());
+            return 0;
+        }
+    }
+    SDL_zero(want);
+    want.freq = SDL_MIX_RATE;
+    want.format = AUDIO_S16SYS;
+    want.channels = 2;
+    want.samples = SDL_MIX_SAMPLES;
+    want.callback = SdlAudioMix;
+    s_MixDev = SDL_OpenAudioDevice(NULL, SDL_FALSE, &want, &have, SDL_AUDIO_ALLOW_SAMPLES_CHANGE);
+    if (!s_MixDev)
+    {
+        DBG_LOG("SdlMix_Open: %s could not open the shared device: %s", who, SDL_GetError());
+        return 0;
+    }
+    if (have.freq != SDL_MIX_RATE || have.format != AUDIO_S16SYS || have.channels != 2)
+    {
+        DBG_LOG("SdlMix_Open: shared device gave %d Hz / format 0x%X / %d ch, this mixer only sums S16 stereo",
+                have.freq, (unsigned int)have.format, have.channels);
+        SDL_CloseAudioDevice(s_MixDev);
+        s_MixDev = 0;
+        return 0;
+    }
+    if (!s_WaveRing.pcm && !MixRing_New(&s_WaveRing))
+        return 0;
+    if (!s_MidiRing.pcm && !MixRing_New(&s_MidiRing))
+        return 0;
+    s_SharedAudio = 1;
+    SDL_PauseAudioDevice(s_MixDev, 0);
+    /* Имя драйвера и номер устройства идут с строкой успеха, потому что пик
+       внутри колбэка доказывает работу микшера, а не то, что байты доходят до
+       динамика: второе устройство там, где вывод один, или запасной драйвер —
+       это ровно «колбэк работает, а тишина идёт». Имя драйвера и есть то, что
+       различает два случая по логу. */
+    DBG_LOG("SdlMix_Open: one device for both sources (%s asked first), %d Hz / %d ch / S16, %u frames per ring; driver '%s', device #%u, playing=%d",
+            who, have.freq, have.channels, SDL_MIX_RING,
+            SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "(none)",
+            (unsigned int)s_MixDev, (int)SDL_GetAudioDeviceStatus(s_MixDev));
+    return 1;
+}
+
+/* Звук фильма, третий источник микшера. Своей AVI-читки у игры нет звука
+   вообще, а mciavi32 на этих платформах не существует, — mci_ffmpeg.c читает
+   аудио-чанки сам, пейся их по уже показанным кадрам, и сдаёт байты сюда. */
+int SdlMix_MovieOpen(unsigned int rate)
+{
+    if (!rate || !SdlShareAudioWanted() || !SdlMix_Open("movie"))
+    {
+        DBG_LOG("SdlMix_MovieOpen: %u Hz refused - the movie's sound only exists through the mixer", rate);
+        return 0;
+    }
+    if (!s_MovieRing.pcm && !MixRing_New(&s_MovieRing))
+        return 0;
+    MixRing_Reset(&s_MovieRing);
+    s_MovieRate = rate;
+    s_MovieSrcFrames = 0;
+    DBG_LOG("SdlMix_MovieOpen: movie PCM at %u Hz into the mixer at %d Hz", rate, SDL_MIX_RATE);
+    return 1;
+}
+
+/* Пересчёт частоты точными границами: выходной кадр o играет сэмпл источника
+   floor(o * rate / SDL_MIX_RATE), т.е. каждый сэмпл копируется столько раз,
+   сколько выходных кадров началось внутри него. Против 44100 игровые 22050 и
+   11025 дают ровно 2 и 4 копии; другое отношение деградирует до повтора
+   ближайшего сэмпла — как волна и так делает на своём фиксированном
+   отношении. Возвращает число сэмплов источника, взятых меньше спрошенного,
+   когда кольцо заполнено: остальное вызывающий оставит на следующий pump. */
+unsigned int SdlMix_MovieWrite(const unsigned char *src, unsigned int len)
+{
+    unsigned int room = MixRingFree(&s_MovieRing);
+    unsigned int pos = s_MovieRing.w & SDL_MIX_MASK;
+    unsigned int emitted = 0;
+    unsigned int i;
+
+    if (!s_MovieRing.pcm || !s_MovieRate)
+        return 0;
+    for (i = 0; i < len; ++i)
+    {
+        unsigned int from = (unsigned int)(((unsigned long long)s_MovieSrcFrames * SDL_MIX_RATE) / s_MovieRate);
+        unsigned int to = (unsigned int)(((unsigned long long)(s_MovieSrcFrames + 1) * SDL_MIX_RATE) / s_MovieRate);
+        unsigned int n = to - from;
+        short s = (short)(((int)src[i] - 128) * 257);
+        unsigned int k;
+
+        if (n > room)
+            break;
+        for (k = 0; k < n; ++k)
+        {
+            s_MovieRing.pcm[pos * 2] = s;
+            s_MovieRing.pcm[pos * 2 + 1] = s;
+            pos = (pos + 1) & SDL_MIX_MASK;
+        }
+        room -= n;
+        emitted += n;
+        ++s_MovieSrcFrames;
+    }
+    s_MovieRing.w += emitted;
+    return i;
+}
+
+void SdlMix_MovieClose(void)
+{
+    if (s_MovieRing.pcm)
+        MixRing_Reset(&s_MovieRing);   /* skip-кино: своё сбросить, чужое не тронуть */
+    s_MovieRate = 0;
+    s_MovieSrcFrames = 0;
+}
+
+/* Игровая PCM входит, микшер-кадры добавляются: один U8-сэмпл становится
+   SDL_MIX_RATIO одинаковыми стерео-кадрами. Возвращает число игровых байт,
+   взятых; полное кольцо отдаёт хвост, — это и есть «устройство отстало»
+   двух-устройственно пути с игровой стороны. */
+static unsigned int SdlWaveAppendShared(const unsigned char *src, unsigned int len)
+{
+    unsigned int samples = MixRingFree(&s_WaveRing) / SDL_MIX_RATIO;
+    unsigned int pos;
+    unsigned int i;
+
+    if (len > samples)
+        len = samples;
+    pos = s_WaveRing.w & SDL_MIX_MASK;
+    for (i = 0; i < len; ++i)
+    {
+        /* Сэмпл сам, а не «128 плюс громкость»: первая версия этой строки
+           стартовала с 128 и лишь двигалась на громкость — каждый выход был 0,
+           счётная активность при глухом звуке, пик 0 в пробе микшера, — так это
+           и поймали. Громкость игра применяет к U8-сэмплам сама (wave.c),
+           waveOutSetVolume — заглушка. */
+        short s = (short)(((int)src[i] - 128) * 257);   /* та же распаковка U8->S16, что у SDL */
+        unsigned int k;
+
+        for (k = 0; k < SDL_MIX_RATIO; ++k)
+        {
+            s_WaveRing.pcm[pos * 2] = s;
+            s_WaveRing.pcm[pos * 2 + 1] = s;
+            pos = (pos + 1) & SDL_MIX_MASK;
+        }
+    }
+    s_WaveRing.w += len * SDL_MIX_RATIO;
+    s_WaveFramesQueued += len * SDL_MIX_RATIO;
+    return len;
+}
+
+/* ========================================================================== */
 /* SDL-устройство волны за waveOut-шимом (win32_shim.c)                       */
 /*                                                                            */
 /* Формат жёстко игровой: 11025 Гц, моно, U8 — wave.c другого не шлёт.        */
@@ -1441,6 +1847,12 @@ int SdlWave_Open(void)
 
     if (s_WaveDev)
         return 1;
+    if (SdlShareAudioWanted())
+    {
+        /* Своего устройства здесь не будет: на этой платформе второго не открыть,
+           а формат микшера не игровой — и не надо, конвертер SdlWaveAppendShared. */
+        return SdlMix_Open("wave");
+    }
     if (!(SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO))
     {
         if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0)
@@ -1487,25 +1899,68 @@ void SdlWave_Close(void)
 
 int SdlWave_Queue(const void *data, unsigned int len)
 {
-    if (!s_WaveDev || !data || !len)
+    if (!data || !len)
+        return 0;
+    if (s_SharedAudio)
+    {
+        unsigned int taken = SdlWaveAppendShared((const unsigned char *)data, len);
+
+        if (taken != len)
+        {
+            /* Потребитель не поспевает: хвост буфера некуда класть. Каждый сброс
+               с потолком в лог: одна просадка — неровность, сброс за буфером при
+               полном кольце — уже отказ звука, и лимит их различает. */
+            static unsigned int s_WaveDropLines;
+
+            if (s_WaveDropLines < 40)
+            {
+                ++s_WaveDropLines;
+                DBG_LOG("SdlWave_Queue: shared ring full, %u of %u game bytes dropped (drop line %u of 40)",
+                        (unsigned)(len - taken), len, s_WaveDropLines);
+            }
+        }
+        return taken == len;
+    }
+    if (!s_WaveDev)
         return 0;
     return SDL_QueueAudio(s_WaveDev, data, len) == 0;
 }
 
 void SdlWave_Clear(void)
 {
+    if (s_SharedAudio)
+    {
+        MixRing_Reset(&s_WaveRing);
+        s_WaveFramesQueued = s_WaveFramesEaten;   /* очередь = 0, счётчики идут дальше */
+        return;
+    }
     if (s_WaveDev)
         SDL_ClearQueuedAudio(s_WaveDev);
 }
 
 void SdlWave_Pause(int pause)
 {
+    if (s_SharedAudio)
+    {
+        /* Удержание в микшере, а не на устройстве: то же устройство несёт
+           музыку, а игра просит остановить эффекты, не саундтрек. Пока держим,
+           колбэк кольцо не читает, — игровой счётчик догоняющего звука (его
+           протокол завершения) замирает вместе с ним и после снятия паузы
+           продолжается с того же места, ничего не потеряно. */
+        s_WaveHeld = pause ? 1 : 0;
+        return;
+    }
     if (s_WaveDev)
         SDL_PauseAudioDevice(s_WaveDev, pause ? 1 : 0);
 }
 
 unsigned int SdlWave_Queued(void)
 {
+    if (s_SharedAudio)
+        /* Игровые единицы (байты 11025/моно/U8): WAVEHDR в шиме считаются ими —
+           четыре микшер-кадра на игровой байт, разность двух бегущих счётчиков
+           (она и переживает их переполнение). */
+        return (s_WaveFramesQueued - s_WaveFramesEaten) / SDL_MIX_RATIO;
     return s_WaveDev ? SDL_GetQueuedAudioSize(s_WaveDev) : 0;
 }
 

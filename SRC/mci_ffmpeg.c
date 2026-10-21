@@ -53,10 +53,11 @@
 #define MCI_SHIM_STATUS  0x814   /* host.c asks it for MCI_DGV_STATUS_HWND (the child) */
 #define MCI_SHIM_WINDOW  0x841   /* kept for completeness; host.c does not send it */
 
-/* The movie's own sound needs the SDL mixer (not ported yet): the probe and
+/* The movie's own sound goes into the SDL mixer (SdlMix_Movie*): the probe and
    the chunk walking below are compiled and exercised either way, only the sink
-   is switched off. Flip to 1 together with porting SdlMix_Movie*. */
-#define PILOTS_MOVIE_AUDIO 0
+   is gated. Set to 0 to keep a movie silent without losing its video - on
+   Windows this whole TU is empty (mciavi32 plays the sound itself). */
+#define PILOTS_MOVIE_AUDIO 1
 
 /* fake HWND for the MCI child window (MCI_STATUS/MCI_WINDOW output = g_hAviWindow);
    distinct from WinShimMainWindow() = 0x00123400 */
