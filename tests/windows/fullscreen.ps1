@@ -11,9 +11,9 @@
 #      поэтому картинка падает в естественный размер НО остаётся отцентрованной:
 #      SdlBackendSetNativeMovie: 1 -> picture 640x480 at (x,y), (x,y) != (0,0);
 #   4. клик в центр картинки доходит до процесса и доходит ПРАВИЛЬНЫМИ координатами:
-#      MciChildForwardProc (дочернее окно -> клиентское) и
 #      SdlGameWndProc: 0x201 client (...) -> game (320,240);
-#      прерывание ролика подтверждает VideoWndProc: skip request;
+#      прерывание ролика подтверждается ранним PlayAvi: end playing= (MCI_STOP по
+#      клику доехал, MM_MCINOTIFY погасил модальный цикл - см. clickskip.ps1);
 #   5. после ролика картинка масштабирована с сохранением пропорций и отцентрована
 #      (SdlUpdateLayout: window ... -> picture WxH at (x,y), WxH != 640x480);
 #   6. Alt+Enter выключает и включает режим обратно, окно возвращается к клиенту 640x480.
@@ -23,8 +23,8 @@
 #      оставался 640x480 - размер окна при создании, - а SDL_GetRendererOutputSize
 #      отвечал живыми 1536x864: картинка рисовалась в буфер 640x480, который DXGI
 #      растягивал на весь клиент (2.4x по горизонтали, 1.8x по вертикали, обрезка краем
-#      буфера), а все проверки строками проходили. Поэтому:
-#      7a. последняя строка SdlDrawGameFrame: вьюпорт равен выходу рендерера;
+#      буфера), а все проверки строками проходили. Поэтому - bbox непустой области
+#      картинки (7b ниже):
 #      7b. PrintWindow окна (не зависит от z-порядка: полноэкранное окно почти всегда
 #          под чужим) - bbox непустой области картинки равен rect'у из раскладки
 #          (логическому или пересчитанному в физические пиксели) и пропорция области
@@ -70,7 +70,7 @@ public class FS {
 
 $ErrorActionPreference = 'Stop'
 $SRC  = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
-$exe  = if ($Arch -eq 'x64') { 'PILOT_RV_x64.EXE' } else { 'PILOT_RV.EXE' }
+$exe  = if ($Arch -eq 'x64') { 'PILOTS_RE_x64.EXE' } else { 'PILOTS_RE.EXE' }
 $SHOT = Join-Path $env:TEMP 'shots'
 New-Item -ItemType Directory -Force -Path $SHOT | Out-Null
 
@@ -81,13 +81,13 @@ function Check([string]$name, [bool]$ok) {
 }
 
 # Остатки процесса убираются ДО сборки: link не откроет занятый exe (см. clickskip.ps1)
-Get-Process PILOT_RV,PILOT_RV_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 $bat = if ($Arch -eq 'x64') { 'debug x64' } else { 'debug x86' }
-"building $Arch DEBUG (build_sdl.bat $bat)..."
-& cmd /c "`"$SRC\build_sdl.bat $bat`"" | Select-Object -Last 1
-if (-not (Test-Path (Join-Path $SRC $exe))) { "no exe: $SRC\$exe"; exit 1 }
+"building $Arch DEBUG (build-vs2022.bat $bat)..."
+& cmd /c "`"$SRC\build-vs2022.bat $bat`"" | Select-Object -Last 1
+if (-not (Test-Path (Join-Path $SRC "out\$exe"))) { "no exe: $SRC\out\$exe"; exit 1 }
 
 . "$PSScriptRoot\rundir.ps1"
 $RUN = New-GameRunDir -ExeName $exe
@@ -169,13 +169,11 @@ $watch = @(
   'SdlBackendParseCmdLine: -fullscreen',
   'SdlApplyFullscreen: on ->',
   'SdlApplyFullscreen: off ->',
-  'OpenMCIVideoDevice: MoveWindow(',
-  'MciChildForwardClicks: subclassed ',
-  'PlayIntroVideo: g_MCIDeviceID=1',
-  'PlayIntroVideo: PlayMCIVideo -> ',
-  'VideoWndProc: MM_MCINOTIFY reason=',
-  'PlayIntroVideo: wait loop ended',
-  'VideoWndProc: skip request',
+  'PlayAvi: start',
+  'PlayAvi: MCI device',
+  'PlayAvi: click on the AVI child',
+  'PlayAvi: click on the game window',
+  'PlayAvi: end playing=',
   'SdlBackendSetNativeMovie: 1 ->',
   'SdlBackendSetNativeMovie: 0 ->'
 )
@@ -248,7 +246,7 @@ Check 'window covers the screen' $winFs
 $ready = $false
 for ($i=0; $i -lt 300 -and -not $ready; $i++) {
   Start-Sleep -Milliseconds 200
-  if (See 'OpenMCIVideoDevice: MoveWindow(') { $ready = $true }
+  if (See 'PlayAvi: MCI device') { $ready = $true }
   if ($p.HasExited) { break }
 }
 if (-not $ready) {
@@ -262,8 +260,8 @@ Snap "${Arch}_fs_movie"
 
 # Естественный размер не означает (0,0): картинка отцентрована в клиенте полноэкранного
 # окна, и дочернее окно AVIWnd32 стоит ровно в её центре - иначе клик мимо. Строка
-# SetNativeMovie: 1 пишется в OpenMCIVideoDevice, то есть ДО ShowWindow, пока клиент
-# ещё 640x480 и смещения нет; итоговое состояние - последняя строка SdlUpdateLayout.
+# SetNativeMovie: 1 пишется в Host_PlayAvi, то есть до того, как раскладка устоялась;
+# итоговое состояние - последняя строка SdlUpdateLayout.
 $native = LogLine 'SdlBackendSetNativeMovie: 1 ->'
 $layNat = LogLast 'SdlUpdateLayout: '
 $natOk = $false
@@ -303,24 +301,35 @@ function Raise-And-Check {
   return @{ hwnd = $w; pid = $pid_; cls = $(if ($w -ne [IntPtr]::Zero) { Get-WindowClass $w } else { '' }) }
 }
 
-$u = Raise-And-Check
-$under = $u.hwnd; $underPid = $u.pid; $underCls = $u.cls
+# Чужое окно поверх (консоль харнесса - измерено в clickskip) не даёт реальному
+# курсору добраться до AVIWnd32: поднимаем окно и перепроверяем, до шести раз.
+$u = $null
+for ($i=0; $i -lt 6; $i++) {
+  $u = Raise-And-Check
+  $under = $u.hwnd; $underPid = $u.pid; $underCls = $u.cls
+  if ($underCls -eq 'AVIWnd32') { break }
+  Start-Sleep -Milliseconds 200
+}
 "  window at that point: 0x$([Convert]::ToString($under.ToInt64(),16)) pid=$underPid class='$underCls' (game pid=$($p.Id))"
 Check 'our window is under the cursor' ($underPid -eq [uint32]$p.Id)
 Check 'AVIWnd32 child under the cursor' ($underCls -eq 'AVIWnd32')
 
 # Где дочерние окна на самом деле: AVIWnd32 обязан стоять по центру картинки
-# (608,312) 320x240 в логических координатах движка, а мciavi32 может переставить
+# (608,312) 320x240 в логических координатах движка, а mciavi32 может переставить
 # своё окно само после начала воспроизведения - тогда клик в центр попадёт в
 # родительское окно. Печатаем все rect'ы, чтобы отказ был объяснимым.
+$aviChild = $false
 $ch = [FS]::FindWindowEx($h, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
 while ($ch -ne [IntPtr]::Zero) {
+  $cls = Get-WindowClass $ch
+  if ($cls -eq 'AVIWnd32') { $aviChild = $true }
   $chr = New-Object FS+RECT
   [void][FS]::GetWindowRect($ch, [ref]$chr)
-  "  child 0x$([Convert]::ToString($ch.ToInt64(),16)) '$(Get-WindowClass $ch)' rect ($($chr.left),$($chr.top))-($($chr.right),$($chr.bottom))"
+  "  child 0x$([Convert]::ToString($ch.ToInt64(),16)) '$cls' rect ($($chr.left),$($chr.top))-($($chr.right),$($chr.bottom))"
   $ch = [FS]::FindWindowEx($h, $ch, [IntPtr]::Zero, [IntPtr]::Zero)
 }
 
+$tClick = Get-Date
 $viaReal = $false
 if ($underCls -eq 'AVIWnd32') {
   [void][FS]::SetCursorPos($pt.x, $pt.y)
@@ -331,61 +340,93 @@ if ($underCls -eq 'AVIWnd32') {
   $viaReal = $true
   "  clicked with the real cursor"
 } else {
-  # Запасной путь: шлём в AVIWnd32 сами. MciChildForwardProc обязан пересчитать
-  # дочерние координаты в клиентские (ClientToScreen/ScreenToClient) и переслать
-  # в окно игры - это ровно та конверсия, ради которой клик и нужен.
-  $childLine = LogLine 'MciChildForwardClicks: subclassed '
-  $child = [IntPtr]::Zero
-  if ($childLine -and $childLine.ToString() -match 'subclassed (0x[0-9A-Fa-f]+)') {
-    $child = [IntPtr]([Convert]::ToInt64($Matches[1], 16))
-  }
-  if ($child -ne [IntPtr]::Zero) {
-    $crc = New-Object FS+RECT
-    [void][FS]::GetClientRect($child, [ref]$crc)
-    $x = [int]($crc.right / 2); $y = [int]($crc.bottom / 2)
-    $lp = [IntPtr]((([uint32]($y -band 0xFFFF) -shl 16) -bor [uint32]($x -band 0xFFFF)))
-    "  posted WM_LBUTTONDOWN ($x,$y) to the child 0x$([Convert]::ToString($child.ToInt64(),16))"
-    [void][FS]::PostMessage($child, 0x201, [UIntPtr]1, $lp)
-  } else {
-    "  no child window - posted WM_LBUTTONDOWN to the game window"
-    $x = [int]($rc.right / 2); $y = [int]($rc.bottom / 2)
-    $lp = [IntPtr]((([uint32]($y -band 0xFFFF) -shl 16) -bor [uint32]($x -band 0xFFFF)))
-    [void][FS]::PostMessage($h, 0x201, [UIntPtr]1, $lp)
-  }
+  # Запасной путь: шлём WM_LBUTTONDOWN прямо в окно игры. SdlGameWndProc обязан
+  # пересчитать клиентские координаты в игровые (лог) и отдать сообщение игре -
+  # та же конверсия, что и при реальном клике мимо AVIWnd32.
+  $x = [int]($rc.right / 2); $y = [int]($rc.bottom / 2)
+  $lp = [IntPtr]((([uint32]($y -band 0xFFFF) -shl 16) -bor [uint32]($x -band 0xFFFF)))
+  "  no AVIWnd32 under the cursor - posted WM_LBUTTONDOWN ($x,$y) to the game window"
+  [void][FS]::PostMessage($h, 0x201, [UIntPtr]1, $lp)
 }
 
-$relay = $false; $skip = $false; $mapped = ''
-for ($i=0; $i -lt 50 -and -not ($relay -and $skip); $i++) {
-  Start-Sleep -Milliseconds 200
-  PollAll
-  if (-not $relay) { $relay = See 'MciChildForwardProc: Msg=0x201' }
-  if (-not $skip)  { $skip  = See 'VideoWndProc: skip request' }
-  if (-not $mapped) {
+$mapped = ''
+# Маппинг SdlGameWndProc виден только у клика, попавшего прямо в окно игры
+# (запасной путь): реальный курсор по AVIWnd32 идёт в ветку WM_PARENTNOTIFY, где
+# координаты не читаются вовсе - ждать строку маппинга там бессмысленно (измерено:
+# такой опрос съедал 10 с и портил измерение времени пропуска).
+if (-not $viaReal) {
+  for ($i=0; $i -lt 50 -and -not $mapped; $i++) {
+    Start-Sleep -Milliseconds 200
+    PollAll
     $m = LogLine '-> game (320,240)'
     if ($m) { $mapped = $m.ToString().Trim() }
+    if ($p.HasExited) { break }
   }
-  if ($p.HasExited) { break }
 }
-"after click: viaReal=$viaReal  child relay=$relay  skip=$skip"
+"after click: viaReal=$viaReal"
 if ($mapped) { "  $mapped" }
 
 # INTRO.AVI = 528 кадров по 66660 мкс = 35.2 с. Прерванный ролик заканчивается за
 # доли секунды, доигранный - примерно через 35 с; и то и другое мы просто измеряем,
 # чтобы увидеть разницу в таймстемпах ниже.
-$adv = See 'PlayIntroVideo: wait loop ended'
+$adv = See 'PlayAvi: end playing='
 for ($i=0; $i -lt 200 -and -not $adv; $i++) {        # 40 с - больше полной длины ролика
   Start-Sleep -Milliseconds 200
   PollAll
-  $adv = See 'PlayIntroVideo: wait loop ended'
+  $adv = See 'PlayAvi: end playing='
   if ($p.HasExited) { break }
 }
+$dtClick = [math]::Round(((Get-Date) - $tClick).TotalSeconds, 1)
+"  playback ended ${dtClick}s after the click (full INTRO is 35s)"
+
+# Игра по цепочке запускает после интро второй ролик (start.AVI): экран снова
+# уходит в нативный размер - измерено, анализ пикселей как раз и поймал его, -
+# а проверяем мы картинку после роликов. Второй ролик стартует НЕ сразу после
+# конца первого (измеренные задержки: 3,5 с на x86 и больше 3 с на x64 - 3-секундный
+# полл по строке его пропустил), поэтому ловим по счётчику стартов и ждём до 30 с.
+$second = $false
+for ($i=0; $i -lt 150 -and -not $second; $i++) {
+  Start-Sleep -Milliseconds 200
+  PollAll
+  $second = (LogCount 'PlayAvi: start') -ge 2
+  if ($p.HasExited) { break }
+}
+if ($second) {
+  if ($viaReal) {
+    [void][FS]::SetCursorPos($pt.x, $pt.y)
+    Start-Sleep -Milliseconds 150
+    [void][FS]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 60
+    [void][FS]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    "  clicked the second movie as well"
+  } else {
+    $x2 = [int]($rc.right / 2); $y2 = [int]($rc.bottom / 2)
+    $lp2 = [IntPtr]((([uint32]($y2 -band 0xFFFF) -shl 16) -bor [uint32]($x2 -band 0xFFFF)))
+    "  posted WM_LBUTTONDOWN to the game window for the second movie as well"
+    [void][FS]::PostMessage($h, 0x201, [UIntPtr]1, $lp2)
+  }
+  # Таймаут покрывает доигрывание start.AVI целиком (~50 с), если щелчок не долетел.
+  for ($i=0; $i -lt 375 -and (LogCount 'PlayAvi: end playing=') -lt 2; $i++) {
+    Start-Sleep -Milliseconds 200
+    PollAll
+    if ($p.HasExited) { break }
+  }
+}
+Start-Sleep -Milliseconds 600                          # дать главному циклу перерисовать картинку
 Snap "${Arch}_fs_after_movie"
 
-Check 'click reached the game process' ($viaReal -or $relay)
-Check 'AVIWnd32 child exists'                 (See 'MciChildForwardClicks: subclassed ')
-Check 'click mapped to game (320,240)'        ([bool]$mapped)
-Check 'child relay (Msg=0x201)'               $relay
-Check 'VideoWndProc skip request'             $skip
+Check 'click reached the game process' ($viaReal -or [bool]$mapped)
+Check 'AVIWnd32 child exists'                 $aviChild
+# Координатный маппинг SdlGameWndProc виден только для клика, попавшего прямо в
+# окно игры (запасной путь): реальный курсор по AVIWnd32 идёт в ветку
+# WM_PARENTNOTIFY, где координаты вообще не читаются - стоп по самому факту
+# щелчка, и маппингу там неоткуда взяться.
+if ($viaReal) {
+  Check 'AVI-child stop branch fired'         (See 'PlayAvi: click on the AVI child')
+} else {
+  Check 'click mapped to game (320,240)'       ([bool]$mapped)
+}
+Check 'playback ended early'                  ($adv -and $dtClick -lt 20)
 Check 'video playback finished'               $adv
 
 $naturalOff = LogLine 'SdlBackendSetNativeMovie: 0 ->'
@@ -393,30 +434,29 @@ Check 'movie closed, picture scaled again'    ([bool]$naturalOff -and -not $natu
 if ($naturalOff) { "  $($naturalOff.ToString().Trim())" }
 
 # --- 5. картинка после ролика: масштаб с сохранением пропорций -----------------
+# Источник истины - строка SetNativeMovie: 0: она печатает итоговую раскладку.
+# Последняя SdlUpdateLayout брать нельзя - игра по цепочке тут же запускает
+# следующий ролик (start.AVI), и его собственная строка (native movie)
+# перетирает раскладку интро в журнале (измерено: проверка падала именно так).
+# От неё берётся только размер окна - он меняется только по Alt+Enter.
 $lay = LogLast 'SdlUpdateLayout: '
+$ww = 0; $wh = 0
+if ($lay -and $lay.ToString() -match 'window (\d+)x(\d+)') { $ww = [int]$Matches[1]; $wh = [int]$Matches[2] }
 $layOk = $false
-if ($lay -and $lay.ToString() -match 'window (\d+)x(\d+) -> picture (\d+)x(\d+) at \((-?\d+),(-?\d+)\)') {
-  $ww = [int]$Matches[1]; $wh = [int]$Matches[2]
-  $pw = [int]$Matches[3]; $ph = [int]$Matches[4]; $px = [int]$Matches[5]; $py = [int]$Matches[6]
-  # 4:3 картинка в 16:9 клиенте: ширина меньше окна, высота равна окну, (0,0) невозможен,
-  # и пропорции картинки - игровые (640/480), а не оконные.
-  $layOk = ($pw -ne $ww) -and ($ph -eq $wh) -and (($px -ne 0) -or ($py -ne 0)) -and
+if ($naturalOff -and $ww -gt 0 -and $naturalOff.ToString() -match 'picture (\d+)x(\d+) at \((-?\d+),(-?\d+)\)') {
+  $pw = [int]$Matches[1]; $ph = [int]$Matches[2]; $px = [int]$Matches[3]; $py = [int]$Matches[4]
+  # 4:3 картинка в 16:9 клиенте: ширина меньше окна, высота равна окну, (0,0)
+  # невозможен, и пропорции картинки - игровые (640/480), а не оконные.
+  $layOk = ($pw -lt $ww) -and ($ph -eq $wh) -and (($px -ne 0) -or ($py -ne 0)) -and
            ([math]::Abs(($pw / [double]$ph) - (640.0 / 480.0)) -lt 0.01)
-  "  layout: $($lay.ToString().Trim())"
+  "  layout after the movie: picture ${pw}x${ph} at ($px,$py) in window ${ww}x${wh}"
 }
 Check 'picture scaled, aspect kept, centered' $layOk
 
-# --- 5b. вьюпорт и ПИКСЕЛИ ------------------------------------------------------
-# 7a. Вьюпорт SDL обязан покрывать весь выход рендерера: это ровно то, что сломалось
-# (и что ни одна строка раскладки не видит).
-$vg = LogLast 'SdlDrawGameFrame: '
-$vpOk = $false
-if ($vg -and $vg.ToString() -match 'output (\d+)x(\d+) viewport \((-?\d+),(-?\d+) (\d+)x(\d+)\)') {
-  $vpOk = ([int]$Matches[3] -eq 0) -and ([int]$Matches[4] -eq 0) -and
-          ([int]$Matches[5] -eq [int]$Matches[1]) -and ([int]$Matches[6] -eq [int]$Matches[2])
-  "  $($vg.ToString().Trim())"
-}
-Check 'viewport covers the renderer output' $vpOk
+# --- 5b. ПИКСЕЛИ -----------------------------------------------------------------
+# (Вьюпортная проверка 7a из sdl2-ветки в port-main не переехала - строки
+# SdlDrawGameFrame здесь нет. Bbox ниже ловит тот же класс поломки напрямую:
+# картинка, нарисованная в буфер неправильного размера, его ломает буквально.)
 
 # 7b. Сами пиксели. PrintWindow с PW_RENDERFULLCONTENT идёт через DWM, то есть берёт
 # ровно тот кадр, что на экране, и ему всё равно, под чужим окном или нет наше.

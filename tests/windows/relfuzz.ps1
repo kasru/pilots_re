@@ -6,13 +6,13 @@ public class G5 {
 }'
 
 $SRC = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
-Get-Process PILOT_RV,PILOT_RV_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 "### building x64 RELEASE ###"
-cmd /c "`"$SRC\build_sdl.bat release x64`"" 2>&1 | Select-String -Pattern 'SUCCESS|BUILD FAILED|error C' | ForEach-Object { $_.Line }
+cmd /c "`"$SRC\build-vs2022.bat release x64`"" 2>&1 | Select-String -Pattern 'SUCCESS|BUILD FAILED|error C' | ForEach-Object { $_.Line }
 
-$p = Start-Process -FilePath "$SRC\PILOT_RV_x64.EXE" -WorkingDirectory $SRC -PassThru
+$p = Start-Process -FilePath "$SRC\out\PILOTS_RE_x64.EXE" -WorkingDirectory $SRC -PassThru
 $h = [IntPtr]::Zero
 for ($i=0; $i -lt 150 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 200; $p.Refresh(); if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $h = $p.MainWindowHandle } }
 "window handle: $h"

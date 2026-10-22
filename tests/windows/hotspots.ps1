@@ -28,7 +28,7 @@ public class HS {
   public static IntPtr LP(int x,int y){ return (IntPtr)(((uint)y<<16)|((uint)x&0xFFFF)); }
 }'
 
-$ExeName = if ($Arch -eq 'x64') { 'PILOT_RV_x64.EXE' } else { 'PILOT_RV.EXE' }
+$ExeName = if ($Arch -eq 'x64') { 'PILOTS_RE_x64.EXE' } else { 'PILOTS_RE.EXE' }
 $VK_CONTROL = 0x11
 $KEYEVENTF_KEYUP = 2
 $shots = Join-Path $env:TEMP 'shots'
@@ -40,11 +40,11 @@ function Check([string]$what, [bool]$ok, [string]$detail = '') {
 }
 
 . "$PSScriptRoot\rundir.ps1"
-Get-Process PILOT_RV,PILOT_RV_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 $RUN = New-GameRunDir -ExeName $ExeName
-# DbgLogInit strips the exe extension: PILOT_RV_x64_debug.log / PILOT_RV_debug.log
+# DbgLogInit strips the exe extension: PILOTS_RE_x64_debug.log / PILOTS_RE_debug.log
 $LOG = Join-Path $RUN (($ExeName -replace '\.EXE$','') + '_debug.log')
 Remove-Item $LOG -ErrorAction SilentlyContinue
 

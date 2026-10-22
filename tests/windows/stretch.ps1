@@ -12,7 +12,7 @@
 param([ValidateSet('x86','x64')][string]$Arch = 'x86')
 
 . "$PSScriptRoot\rundir.ps1"
-$ExeName = if ($Arch -eq 'x64') { 'PILOT_RV_x64.EXE' } else { 'PILOT_RV.EXE' }
+$ExeName = if ($Arch -eq 'x64') { 'PILOTS_RE_x64.EXE' } else { 'PILOTS_RE.EXE' }
 $RUN = New-GameRunDir -ExeName $ExeName
 $LogName = ($ExeName -replace '\.EXE$', '') + '_debug.log'
 $LOG = Join-Path $RUN $LogName

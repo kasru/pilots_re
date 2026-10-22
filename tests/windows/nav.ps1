@@ -14,15 +14,15 @@ public class G {
 }'
 
 $SRC  = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
-$LOG  = "$SRC\PILOT_RV_x64_debug.log"
+$LOG  = "$SRC\out\PILOTS_RE_x64_debug.log"
 $SHOT = Join-Path $env:TEMP 'shots'
 New-Item -ItemType Directory -Force -Path $SHOT | Out-Null
 
-Get-Process PILOT_RV,PILOT_RV_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 Remove-Item $LOG -ErrorAction SilentlyContinue
-$p = Start-Process -FilePath "$SRC\PILOT_RV_x64.EXE" -WorkingDirectory $SRC -PassThru
+$p = Start-Process -FilePath "$SRC\out\PILOTS_RE_x64.EXE" -WorkingDirectory $SRC -PassThru
 $h = [IntPtr]::Zero
 for ($i=0; $i -lt 150 -and $h -eq [IntPtr]::Zero; $i++) {
   Start-Sleep -Milliseconds 200
@@ -63,10 +63,10 @@ function ClickL($lx,$ly,$tag) {
   [void][G]::PostMessage($h,0x0202,[IntPtr]::Zero,[G]::LP($lx,$ly))
   Start-Sleep -Milliseconds 500
   # confirm the game actually received the button-down at these coords
-  $last = Get-Content $LOG -ErrorAction SilentlyContinue | Select-String -SimpleMatch 'msg=0x201' | Select-Object -Last 1
-  $want = 'lp=0x{0:X}' -f (([uint32]$ly -shl 16) -bor ([uint32]$lx -band 0xFFFF))
-  $got  = if ($last) { ($last.Line -replace '^.*lp=','') } else { '<none>' }
-  "  click[$tag] ($lx,$ly)  game got lp=$got   want=$want   match=$($got -eq $want)"
+  $last = Get-Content $LOG -ErrorAction SilentlyContinue | Select-String -SimpleMatch 'click L: ' | Select-Object -Last 1
+  $want = "$lx,$ly"
+  $got  = if ($last) { ($last.Line -replace '^.*click L: ','') } else { '<none>' }
+  "  click[$tag] ($lx,$ly)  game got '$got'   want '$want'   match=$($got -eq $want)"
 }
 
 Start-Sleep -Seconds 16

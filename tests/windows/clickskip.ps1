@@ -13,14 +13,22 @@
 # окна игры, и оно съедает WM_LBUTTONDOWN. PostMessage прямо в окно игры этот обход
 # минует и доказал бы ровно ничего.
 #
-# Три объективных признака в debug-логе:
-#   1. MciChildForwardProc: Msg=0x201  - подкласс дочернего окна переслал клик окну игры;
-#   2. VideoWndProc: skip request     - игровое окно приняло его и увело MCI_STOP;
-#   3. PlayIntroVideo: wait loop ended- цикл ожидания ролика закончился за секунды,
-#      а не через ~34 с, на которые рассчитан INTRO.AVI.
+# Признаки в debug-логе (port-main: подкласса дочернего окна НЕТ - и не нужен:
+# щелчок по AVIWnd32 гонит WM_PARENTNOTIFY через DefWindowProc до родителя, и
+# ветка WM_PARENTNOTIFY в Host_AviWndProc останавливает воспроизведение сама -
+# измерено этим же харнессом; раньше все прогоны кликали мимо в чужое окно
+# консоли и цепочка никогда не проверялась):
+#   1. AVIWnd32 виден среди детей окна игры и его rect покрывает точку клика -
+#      дочернее окно mciavi32 существует и перекрывает центр картинки;
+#   2. PlayAvi: click on the AVI child (WM_PARENTNOTIFY ...) - щелчок дошёл до
+#      родителя и ветка стопа сработала;
+#   3. 'click L: ' в логе НЕ появляется - решение принимает Host_AviWndProc, а не
+#      обычный путь окна игры;
+#   4. PlayAvi: end playing= приходит за секунды после клика, а не через ~34 с -
+#      MCI_STOP дошёл, MM_MCINOTIFY погасил модальный цикл.
 #
-# Без подкласса (т.е. до фикса) остаётся только #3: клик в центр молча проглатывается
-# и ролик доигрывает до конца.
+# Без цепочки остаётся только доигрывание: клик в центр молча проглатывается
+# и ролик идёт все 34 с.
 
 param([ValidateSet('x86','x64')][string]$Arch = 'x64')
 
@@ -35,6 +43,13 @@ public class CS {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte sc, uint flags, UIntPtr extra);
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
+  public static string ClassName(IntPtr h) {
+    var sb = new StringBuilder(64); GetClassNameW(h, sb, 64); return sb.ToString();
+  }
   public struct RECT { public int left, top, right, bottom; }
   public struct POINT { public int x, y; }
 }'
@@ -65,13 +80,30 @@ public static class CSEx {
         }, IntPtr.Zero);
         return sb.ToString();
     }
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+    public struct RECT { public int left, top, right, bottom; }
+    // Screen rect of the first child with the given class - the AVI child may sit
+    // somewhere other than where the picture is, which is exactly what a click
+    // that hits nothing looks like.
+    public static string ChildRect(IntPtr parent, string cls) {
+        IntPtr found = IntPtr.Zero;
+        EnumChildWindows(parent, delegate(IntPtr c, IntPtr l) {
+            var cn = new StringBuilder(64); GetClassNameW(c, cn, 64);
+            if (cn.ToString() == cls) { found = c; return false; }
+            return true;
+        }, IntPtr.Zero);
+        if (found == IntPtr.Zero) return "no " + cls;
+        RECT r; GetWindowRect(found, out r);
+        return string.Format("0x{0:X} screen rect {1},{2}-{3},{4}",
+                             found.ToInt64(), r.left, r.top, r.right, r.bottom);
+    }
 }
 '@
 }
 
 $ErrorActionPreference = 'Stop'
 $SRC  = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
-$exe  = if ($Arch -eq 'x64') { 'PILOT_RV_x64.EXE' } else { 'PILOT_RV.EXE' }
+$exe  = if ($Arch -eq 'x64') { 'PILOTS_RE_x64.EXE' } else { 'PILOTS_RE.EXE' }
 $SHOT = Join-Path $env:TEMP 'shots'
 New-Item -ItemType Directory -Force -Path $SHOT | Out-Null
 
@@ -84,13 +116,13 @@ function Check([string]$name, [bool]$ok) {
 # Убить остатки процесса ДО сборки: SDL2.dll общая по имени для обеих архитектур, так
 # что собирать надо нужную последней, а link не откроет занятый exe - напечатает
 # BUILD FAILED, и тест молча продолжит на предыдущем бинарнике.
-Get-Process PILOT_RV,PILOT_RV_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 $bat = if ($Arch -eq 'x64') { 'debug x64' } else { 'debug x86' }
-"building $Arch DEBUG (build_sdl.bat $bat)..."
-& cmd /c "`"$SRC\build_sdl.bat $bat`"" | Select-Object -Last 1
-if (-not (Test-Path (Join-Path $SRC $exe))) { "no exe: $SRC\$exe"; exit 1 }
+"building $Arch DEBUG (build-vs2022.bat $bat)..."
+& cmd /c "`"$SRC\build-vs2022.bat $bat`"" | Select-Object -Last 1
+if (-not (Test-Path (Join-Path $SRC "out\$exe"))) { "no exe: $SRC\out\$exe"; exit 1 }
 
 . "$PSScriptRoot\rundir.ps1"
 $RUN = New-GameRunDir -ExeName $exe
@@ -140,7 +172,7 @@ function LogHas([string]$pat) { [bool](Get-Content $LOG -ErrorAction SilentlyCon
 $ready = $false
 for ($i=0; $i -lt 300 -and -not $ready; $i++) {
   Start-Sleep -Milliseconds 200
-  if (LogHas 'OpenMCIVideoDevice: MoveWindow(') { $ready = $true }
+  if (LogHas 'PlayAvi: MCI device') { $ready = $true }
   if ($p.HasExited) { break }
 }
 if (-not $ready) {
@@ -151,9 +183,11 @@ if (-not $ready) {
 Start-Sleep -Seconds 2                              # AVIWnd32 must be up and painting
 Snap "${Arch}_click_before"
 # Классы детей окна - единственный прямой признак того, что AVIWnd32 и вправду существует
-# и перекрывает картинку: без него клик в центр ушёл бы в окно игры мимо всего фикса.
-# Спрашивать надо ДО клика: как только ролик закончен, PlayIntroVideo закрывает это окно.
-"AVIWnd child before the click: '$([CSEx]::ChildClasses($h))'"
+# и перекрывает картинку: без него клик в центр ушёл бы в окно игры мимо всей цепочки.
+# Спрашивать надо ДО клика: как только ролик закончен, Host_AviClose закрывает это окно.
+$children = [CSEx]::ChildClasses($h)
+"AVIWnd child before the click: '$children'"
+"AVI child: $([CSEx]::ChildRect($h, 'AVIWnd32'))"
 
 # Центр картинки: логическое (320,240) внутри клиентских 640x480. Харнесс помечен
 # DPI-aware, так что клиентский прямоугольник, ClientToScreen и SetCursorPos все
@@ -165,44 +199,76 @@ $pt = New-Object CS+POINT
 $pt.x = [int](320 * $scale); $pt.y = [int](240 * $scale)
 [void][CS]::ClientToScreen($h, [ref]$pt)
 "client $($rc.right)x$($rc.bottom) scale=$([math]::Round($scale,3)) -> screen click at ($($pt.x),$($pt.y))"
+$under = [CS]::WindowFromPoint($pt)
+"under the point: '$([CS]::ClassName($under))' 0x$([Convert]::ToString($under.ToInt64(),16))"
 
 [void][CS]::ShowWindow($h, 9)
 [void][CS]::BringWindowToTop($h)
+# Windows отказывает фоновому процессу стать foreground, и под точкой может остаться
+# чужое окно (измерено: VirtualConsoleClass консоли харнесса). Обход - клавиша Alt
+# рядом с SetForegroundWindow (см. Raise-And-Check в fullscreen.ps1), иначе реальный
+# курсор кликает не в игру и проверка молча измеряет не ту цепочку.
+[CS]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)      # ALT down
 [void][CS]::SetForegroundWindow($h)
+[CS]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)      # ALT up
 Start-Sleep -Milliseconds 300
-[void][CS]::SetCursorPos($pt.x, $pt.y)
-Start-Sleep -Milliseconds 150
-[void][CS]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)   # LEFTDOWN
-Start-Sleep -Milliseconds 60
-[void][CS]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
+$under = [IntPtr]::Zero
+for ($i=0; $i -lt 6 -and ([CS]::ClassName($under) -ne 'AVIWnd32'); $i++) {
+  [void][CS]::SetCursorPos($pt.x, $pt.y)
+  Start-Sleep -Milliseconds 200
+  $under = [CS]::WindowFromPoint($pt)
+  "under the point: '$([CS]::ClassName($under))' 0x$([Convert]::ToString($under.ToInt64(),16))"
+  if ([CS]::ClassName($under) -ne 'AVIWnd32') {
+    [void][CS]::BringWindowToTop($h)
+    Start-Sleep -Milliseconds 200
+  }
+}
+if ([CS]::ClassName($under) -eq 'AVIWnd32') {
+  [void][CS]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)   # LEFTDOWN
+  Start-Sleep -Milliseconds 60
+  [void][CS]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
+  "clicked with the real cursor"
+} else {
+  # Запасной путь: щелчок прямо в окно игры (его ветка WM_LBUTTONDOWN в
+  # Host_AviWndProc останавливает воспроизведение сама - вторая половина
+  # оригинального механизма). В дочернее окно не шлём: без харнесса ОС
+  # hit-test mciavi32 может съесть такой постинг молча.
+  $lp = [IntPtr]((((240 * $scale) -shl 16) -bor [int](320 * $scale)))
+  "AVIWnd32 is not under the cursor - posted WM_LBUTTONDOWN to the game window"
+  [void][CS]::PostMessage($h, 0x201, [UIntPtr]1, $lp)
+}
 
 $t0 = Get-Date
-$relay = $false; $skip = $false
-for ($i=0; $i -lt 50 -and -not ($relay -and $skip); $i++) {
+# Ни одного 'click L: ' - значит клик съел AVIWnd32, а не окно игры (см. header).
+$ateClick = $false
+for ($i=0; $i -lt 10; $i++) {
   Start-Sleep -Milliseconds 200
-  if (-not $relay) { $relay = LogHas 'MciChildForwardProc: Msg=0x201' }
-  if (-not $skip)  { $skip  = LogHas 'VideoWndProc: skip request' }
-  if ($p.HasExited) { break }
+  if (LogHas 'click L: ') { $ateClick = $true; break }
 }
-"after click: child relay=$relay  skip request=$skip"
+"after click: game saw its own button-down: $ateClick"
 
-# PlayIntroVideo уходит из цикла ожидания только по MM_MCINOTIFY, то есть либо по
-# концу ролика, либо по нашему клику. INTRO.AVI длится ~34 с, так что дедлайн в 20 с
-# отличает пропуск от доигрывания однозначно.
+# Host_PlayAvi уходит из модального цикла только по MM_MCINOTIFY, то есть либо по
+# концу ролика, либо после MCI_STOP по нашему клику (WM_PARENTNOTIFY от AVIWnd32).
+# INTRO.AVI длится ~34 с, так что дедлайн в 20 с отличает пропуск от доигрывания
+# однозначно.
 $adv = $false; $dt = 0
-for ($i=0; $i -lt 100 -and -not $adv; $i++) {        # 20 с
+for ($i=0; $i -lt 100 -and -not $adv; $i++) {        # 20 с - прерванный ролик кончается за доли секунды
   Start-Sleep -Milliseconds 200
-  $adv = LogHas 'PlayIntroVideo: wait loop ended'
+  $adv = LogHas 'PlayAvi: end playing='
   if ($p.HasExited) { break }
 }
 if ($adv) { $dt = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1) }
 "video over ${dt}s after the click (INTRO.AVI plays ~34s)"
 Snap "${Arch}_click_after"
 
+$skippedVia = if (LogHas 'PlayAvi: click on the AVI child') { 'AVI child (WM_PARENTNOTIFY)' }
+              elseif (LogHas 'PlayAvi: click on the game window') { 'game window' }
+              else { '<none>' }
+"stop branch: $skippedVia"
 Check 'video opened'                       $true
-Check 'AVIWnd32 child exists'              (LogHas 'MciChildForwardClicks: subclassed')
-Check "MciChildForward relay (Msg=0x201)"  $relay
-Check 'VideoWndProc skip request'          $skip
+Check 'AVIWnd32 child exists'              ($children -match 'AVIWnd32')
+Check 'the click went to AVIWnd32, not the game window' (-not $ateClick)
+Check 'the stop branch fired'              ($skippedVia -ne '<none>')
 Check 'playback ended early'               ($adv -and $dt -lt 20)
 Check 'no exception in the log'            (-not (Get-Content $LOG -EA SilentlyContinue | Select-String 'EXCEPTION: 0xC000|Access violation' | Select-Object -First 1))
 

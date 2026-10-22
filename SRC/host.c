@@ -270,13 +270,23 @@ LRESULT CALLBACK Host_AviWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
         return 0;
 
     case WM_PARENTNOTIFY:
-        /* Щелчок в дочернем окне воспроизведения. */
+        /* Щелчок в дочернем окне воспроизведения: mciavi32 гонит его через
+           DefWindowProc, и WM_PARENTNOTIFY доходит до родителя - измерено
+           харнессом tests/windows/clickskip.ps1 (щелчок реальным курсором по
+           центру AVIWnd32 прерывает ролик за секунды против его ~35 с, и
+           ветка ниже в журнале появляется раньше PlayAvi: end). Подкласс
+           дочернего окна не нужен - вот эта ветка и есть цепочка пропуска. */
         if (LOWORD(wParam) == WM_LBUTTONDOWN || LOWORD(wParam) == WM_RBUTTONDOWN)
+        {
+            DBG_LOG("PlayAvi: click on the AVI child (WM_PARENTNOTIFY wp=%X) -> stop",
+                    (unsigned)wParam);
             Host_AviStopByMouse(LOWORD(wParam));
+        }
         return 0;
 
     case WM_LBUTTONDOWN:
     case WM_RBUTTONDOWN:
+        DBG_LOG("PlayAvi: click on the game window -> stop");
         Host_AviStopByMouse(msg);
         return 0;
 

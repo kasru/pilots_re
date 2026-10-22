@@ -25,5 +25,5 @@ public class T {
 "SetProcessDPIAware(): $([T]::SetProcessDPIAware())"
 "Screen bounds    : $([System.Windows.Forms.Screen]::PrimaryScreen.Bounds)"
 
-$g = Get-Process PILOT_RV,PILOT_RV_x64 -ErrorAction SilentlyContinue
+$g = Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue
 "game processes   : " + $(if ($g) { ($g | ForEach-Object { "$($_.ProcessName)($($_.Id))" }) -join ', ' } else { 'none' })
