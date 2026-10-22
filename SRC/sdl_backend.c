@@ -1257,8 +1257,12 @@ static void SdlUpdateLayout(void)
         s_PicY = 0;
         s_PicW = w;
         s_PicH = h;
-        if (changed && s_Texture && s_Renderer)
-            SdlBackendFlushPresent();             /* новый rect рисуется только следующим кадром */
+        if (changed)
+        {
+            Host_RealignAviWindow();              /* ребёнок mciavi32 едет за картинкой (Alt+Enter) */
+            if (s_Texture && s_Renderer)
+                SdlBackendFlushPresent();         /* новый rect рисуется только следующим кадром */
+        }
         return;
     }
     /* Клиентский rect, а не SDL_GetWindowSize: на Windows SDL узнаёт новый
@@ -1330,6 +1334,7 @@ static void SdlUpdateLayout(void)
                 ww, wh, s_PicW, s_PicH, s_PicX, s_PicY,
                 s_NativeMovie ? " (native movie)" : "", outW, outH,
                 s_StretchPic ? " [- stretched]" : "");
+        Host_RealignAviWindow();                  /* ребёнок mciavi32 едет за картинкой (Alt+Enter) */
         if (s_Texture && s_Renderer)
             SdlBackendFlushPresent();             /* раскладка сдвинулась — кадр нужен сейчас */
     }

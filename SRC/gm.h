@@ -1780,6 +1780,7 @@ bool Host_MciSend(UINT command, DWORD flags, DWORD_PTR params);
 bool Host_MciSendNoParams(UINT command, DWORD_PTR flags);
 bool Host_AviPlay(void);
 LRESULT CALLBACK Host_AviWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+void Host_RealignAviWindow(void); /* MCI-ребёнок вслед за rect'ом картинки (Alt+Enter во время фильма) */
 bool Host_TakeDriveOfType(char *rootOut, uint8_t *driveTypes, uint8_t driveType);
 bool Host_NextSearchDrive(char *rootOut, uint8_t *driveTypes);
 bool Host_FindAviOnDrives(char *aviPath, char *bmpPath, const char *name);

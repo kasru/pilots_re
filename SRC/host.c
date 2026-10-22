@@ -348,6 +348,32 @@ LRESULT CALLBACK Host_AviWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
     }
 }
 
+/* Полноэкранный режим (и выход из него) двигает rect картинки, а MCI-ребёнок —
+   реальное окно, поставленное в игровых координатах (g_AviX/g_AviY) одним разом
+   при первом WM_PAINT: без этого переставления фильм во время переключения
+   остаётся на старых клиентских px — в углу экрана, пока фон (BMP в кадровом
+   буфере) уже отцентрован по новой раскладке. Замерено на Windows: Alt+Enter
+   во время start.AVI. Перенос v0.1 VideoRealignMciChild (video.c) — там вызов
+   висел в SdlUpdateLayout на каждом изменении rect и потерялся при переезде
+   MCI в host.c. На не-Windows ребёнка нет вовсе — кадр рисует сам порт
+   (SdlBackendVideoFrame) и следует за раскладкой на каждый кадр. */
+void Host_RealignAviWindow(void)
+{
+#ifdef _WIN32
+    int avX = g_AviX;
+    int avY = g_AviY;
+    int avW = g_AviWidth ? g_AviWidth : HOST_AVI_DEFAULT_WIDTH;
+    int avH = g_AviHeight ? g_AviHeight : HOST_AVI_DEFAULT_HEIGHT;
+
+    if (!g_hAviWindow || !g_MainWindow || !g_AviWindowPlaced)
+        return;                     /* до первого WM_PAINT место поставит сама раскладка */
+    /* Px игры -> px окна: та же конверсия, что при первой постановке в WM_PAINT. */
+    SdlBackendGameToClient(&avX, &avY);
+    DBG_LOG("PlayAvi: realign child -> (%d,%d) %dx%d", avX, avY, avW, avH);
+    MoveWindow(g_hAviWindow, avX, avY, avW, avH, TRUE);
+#endif
+}
+
 /* Взять из таблицы типов дисков первый диск типа driveType: вычеркнуть его
    из таблицы и записать в rootOut «X:». Ложь — таких дисков больше нет. */
 bool Host_TakeDriveOfType(char *rootOut, uint8_t *driveTypes, uint8_t driveType)
