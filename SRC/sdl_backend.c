@@ -129,6 +129,15 @@ static void SdlBackendFrameShown(void); /* игра блитнула: итог �
    Windows это user32, win32_shim.c в сборку не входит, и честный ответ —
    «не измеряется» (ноль и минус единица), а не ошибка линковки. */
 static int s_InMsgDispatch;         /* глубина вложенных игровых диспатчей: rect из этого пути — сообщенческий */
+#ifdef _WIN32
+static int s_MainWndDestroyed;      /* WM_DESTROY главного окна пройден: WM_QUIT из PostQuitMessage
+                                       мог съесть собственный насос SDL внутри SDL_PollEvent, и тогда
+                                       PeekMessageA главного цикла его не дождётся — процесс останется
+                                       висеть с играющей музыкой. Флаг чисто портовый: на Windows
+                                       очередь — user32, её честно дёрнут оба насоса, и переотправка
+                                       QUIT после дренажа SDL возвращает его игре. См. SdlGameWndProc
+                                       и SdlBackendPumpEvents. */
+#endif
 
 #ifdef _DEBUG
 static unsigned s_RectBlits;        /* каждый rect, который блитовала игра */
@@ -471,6 +480,14 @@ static LRESULT CALLBACK SdlGameWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
 {
     int saved = s_InMsgDispatch;
     LRESULT r;
+
+    /* WM_DESTROY главного окна: игра отвечает на него PostQuitMessage, но SDL
+       (свой насос внутри SDL_PollEvent) снимает WM_QUIT из очереди раньше, чем
+       до него добирается PeekMessageA главного цикла, — процесс остаётся висеть
+       с играющей музыкой. Запоминаем, что окно уничтожено, и QUIT перешлём ниже,
+       уже после дренажа SDL. */
+    if (msg == WM_DESTROY && hWnd == g_MainWindow)
+        s_MainWndDestroyed = 1;
 
     s_InMsgDispatch = saved + 1;
     r = SdlGameWndProcRaw(hWnd, msg, wParam, lParam);
@@ -1048,6 +1065,19 @@ void SdlBackendPumpEvents(void)
         /* Пусто: WM_CLOSE/WM_DESTROY игра получает через подклассwndproc; и
            граница сообщенческого пути профиля — сам подкласс (см.
            SdlGameWndProc), так что оборачивать дренаж не нужно. */
+    }
+    /* Крестик окна: WM_CLOSE -> Host_CloseWindow -> DestroyWindow -> WM_DESTROY
+       -> PostQuitMessage уходит ВНУТРИ этого дренажа (его дёрнул тот же насос
+       SDL), и поднятый WM_QUIT тот же насос тут же снимает обратно — до
+       PeekMessageA главного цикла он не доходит, shutdown: не происходит, и
+       процесс остаётся висеть с играющей winmm-музыкой. Переотправляем QUIT
+       после дренажа: очередь SDL уже пуста, так что следующий PeekMessageA
+       главного цикла гарантированно его заберёт. Проверено измерением: без
+       этой строки WM_DESTROY отрабатывает, а WM_QUIT до игры не доходит. */
+    if (s_MainWndDestroyed)
+    {
+        s_MainWndDestroyed = 0;
+        PostQuitMessage(0);
     }
 #endif
 }
