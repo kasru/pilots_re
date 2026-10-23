@@ -1,7 +1,12 @@
 # Unlock levels on the map by patching PILOTS0.230.
 #
-#   pwsh -File tests\windows\unlock_levels.ps1 -Count 12
-#   pwsh -File tests\windows\unlock_levels.ps1 -Count 12 -Input <run dir>\PILOTS0.230 -Output <file>
+#   pwsh -File tests\windows\unlock_levels.ps1              # all 15 levels (default)
+#   pwsh -File tests\windows\unlock_levels.ps1 -Count 6
+#   pwsh -File tests\windows\unlock_levels.ps1 -Count 15 -Input <run dir>\PILOTS0.230 -Output <file>
+#
+# The game has 15 levels: -Count is capped at 15 and a larger value is rejected.
+# (Measured, not assumed: value 14 draws exactly 15 flags, the Ctrl overlay on the
+# map sees those 15 plus the 5 menu buttons, and no flag 16 appears for any value.)
 #
 # PILOTS0.230 is the engine's settings/progress save (fileio.c OpenSaveFile slot 0,
 # extension "230"): 8-byte magic g_SaveMagic1, 0x34 bytes of engine state, then the
@@ -12,7 +17,7 @@
 # by decrypting the original file into clean small dwords. Its layout:
 #
 #   +0  dword  1                       (unchanged here)
-#   +4  dword  levelsOpen - 1          <-- THIS: 2 = flags 1..3, 5 = flags 1..6, 11 = flags 1..12
+#   +4  dword  levelsOpen - 1          <-- THIS: 2 = flags 1..3, 5 = flags 1..6, 14 = flags 1..15
 #   +8  dword  0
 #   +12 dword  0
 #   +16 dword  1                       (unchanged here)
@@ -21,12 +26,16 @@
 # file keeps its level count until the script itself changes it (finishing a level).
 # Flag positions on the map: tests/LEVEL_MAP.md.
 param(
-  [int]$Count = 12,
+  [int]$Count = 15,
   [string]$Input = '',
   [string]$Output = ''
 )
 
 $ErrorActionPreference = 'Stop'
+$MAX_LEVELS = 15   # the game has 15 levels; the map draws no flag 16+
+if ($Count -lt 1 -or $Count -gt $MAX_LEVELS) {
+  throw "Count must be 1..$MAX_LEVELS (the game has $MAX_LEVELS levels), got $Count"
+}
 $REPO = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $SRC = Join-Path $REPO 'SRC'
 if (-not $Input) { $Input = Join-Path $SRC 'PILOTS0.230' }
