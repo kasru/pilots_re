@@ -62,9 +62,10 @@ Start-Sleep -Seconds 1
 $bat = if ($Arch -eq 'x64') { 'debug x64' } else { 'debug x86' }
 "building $Arch DEBUG (build-vs2022.bat $bat)..."
 & cmd /c "`"$SRC\build-vs2022.bat $bat`"" | Select-Object -Last 1
-if (-not (Test-Path (Join-Path $SRC "out\$exe"))) { "no exe: $SRC\out\$exe"; exit 1 }
-
 . "$PSScriptRoot\rundir.ps1"
+$exeDir = Get-OutDirForExe $SRC $exe                    # out\x86 / out\x64
+if (-not (Test-Path (Join-Path $exeDir $exe))) { "no exe: $exeDir\$exe"; exit 1 }
+
 $RUN = New-GameRunDir -ExeName $exe
 $LOG = Join-Path $RUN (($exe -replace '\.EXE$','') + '_debug.log')
 Remove-Item $LOG -ErrorAction SilentlyContinue

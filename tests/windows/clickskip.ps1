@@ -113,18 +113,20 @@ function Check([string]$name, [bool]$ok) {
   if (-not $ok) { $script:failed += $name }
 }
 
-# Убить остатки процесса ДО сборки: SDL2.dll общая по имени для обеих архитектур, так
-# что собирать надо нужную последней, а link не откроет занятый exe - напечатает
-# BUILD FAILED, и тест молча продолжит на предыдущем бинарнике.
+# Убить остатки процесса ДО сборки: link не откроет занятый exe - напечатает
+# BUILD FAILED, и тест молча продолжит на предыдущем бинарнике. Собирается именно
+# та архитектура, что гоняется (у каждой свой каталог out\x86 / out\x64 со своей
+# SDL2.dll, так что чужой бинарник тут уже не помешает).
 Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 $bat = if ($Arch -eq 'x64') { 'debug x64' } else { 'debug x86' }
 "building $Arch DEBUG (build-vs2022.bat $bat)..."
 & cmd /c "`"$SRC\build-vs2022.bat $bat`"" | Select-Object -Last 1
-if (-not (Test-Path (Join-Path $SRC "out\$exe"))) { "no exe: $SRC\out\$exe"; exit 1 }
-
 . "$PSScriptRoot\rundir.ps1"
+$exeDir = Get-OutDirForExe $SRC $exe                    # out\x86 / out\x64
+if (-not (Test-Path (Join-Path $exeDir $exe))) { "no exe: $exeDir\$exe"; exit 1 }
+
 $RUN = New-GameRunDir -ExeName $exe
 $LOG = Join-Path $RUN (($exe -replace '\.EXE$','') + '_debug.log')
 Remove-Item $LOG -ErrorAction SilentlyContinue

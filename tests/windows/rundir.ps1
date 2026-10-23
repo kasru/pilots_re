@@ -6,8 +6,8 @@
 #   $RUN = New-GameRunDir -ExeName 'PILOTS_RE_x64.EXE'
 #   $LOG = Join-Path $RUN 'PILOTS_RE_x64_debug.log'
 #
-# The exe lives in SRC\out (the bat's output), the game data in the SRC root -
-# New-GameRunDir takes both from where they are.
+# The exe lives in SRC\out\<arch> (the bat's per-arch output: out\x86, out\x64),
+# the game data in the SRC root - New-GameRunDir takes both from where they are.
 #
 # Why a scratch dir at all. main.c resolves .\PILOTS.EXE (the game's own data file)
 # and the .\movies\... video lookup against the process CWD, so the exe has to be
@@ -28,11 +28,21 @@
 # rebuilt on every run. mklink /H needs no elevation (only symlinks do).
 $__TestsDir = $PSScriptRoot
 
+function Get-OutDirForExe {
+  # SRC\out\<arch> — where build-vs2022.bat drops a given exe. The bat splits the
+  # arches into out\x86 and out\x64 so they stop overwriting each other (shared
+  # SDL2.dll name used to mean only the last-built arch could run). The subdir
+  # follows from the exe's own name: PILOTS_RE_x64.* -> x64, else x86.
+  param([string]$SRC, [string]$ExeName)
+  $arch = if ($ExeName -match '_x64') { 'x64' } else { 'x86' }
+  return (Join-Path $SRC (Join-Path 'out' $arch))
+}
+
 function New-GameRunDir {
   param([string]$ExeName, [string]$FromDir = $null)
 
   $SRC = (Resolve-Path (Join-Path $__TestsDir '..\..\SRC')).Path
-  if (-not $FromDir) { $FromDir = Join-Path $SRC 'out' }   # the bat's output dir
+  if (-not $FromDir) { $FromDir = Get-OutDirForExe $SRC $ExeName }   # the bat's per-arch output dir
   Clear-StartupDialogs $ExeName
   $RUN = Join-Path $env:TEMP 'pilots_rundir'
   New-Item -ItemType Directory -Force -Path $RUN | Out-Null
@@ -48,9 +58,10 @@ function New-GameRunDir {
     Where-Object { $_.Extension -ieq '.avi' -or $_.Extension -ieq '.bmp' } |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
-  # SDL2.dll is arch-shared, so whatever the last build left in SRC\out is the
-  # right one. The exe and the DLL are build outputs (SRC\out); PILOTS.EXE is
-  # game data and always comes from the SRC root - it is not a build product.
+  # SDL2.dll ships one copy per arch now (the bat copies it into out\x86 and
+  # out\x64 separately), so FromDir has the matching one. The exe and the DLL are
+  # build outputs (SRC\out\<arch>); PILOTS.EXE is game data and always comes from
+  # the SRC root - it is not a build product.
   foreach ($f in @($ExeName, 'SDL2.dll', 'PILOTS.EXE')) {
     $s = if ($f -ieq 'PILOTS.EXE') { Join-Path $SRC $f } else { Join-Path $FromDir $f }
     if (-not (Test-Path $s)) { throw "missing game file: $s" }
@@ -63,10 +74,13 @@ function New-GameRunDir {
 }
 
 # --- startup failure dialog -------------------------------------------------
-# If the exe cannot even load (most often: SDL2.dll of the other arch, both
-# being arch-shared by name), Windows puts up a modal box BEFORE main() runs -
-# no window, no log, and the harness would otherwise just say "no window" or
-# hang. Find that box, report its text and click its button.
+# If the exe cannot even load (a missing or wrong SDL2.dll next to it, a broken
+# image), Windows puts up a modal box BEFORE main() runs - no window, no log, and
+# the harness would otherwise just say "no window" or hang. Find that box, report
+# its text and click its button. The classic case (the other arch's SDL2.dll,
+# which used to be shared by name) is gone since each arch keeps its own copy in
+# out\<arch>, but "no window, no log" is still best explained by this box, so it
+# stays.
 if (-not ('StartupDiag' -as [type])) {
   Add-Type -Language CSharp -TypeDefinition @'
 using System;

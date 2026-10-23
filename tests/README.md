@@ -12,16 +12,17 @@
 & "$env:ProgramFiles\PowerShell\7\pwsh.exe" -NoProfile -File tests\windows\pfuzz.ps1
 ```
 
-Сборка — `SRC\build-vs2022.bat [debug|release] [x86|x64]`, exe и логи в `SRC\out\`
-(`PILOTS_RE.EXE` / `PILOTS_RE_x64.EXE`, лог `<exe>_debug.log` рядом с exe). `SDL2.dll` одна на
-обе архитектуры: запускается только та сборка, которую собирали последней, поэтому харнесс со
-своим `-Arch` сам пересобирает нужную (pfuzz не собирает — перед ним соберите вручную или
-запустите `probe.ps1`).
+Сборка — `SRC\build-vs2022.bat [debug|release] [x86|x64]`, каждая архитектура в свой каталог:
+`SRC\out\x86\` (`PILOTS_RE.EXE`) и `SRC\out\x64\` (`PILOTS_RE_x64.EXE`), лог `<exe>_debug.log`
+рядом с exe. У каждой архитектуры теперь **своя** `SDL2.dll` (в её каталоге), так что x86- и
+x64-сборки не перетирают друг друга и запускаются любые — раньше DLL была одна на имя, и
+побеждала последняя собранная архитектура. Харнесс со своим `-Arch` всё равно пересобирает
+нужную (pfuzz не собирает — перед ним соберите вручную или запустите `probe.ps1`).
 
 | Скрипт | Что делает |
 |---|---|
 | `buildall.ps1` | Собирает все 4 конфигурации подряд, печатает только SUCCESS/FAILED |
-| `x86check.ps1` | Собирает x86 debug **последним** (чтобы `SDL2.dll` была x86), гоняет 12 с из чернового каталога без роликов, сверяет маркеры `ENTER: WinMain` / `First present: 640x480` / `GmGame_Initialize: ok` / `ENTER: GameMainLoop` ≥1 и ноль `EXCEPTION` |
+| `x86check.ps1` | Собирает x86 debug, гоняет 12 с из чернового каталога без роликов, сверяет маркеры `ENTER: WinMain` / `First present: 640x480` / `GmGame_Initialize: ok` / `ENTER: GameMainLoop` ≥1 и ноль `EXCEPTION` |
 | `pfuzz.ps1` | Основной харнесс: стартует x64 debug, входит в сцену 1, сыплет кликами `PostMessage` по сетке + клавиатура, скриншоты, поиск `EXCEPTION: 0xC000` |
 | `clickskip.ps1` | Клик **по ролику** должен его прерывать (см. ниже). Реальный курсор в центр картинки 320×240, признаки в логе — ветка `PlayAvi: click on the AVI child` и ранний `PlayAvi: end playing=`; `-Arch` = x86 или x64 |
 | `fullscreen.ps1` | Проверка полноэкранного режима (см. ниже): `-fullscreen`/Alt+Enter, letterbox, координаты клика, положение окна mciavi32 **и сами пиксели** через `PrintWindow`. Параметр `-Arch x86|x64` |

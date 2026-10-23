@@ -13,7 +13,9 @@ public class G3 {
 }'
 
 $SRC  = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
-$LOG  = "$SRC\out\PILOTS_RE_x64_debug.log"
+. "$PSScriptRoot\rundir.ps1"
+$OUT  = Get-OutDirForExe $SRC 'PILOTS_RE_x64.EXE'   # out\x64
+$LOG  = Join-Path $OUT 'PILOTS_RE_x64_debug.log'
 $SHOT = Join-Path $env:TEMP 'shots'
 New-Item -ItemType Directory -Force -Path $SHOT | Out-Null
 
@@ -21,7 +23,7 @@ Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process
 Start-Sleep -Seconds 1
 Remove-Item $LOG -ErrorAction SilentlyContinue
 
-$p = Start-Process -FilePath "$SRC\out\PILOTS_RE_x64.EXE" -WorkingDirectory $SRC -PassThru
+$p = Start-Process -FilePath (Join-Path $OUT 'PILOTS_RE_x64.EXE') -WorkingDirectory $SRC -PassThru
 $h = [IntPtr]::Zero
 for ($i=0; $i -lt 150 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 200; $p.Refresh(); if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $h = $p.MainWindowHandle } }
 "window handle: $h"

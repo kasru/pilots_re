@@ -3,8 +3,8 @@
 # initializes, reaches its main loop, presents its first frame and dies cleanly
 # on the harness' Stop-Process without a single exception.
 #
-# The x86 build has to be the LAST one: both arches import the same SDL2.dll, so
-# whichever bat ran last decides which exe can actually start.
+# x86 lives in its own output dir (out\x86) with its own SDL2.dll, so it no longer
+# depends on which arch was built last.
 #
 # Usage: pwsh -NoProfile -File tests\windows\x86check.ps1 [-Seconds 12]
 param([int]$Seconds = 12)
@@ -14,11 +14,11 @@ $SRC = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
 Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
-"=== building x86 DEBUG (last, so SDL2.dll is the x86 one) ==="
+"=== building x86 DEBUG (out\x86) ==="
 $out = cmd /c "`"$SRC\build-vs2022.bat debug x86`"" 2>&1
 $out | Select-String -Pattern 'SUCCESS|BUILD FAILED|error [A-Z]|LNK[0-9]' | ForEach-Object { $_.Line }
 
-if (-not (Test-Path (Join-Path $SRC 'out\PILOTS_RE.EXE'))) { "out\PILOTS_RE.EXE missing"; exit 1 }
+if (-not (Test-Path (Join-Path $SRC 'out\x86\PILOTS_RE.EXE'))) { "out\x86\PILOTS_RE.EXE missing"; exit 1 }
 
 # Run from the scratch dir: it holds the data but not MOVIES. A 32-bit build DOES
 # find the intro AVI (WoW64 still ships the 32-bit MCI driver) and then spends the
