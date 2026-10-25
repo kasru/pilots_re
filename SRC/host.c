@@ -321,8 +321,13 @@ LRESULT CALLBACK Host_AviWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
                 int avY = g_AviY;
                 g_AviWindowPlaced = true;
                 /* Px игры -> px окна: тождественность в обычном окне, в
-                   fullscreen MCI-ребёнок должен сесть в rect картинки. */
+                   fullscreen MCI-ребёнок должен сесть в rect картинки.
+                   Только для реального окна: на не-Windows MoveWindow — шим,
+                   который лишь записывает rect для SdlBackendVideoFrame, и тот
+                   конвертирует сам на каждом кадре (см. PlayAvi ниже). */
+#ifdef _WIN32
                 SdlBackendGameToClient(&avX, &avY);
+#endif
                 MoveWindow(g_hAviWindow, avX, avY,
                            g_AviWidth ? g_AviWidth : HOST_AVI_DEFAULT_WIDTH,
                            g_AviHeight ? g_AviHeight : HOST_AVI_DEFAULT_HEIGHT, TRUE);
@@ -543,10 +548,17 @@ bool Host_AviOpen(void)
     g_hAviWindow = (HWND)statusParms.dwReturn;
     {
         /* Нулевой размер (скрыто до первого WM_PAINT), но координаты уже в
-           px окна — как и в Host_AviWndProc. */
+           px окна — как и в Host_AviWndProc. На не-Windows наоборот: шиму
+           нужен rect в ИГРЫХ px, потому что SdlBackendVideoFrame конвертирует
+           его в px окна сам, на каждом кадре, и следует за раскладкой
+           (fullscreen/Alt+Enter) посреди ролика. Двойная конверсия здесь
+           отправляла кадр мимо rect картинки — так и доложено: последний
+           ролик в fullscreen стоял не там (176,97 -> 636,218 -> 1671,490). */
         int avX = g_AviX;
         int avY = g_AviY;
+#ifdef _WIN32
         SdlBackendGameToClient(&avX, &avY);
+#endif
         MoveWindow(g_hAviWindow, avX, avY, 0, 0, FALSE);
     }
     /* В оригинале возвращается младший байт результата Host_LoadAviBackdrop;
