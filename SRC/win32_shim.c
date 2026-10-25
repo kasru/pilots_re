@@ -1404,25 +1404,47 @@ int GetCursorPos(LPPOINT lpPoint)
      is the game loop's own pulse on the platforms with no user32: when the loop starves, the
      polls stop with it, and SdlLoopProfile counts them.
 
-     The answer is WINDOW CLIENT px, the same space a real GetCursorPos + ScreenToClient lands
-     in, and NOT the game's coords: main.c converts with SdlBackendClientToGame itself, and it
-     does so to decide inputState - "the pointer is inside the picture". Answering in game coords
-     fed that comparison a second transform, which in the letterboxed layout threw most positions
-     outside the picture (SDL's own mouse, which on the console has never seen the stick, sat at
-     the window's (0,0) - a letterbox corner); inputState went 0 and the engine erased its arrow
-     every frame, which is exactly the "the cursor disappears when idle after '-'" report. The
-     position comes from the port's own posted WM_MOUSEMOVE - the only mouse these platforms have -
-     mapped back out of the game's space; SDL_GetMouseState is only the answer before the first
-     move ever, where it is already window px. */
+     The answer is GAME coords, because that is the space its one meaningful consumer compares
+     in: the cursorInWindow test in host.c checks the point against g_Window.clientWidth/Height,
+     and those are the game's LOGICAL 640x480 - the port pins them there in fullscreen
+     deliberately (SdlGameWndProc hands WM_SIZE s_GameClientW/H, and on the shimmed platforms
+     no WM_SIZE is posted at all, so they never become window px). Answering in window client
+     px - which is what a real GetCursorPos + ScreenToClient lands in on Windows - fed that
+     comparison coordinates up to 1919x1079 against a 640x480 bound: cursorInWindow went false
+     everywhere except the top-left corner of the picture, and the engine erased its own arrow
+     on every frame outside it. On Windows nobody notices (a real system cursor is drawn by the
+     OS over the window); on the console the engine's arrow IS the only cursor, so that read
+     exactly as the reported "the cursor disappears after a fullscreen toggle, but stays in the
+     upper-left corner". An earlier version answered in game coords for a comparison that did
+     a second ClientToGame transform itself; no such caller exists any more, so the point is
+     converted exactly once - here. The position comes from the port's own posted WM_MOUSEMOVE
+     (the only mouse these platforms have); SDL_GetMouseState is the answer before the first
+     move ever, where it is window px and needs the same conversion. A pointer outside the
+     picture maps to negative game coords, which is the honest "outside the window" the engine
+     already understands. */
   SdlBackendNoteFramePoll();
   if ( s_HaveMousePos )
   {
     x = s_MouseGameX;
     y = s_MouseGameY;
-    SdlBackendGameToClient(&x, &y);          /* game px -> window client px (identity untransformed) */
   }
   else
+  {
     SDL_GetMouseState(&x, &y);               /* window coords == client coords here */
+    SdlBackendClientToGame(&x, &y);          /* window client px -> game px (identity windowed) */
+    /* SDL's own mouse is an artifact on these platforms - it never sees the console's stick and
+       sits at the window's (0,0) until the first posted move, and in the letterboxed layout that
+       corner maps OUTSIDE the picture (negative game px). There is no real "the pointer left the
+       window" state to report before any move has ever arrived, so clamp into the picture: the
+       answer must not erase the engine's arrow on the frame right before the first WM_MOUSEMOVE,
+       which is the old "cursor disappears until I touch the stick" all over again. After the
+       first move this branch is never taken - s_HaveMousePos answers from the port's own
+       posted positions, which SdlMapMousePoint already keeps inside the picture. */
+    if ( x < 0 ) x = 0;
+    if ( y < 0 ) y = 0;
+    if ( g_Window.clientWidth > 0 && x >= g_Window.clientWidth ) x = g_Window.clientWidth - 1;
+    if ( g_Window.clientHeight > 0 && y >= g_Window.clientHeight ) y = g_Window.clientHeight - 1;
+  }
   lpPoint->x = x;
   lpPoint->y = y;
   return 1;
