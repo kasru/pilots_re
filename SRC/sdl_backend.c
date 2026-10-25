@@ -2884,9 +2884,10 @@ unsigned int SdlWave_Queued(void)
 /* Кадр фильма (mci_ffmpeg.c) и мелкие хуки для win32_shim.c                  */
 /* ========================================================================== */
 
-/* Показать один кадр MCI-воспроизведения: под игрой (если теневой кадр грязный)
-   и поверх — сам кадр в прямоугольнике окна AVI-ребёнка. Прямоугольник здесь
-   игровой/оконный без пересчёта: без полноэкранного layout они совпадают. */
+/* Показать один кадр MCI-воспроизведения: подложка (BMP-фон фильма) и сам кадр
+   в прямоугольнике окна AVI-ребёнка — ОДНИМ презентом, фон перекладывается под
+   каждым кадром (см. комментарий внутри). Прямоугольник здесь игровой/оконный
+   без пересчёта: без полноэкранного layout они совпадают. */
 void SdlBackendVideoFrame(const void *bgra, int srcw, int srch, int x, int y, int w, int h)
 {
     SDL_Rect dst;
@@ -2912,8 +2913,46 @@ void SdlBackendVideoFrame(const void *bgra, int srcw, int srch, int x, int y, in
         }
     }
     SDL_UpdateTexture(s_VideoTex, NULL, bgra, srcw * 4);
-    if (s_Dirty)
-        SdlBackendFlushPresent();                /* подложка (BMP-фон фильма) под кадром */
+    /* Кадр фильма — это и есть движение картинки, так что часы загрузки
+       двигаются здесь тоже, а не только по блиту игры (SdlBackendPresentRect):
+       иначе загрузка, начавшаяся до фильма (или чьи-то чтения поверх него),
+       тянет спиннер поверх видео и ставит s_Dirty на каждый свой тик — а
+       игрок видит колесо поверх ролика (так и доложено по интро: загрузка
+       сцены началась до PlayAvi и кончилась спустя 3 с ролика). FrameShown
+       закрывает уже начавшийся эпизод — спиннер уходит тем же кадром, который
+       его заменил. */
+    s_LastGameBlit = SDL_GetTicks();
+    s_IdleBytes = 0;
+    SdlBackendFrameShown();
+    /* Подложка (BMP-фон фильма) рисуется под кадром в ЭТОМ же проходе, а не
+       отдельным презентом «если грязный» (старый вызов FlushPresent здесь).
+       Две причины. (1) Презентовать фон без кадра и кадр без фона — два
+       показа на один кадр, между ними игрок успевает увидеть первый:
+       именно так и мигало. (2) Важнее, что и после ухода спиннера s_Dirty
+       во время фильма никто не ставит (лог: presents 0/s весь ролик), т.е.
+       фон не рисовался бы ВООБЩЕ, а бэкфер после RenderPresent на OpenGL ES
+       не определён — вне прямоугольника видео оставался мусор. Здесь фон
+       перекладывается каждый кадр: наружу всегда уходит целиком нарисованный
+       кадр. Теневую текстуру обновляем только если грязь, остальное — дёшево. */
+    if (s_Texture && s_Shadow)
+    {
+        SDL_Rect bg;
+
+        if (s_Dirty)
+            SDL_UpdateTexture(s_Texture, NULL, s_Shadow, s_TexW * (int)sizeof(uint32_t));
+        SDL_SetRenderDrawColor(s_Renderer, 0, 0, 0, 255);
+        SDL_RenderClear(s_Renderer);
+        bg.x = s_PicX;
+        bg.y = s_PicY;
+        bg.w = s_PicW > 0 ? s_PicW : s_TexW;
+        bg.h = s_PicH > 0 ? s_PicH : s_TexH;
+        SDL_RenderCopy(s_Renderer, s_Texture, NULL, &bg);
+        if (s_HotspotHeld && s_HotspotCount)      /* как в FlushPresent: Ctrl зажат — отметить */
+            SdlDrawHotspots();
+        if (s_LoadStart && (SDL_GetTicks() - s_LoadBeatTick) < SDL_LOAD_ACTIVE_MS)
+            SdlDrawSpinner();
+        s_Dirty = false;
+    }
     /* Прямоугольник приходит в px игры (это то, во что MoveWindow поставил
        MCI-окно на Windows), а рендерер рисует в px окна — в обычном окне это
        тождественность, в fullscreen кадр должен попасть в rect картинки. */
