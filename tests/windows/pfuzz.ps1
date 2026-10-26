@@ -1,3 +1,8 @@
+# Builds nothing itself - runs the exe that already exists. -FromDir is where the
+# exe came from: probe.ps1 passes the CMake build dir so that -Build cmake gets
+# the right binary, while a bare invocation still means "whatever out\x64 holds".
+param([string]$FromDir = $null)
+
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
 Add-Type 'using System; using System.Runtime.InteropServices;
 public class G4 {
@@ -20,7 +25,7 @@ Start-Sleep -Seconds 1
 # Scratch dir holding the data but NOT MOVIES: keeps the run deterministic
 # instead of depending on whether the videos are installed (see rundir.ps1).
 . "$PSScriptRoot\rundir.ps1"
-$RUN = New-GameRunDir -ExeName 'PILOTS_RE_x64.EXE'
+$RUN = New-GameRunDir -ExeName 'PILOTS_RE_x64.EXE' -FromDir $FromDir
 $LOG = Join-Path $RUN 'PILOTS_RE_x64_debug.log'
 Remove-Item $LOG -ErrorAction SilentlyContinue
 

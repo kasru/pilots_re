@@ -28,7 +28,7 @@
 # пространствах при любом масштабе. Единственный харнесс, который проверяет
 # геометрию MCI-ребёнка ИМЕННО во время играющего фильма после переключения.
 
-param([ValidateSet('x86','x64')][string]$Arch = 'x64')
+param([ValidateSet('x86','x64')][string]$Arch = 'x64', [ValidateSet('bat','cmake')][string]$Build = 'bat')
 
 Add-Type 'using System; using System.Runtime.InteropServices;
 public class MF {
@@ -59,14 +59,10 @@ function Check([string]$name, [bool]$ok) {
 Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
-$bat = if ($Arch -eq 'x64') { 'debug x64' } else { 'debug x86' }
-"building $Arch DEBUG (build-vs2022.bat $bat)..."
-& cmd /c "`"$SRC\build-vs2022.bat $bat`"" | Select-Object -Last 1
 . "$PSScriptRoot\rundir.ps1"
-$exeDir = Get-OutDirForExe $SRC $exe                    # out\x86 / out\x64
-if (-not (Test-Path (Join-Path $exeDir $exe))) { "no exe: $exeDir\$exe"; exit 1 }
+$exeDir = Build-GameExe -ExeName $exe -Config Debug -Build $Build   # out\x86 / out\x64 | build-win32 / build-win64
 
-$RUN = New-GameRunDir -ExeName $exe
+$RUN = New-GameRunDir -ExeName $exe -FromDir $exeDir
 $LOG = Join-Path $RUN (($exe -replace '\.EXE$','') + '_debug.log')
 Remove-Item $LOG -ErrorAction SilentlyContinue
 

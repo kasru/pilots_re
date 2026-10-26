@@ -1,3 +1,8 @@
+# relfuzz.ps1 = a smoke run of the release build (no DBG_LOG) - the closest thing
+# to a real user. -Build bat|cmake picks where that release exe comes from:
+# SRC\out\x64 via build-vs2022.bat, or build-win64 via CMake.
+param([ValidateSet('bat','cmake')][string]$Build = 'bat')
+
 Add-Type 'using System; using System.Runtime.InteropServices;
 public class G5 {
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
@@ -5,14 +10,18 @@ public class G5 {
   public static IntPtr LP(int x,int y){ return (IntPtr)(((uint)y<<16)|((uint)x&0xFFFF)); }
 }'
 
-$SRC = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
 . "$PSScriptRoot\rundir.ps1"
-$OUT = Get-OutDirForExe $SRC 'PILOTS_RE_x64.EXE'   # out\x64
+$SRC = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
 Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 "### building x64 RELEASE ###"
-cmd /c "`"$SRC\build-vs2022.bat release x64`"" 2>&1 | Select-String -Pattern 'SUCCESS|BUILD FAILED|error C' | ForEach-Object { $_.Line }
+try {
+  $OUT = Build-GameExe -ExeName 'PILOTS_RE_x64.EXE' -Config Release -Build $Build
+} catch {
+  "$($_.Exception.Message)"; exit 1
+}
+if (-not $OUT) { "build produced no exe dir"; exit 1 }
 
 $p = Start-Process -FilePath (Join-Path $OUT 'PILOTS_RE_x64.EXE') -WorkingDirectory $SRC -PassThru
 $h = [IntPtr]::Zero

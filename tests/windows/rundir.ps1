@@ -48,11 +48,15 @@ function Get-CMakeOutDirForExe {
   # dir (build-win32\PILOTS_RE.EXE), and the build dir itself is a convention
   # (build-win32/build-win64), not something CMake fixes. So probe the layout
   # instead of assuming it, Debug first - the baseline markers are debug-log
-  # lines, and a Release build has no log at all.
-  param([string]$RepoRoot, [string]$ExeName, [string]$BuildDir)
+  # lines, and a Release build has no log at all. -Config pins the subdir when
+  # the caller knows which config it just built: without it a Debug dir left over
+  # from an earlier run would be handed back for a Release build, and the harness
+  # would measure the wrong exe while believing it had just built the right one.
+  param([string]$RepoRoot, [string]$ExeName, [string]$BuildDir, [string]$Config)
   $arch = if ($ExeName -match '_x64') { 'win64' } else { 'win32' }
   if (-not $BuildDir) { $BuildDir = Join-Path $RepoRoot "build-$arch" }
-  foreach ($sub in @('Debug', 'Release', '.')) {
+  $subs = if ($Config) { @($Config, '.') } else { @('Debug', 'Release', '.') }
+  foreach ($sub in $subs) {
     $p = if ($sub -eq '.') { $BuildDir } else { Join-Path $BuildDir $sub }
     if (Test-Path (Join-Path $p $ExeName)) { return $p }
   }
@@ -69,6 +73,82 @@ function Find-CMake {
   $bundled = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
   if (Test-Path $bundled) { return $bundled }
   return $null
+}
+
+function Stage-GameDataForExe {
+  # Put PILOTS.EXE (the game's data file, 48 MB) next to the exe just built.
+  #
+  # The engine does NOT take its data from the CWD: WinMain resolves the path
+  # from GetModuleFileNameA and Host_ResolveGameFilePath replaces the exe's own
+  # name with PILOTS.EXE IN THE EXE'S OWN DIRECTORY. src\out\x64 has had that
+  # file sitting there since the bat era, which is why every harness that runs
+  # the exe straight out of out\<arch> worked - a CMake build dir has no such
+  # file, so the game raised its "no resources" box and the harness reported a
+  # crash for what was really an undismissed dialog.
+  #
+  # A hardlink, exactly like New-GameRunDir does: no 48 MB copy per build dir,
+  # and the file is game data, never a build product, so it is not cleaned.
+  # Run-dir based harnesses are unaffected - they hardlink the exe into $RUN and
+  # stage PILOTS.EXE there themselves.
+  param([string]$SrcDir, [string]$ExeDir)
+  $dst = Join-Path $ExeDir 'PILOTS.EXE'
+  if (Test-Path $dst) { return }
+  $src = Join-Path $SrcDir 'PILOTS.EXE'
+  if (-not (Test-Path $src)) { throw "game data missing: $src" }
+  cmd /c "mklink /H `"$dst`" `"$src`"" | Out-Null
+  if (-not (Test-Path $dst)) { Copy-Item $src $dst -Force }   # fallback, e.g. other volume
+}
+
+function Build-GameExe {
+  # Build one exe and return the directory holding it - the one function every
+  # harness goes through, so -Build bat|cmake means the same thing everywhere.
+  # 'bat' (default) is SRC\build-vs2022.bat into SRC\out\<arch>, the proven
+  # Windows baseline; 'cmake' builds the same arch through CMake into
+  # build-win32/build-win64 and returns THAT dir. Neither side has to know the
+  # other's layout: the bat's output dir comes from Get-OutDirForExe, CMake's
+  # from Get-CMakeOutDirForExe. $Config is CMake's spelling (Debug/Release) and
+  # is lowercased for the bat, which only distinguishes 'debug' from everything
+  # else (/i, so case does not matter to it either way).
+  param([string]$ExeName, [string]$Config = 'Debug',
+        [ValidateSet('bat','cmake')][string]$Build = 'bat')
+
+  $SRC = (Resolve-Path (Join-Path $__TestsDir '..\..\SRC')).Path
+  $repo = (Resolve-Path (Join-Path $__TestsDir '..\..')).Path
+  $arch = if ($ExeName -match '_x64') { 'x64' } else { 'x86' }
+
+  if ($Build -eq 'cmake') {
+    $cmake = Find-CMake
+    if (-not $cmake) { throw 'cmake not found (not on PATH, no bundled VS copy either)' }
+    $bdir = Join-Path $repo ("build-win" + $(if ($arch -eq 'x64') { '64' } else { '32' }))
+    $plat = if ($arch -eq 'x64') { 'x64' } else { 'Win32' }
+
+    # Everything a human wants to see goes to the host stream, NOT the output
+    # stream: this function's only output-stream value is the returned dir, and a
+    # bare "=== building ===" here would be captured by `$dir = Build-GameExe`
+    # and then handed to New-GameRunDir as the exe's directory.
+    Write-Host "=== building $arch $Config (CMake, $bdir) ==="
+    # Configure only if this dir was never configured: -A is a first-configure
+    # option, and re-running it against a cache that belongs to another
+    # generator/arch is a hard CMake error, not a no-op.
+    if (-not (Test-Path (Join-Path $bdir 'CMakeCache.txt'))) {
+      & $cmake -S $repo -B $bdir -A $plat 2>&1 | Select-Object -Last 5 | ForEach-Object { Write-Host $_ }
+    }
+    $bld = & $cmake --build $bdir --config $Config 2>&1
+    $errs = $bld | Select-String -Pattern 'error [A-Z]|LNK[0-9]|CMake Error'
+    if ($errs) { $errs | ForEach-Object { Write-Host $_.Line }; throw "BUILD FAILED (CMake $bdir $Config)" }
+    $dir = Get-CMakeOutDirForExe -RepoRoot $repo -ExeName $ExeName -BuildDir $bdir -Config $Config
+    if (-not $dir) { throw "no $ExeName under $bdir after a $Config build" }
+    Stage-GameDataForExe -SrcDir $SRC -ExeDir $dir
+    return $dir
+  }
+
+  Write-Host "=== building $arch $Config (build-vs2022.bat) ==="
+  $out = cmd /c "`"$SRC\build-vs2022.bat $($Config.ToLower()) $arch`"" 2>&1
+  $out | Select-String -Pattern 'SUCCESS|BUILD FAILED|error [A-Z]|LNK[0-9]' | ForEach-Object { Write-Host $_.Line }
+  $dir = Get-OutDirForExe $SRC $ExeName
+  if (-not (Test-Path (Join-Path $dir $ExeName))) { throw "no exe at $dir\$ExeName after build-vs2022.bat" }
+  Stage-GameDataForExe -SrcDir $SRC -ExeDir $dir
+  return $dir
 }
 
 function New-GameRunDir {

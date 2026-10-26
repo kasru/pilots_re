@@ -39,6 +39,7 @@
 #   pwsh -NoProfile -File tests\windows\audio.ps1            # run the test (x64)
 #   pwsh -NoProfile -File tests\windows\audio.ps1 -Arch x86  # same script on x86
 #   pwsh -NoProfile -File tests\windows\audio.ps1 -Build     # rebuild that arch's debug first
+#   pwsh -NoProfile -File tests\windows\audio.ps1 -Build -BuildVia cmake   # ...through CMake instead
 #   pwsh -NoProfile -File tests\windows\audio.ps1 -Scan      # UI timeline capture only
 #
 # -Arch exists to compare the two builds under the SAME scenario: several MIDI
@@ -49,6 +50,10 @@
 # DBG_* are no-ops (debug_log.h), so there is nothing to assert against.
 param(
     [switch]$Build,
+    # Which build path -Build takes (kept separate from -Build, which here means
+    # "rebuild at all", unlike the other harnesses where -Build IS the switch on
+    # the path): -Build -BuildVia cmake measures the CMake build instead of the bat.
+    [ValidateSet('bat','cmake')][string]$BuildVia = 'bat',
     [int]$DwellMs = 900,
     [switch]$Scan,
     [int]$ScanSec = 20,
@@ -56,7 +61,6 @@ param(
 )
 
 $ExeName = if ($Arch -eq 'x86') { 'PILOTS_RE.EXE' } else { 'PILOTS_RE_x64.EXE' }
-$BatArgs = if ($Arch -eq 'x86') { 'debug x86' } else { 'debug x64' }
 $LogName = $ExeName -replace '\.EXE$', '_debug.log'
 
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
@@ -85,15 +89,15 @@ Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process
 Start-Sleep -Seconds 1
 
 if ($Build) {
-  "=== building $Arch DEBUG ==="
-  cmd /c "`"$SRC\build-vs2022.bat $BatArgs`"" 2>&1 | Select-String -Pattern 'SUCCESS|BUILD FAILED| error ' | ForEach-Object { $_.Line }
+  . "$PSScriptRoot\rundir.ps1"
+  $exeDir = Build-GameExe -ExeName $ExeName -Config Debug -Build $BuildVia
 }
 
 # Scratch dir holding the data but NOT MOVIES: keeps the run deterministic
 # instead of depending on whether the videos are installed (see rundir.ps1).
 # Build first, so the hardlink picks up the freshly built exe.
 . "$PSScriptRoot\rundir.ps1"
-$RUN = New-GameRunDir -ExeName $ExeName
+$RUN = New-GameRunDir -ExeName $ExeName -FromDir $exeDir
 $LOG = Join-Path $RUN $LogName
 
 Remove-Item $LOG -ErrorAction SilentlyContinue

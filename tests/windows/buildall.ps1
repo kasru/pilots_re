@@ -1,8 +1,24 @@
-$SRC = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
-# The four combinations of build-vs2022.bat: [debug|release] [x86|x64].
-$combos = @('debug x86','release x86','release x64','debug x64')
+# The four combinations of [debug|release] x [x86|x64] - all of them, back to
+# back, printing SUCCESS/FAILED only. -Build bat (default) walks the four
+# build-vs2022.bat combinations, which is what this script was written for;
+# -Build cmake walks the same four through CMake, so both paths get built in one
+# shot instead of one's four builds being trusted because the other's are green.
+param([ValidateSet('bat','cmake')][string]$Build = 'bat')
+
+$combos = @('Debug/x86','Release/x86','Release/x64','Debug/x64')
+$failed = 0
+
+. "$PSScriptRoot\rundir.ps1"
 foreach ($c in $combos) {
-  "=== build-vs2022.bat $c ==="
-  $out = cmd /c "`"$SRC\build-vs2022.bat $c`"" 2>&1
-  $out | Select-String -Pattern 'SUCCESS|BUILD FAILED|error [A-Z]|LNK[0-9]' | ForEach-Object { $_.Line }
+  $cfg, $arch = $c -split '/'
+  $exe = if ($arch -eq 'x64') { 'PILOTS_RE_x64.EXE' } else { 'PILOTS_RE.EXE' }
+  try {
+    $dir = Build-GameExe -ExeName $exe -Config $cfg -Build $Build
+    "OK: $dir\$exe"
+  } catch {
+    "FAILED: $cfg $arch - $($_.Exception.Message)"
+    $failed++
+  }
 }
+"--- ${Build}: $($combos.Count - $failed) ok, $failed failed ---"
+if ($failed) { exit 1 }

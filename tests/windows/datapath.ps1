@@ -33,7 +33,10 @@
 #
 #   & "$env:ProgramFiles\PowerShell\7\pwsh.exe" -NoProfile -File tests\windows\datapath.ps1
 #   ... -Arch x86
-param([ValidateSet('x86','x64')][string]$Arch = 'x64')
+param([ValidateSet('x86','x64')][string]$Arch = 'x64',
+      # 'none' (default) keeps this harness as it was - it runs whatever exe is
+      # already in out\<arch> and never builds; 'bat'/'cmake' build first.
+      [ValidateSet('none','bat','cmake')][string]$Build = 'none')
 
 $ExeName = if ($Arch -eq 'x64') { 'PILOTS_RE_x64.EXE' } else { 'PILOTS_RE.EXE' }
 
@@ -46,7 +49,12 @@ function Check([string]$what, [bool]$ok, [string]$detail = '') {
 Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
-$RUN = New-GameRunDir -ExeName $ExeName
+$exeDir = $null
+if ($Build -ne 'none') {
+  try { $exeDir = Build-GameExe -ExeName $ExeName -Config Debug -Build $Build }
+  catch { "$($_.Exception.Message)"; exit 1 }
+}
+$RUN = New-GameRunDir -ExeName $ExeName -FromDir $exeDir
 $SRC = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
 # DbgLogInit strips the exe extension: it follows the image, not the CWD, so it is
 # the same path for every case below.

@@ -13,7 +13,10 @@
 #
 #   & "$env:ProgramFiles\PowerShell\7\pwsh.exe" -NoProfile -File tests\windows\hotspots.ps1
 #   ... -Arch x86
-param([ValidateSet('x86','x64')][string]$Arch = 'x64')
+param([ValidateSet('x86','x64')][string]$Arch = 'x64',
+      # 'none' (default) keeps this harness as it was - it runs whatever exe is
+      # already in out\<arch> and never builds; 'bat'/'cmake' build first.
+      [ValidateSet('none','bat','cmake')][string]$Build = 'none')
 
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
 Add-Type 'using System; using System.Runtime.InteropServices;
@@ -43,7 +46,12 @@ function Check([string]$what, [bool]$ok, [string]$detail = '') {
 Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
-$RUN = New-GameRunDir -ExeName $ExeName
+$exeDir = $null
+if ($Build -ne 'none') {
+  try { $exeDir = Build-GameExe -ExeName $ExeName -Config Debug -Build $Build }
+  catch { "$($_.Exception.Message)"; exit 1 }
+}
+$RUN = New-GameRunDir -ExeName $ExeName -FromDir $exeDir
 # DbgLogInit strips the exe extension: PILOTS_RE_x64_debug.log / PILOTS_RE_debug.log
 $LOG = Join-Path $RUN (($ExeName -replace '\.EXE$','') + '_debug.log')
 Remove-Item $LOG -ErrorAction SilentlyContinue

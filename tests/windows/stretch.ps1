@@ -9,11 +9,21 @@
 # fullscreen.ps1 keep asserting).
 #
 #   & "$env:ProgramFiles\PowerShell\7\pwsh.exe" -NoProfile -File tests\windows\stretch.ps1 -Arch x86
-param([ValidateSet('x86','x64')][string]$Arch = 'x86')
+param([ValidateSet('x86','x64')][string]$Arch = 'x86',
+      # 'none' (default) keeps this harness as it was - it runs whatever exe is
+      # already in out\<arch> and never builds; 'bat'/'cmake' build first.
+      [ValidateSet('none','bat','cmake')][string]$Build = 'none')
 
 . "$PSScriptRoot\rundir.ps1"
 $ExeName = if ($Arch -eq 'x64') { 'PILOTS_RE_x64.EXE' } else { 'PILOTS_RE.EXE' }
-$RUN = New-GameRunDir -ExeName $ExeName
+$exeDir = $null
+if ($Build -ne 'none') {
+  Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+  Start-Sleep -Seconds 1
+  try { $exeDir = Build-GameExe -ExeName $ExeName -Config Debug -Build $Build }
+  catch { "$($_.Exception.Message)"; exit 1 }
+}
+$RUN = New-GameRunDir -ExeName $ExeName -FromDir $exeDir
 $LogName = ($ExeName -replace '\.EXE$', '') + '_debug.log'
 $LOG = Join-Path $RUN $LogName
 

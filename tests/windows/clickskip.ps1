@@ -30,7 +30,7 @@
 # Без цепочки остаётся только доигрывание: клик в центр молча проглатывается
 # и ролик идёт все 34 с.
 
-param([ValidateSet('x86','x64')][string]$Arch = 'x64')
+param([ValidateSet('x86','x64')][string]$Arch = 'x64', [ValidateSet('bat','cmake')][string]$Build = 'bat')
 
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
 Add-Type 'using System; using System.Text; using System.Runtime.InteropServices;
@@ -45,6 +45,7 @@ public class CS {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte sc, uint flags, UIntPtr extra);
   [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
   public static string ClassName(IntPtr h) {
@@ -120,14 +121,10 @@ function Check([string]$name, [bool]$ok) {
 Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
-$bat = if ($Arch -eq 'x64') { 'debug x64' } else { 'debug x86' }
-"building $Arch DEBUG (build-vs2022.bat $bat)..."
-& cmd /c "`"$SRC\build-vs2022.bat $bat`"" | Select-Object -Last 1
 . "$PSScriptRoot\rundir.ps1"
-$exeDir = Get-OutDirForExe $SRC $exe                    # out\x86 / out\x64
-if (-not (Test-Path (Join-Path $exeDir $exe))) { "no exe: $exeDir\$exe"; exit 1 }
+$exeDir = Build-GameExe -ExeName $exe -Config Debug -Build $Build   # out\x86 / out\x64 | build-win32 / build-win64
 
-$RUN = New-GameRunDir -ExeName $exe
+$RUN = New-GameRunDir -ExeName $exe -FromDir $exeDir
 $LOG = Join-Path $RUN (($exe -replace '\.EXE$','') + '_debug.log')
 Remove-Item $LOG -ErrorAction SilentlyContinue
 
