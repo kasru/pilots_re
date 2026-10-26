@@ -1,10 +1,9 @@
-# build outputs: the Windows bats put .obj in build/<Configuration>/<Platform>,
-# e.g. build/Debug/x64 - one dir per bat, so all four builds coexist; the debug
-# bats also drop the /Fd compiler PDB there. CMake gets one dir per flavour:
-# build/ (or build32/, build64/) on Linux, build-switch/ for the .nro. One dir
+# build outputs: the Windows bats put .obj in SRC/out/<arch> (out/x86, out/x64) -
+# one dir per arch, so both builds coexist and each carries its own SDL2.dll; SRC/.gitignore
+# has the out/ rule itself. CMake gets one dir per flavour: build-win32/, build-win64/
+# on Windows, build/ (or build32/, build64/) on Linux, build-switch/ for the .nro. One dir
 # per flavour matters because SDL2/libavcodec must come from the matching
 # architecture, so a dir is tied to one of them for good.
-# Exe/PDB/MAP/SDL2.dll stay in SRC/ next to the game data.
 *.obj
 *.exe
 *.pdb
