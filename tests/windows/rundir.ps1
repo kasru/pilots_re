@@ -8,6 +8,9 @@
 #
 # The exe lives in SRC\out\<arch> (the bat's per-arch output: out\x86, out\x64),
 # the game data in the SRC root - New-GameRunDir takes both from where they are.
+# A CMake build puts its exe somewhere else entirely (see Get-CMakeOutDirForExe),
+# so -Build/-FromDir exist: the run dir itself does not care where the exe came
+# from, it only hardlinks whatever it is given.
 #
 # Why a scratch dir at all. main.c resolves .\PILOTS.EXE (the game's own data file)
 # and the .\movies\... video lookup against the process CWD, so the exe has to be
@@ -38,11 +41,44 @@ function Get-OutDirForExe {
   return (Join-Path $SRC (Join-Path 'out' $arch))
 }
 
+function Get-CMakeOutDirForExe {
+  # Where a CMake build of a given arch puts its exe. Unlike the bat there is no
+  # single answer: the Visual Studio generator adds a per-config subdir
+  # (build-win32\Debug\PILOTS_RE.EXE) while Ninja writes straight into the build
+  # dir (build-win32\PILOTS_RE.EXE), and the build dir itself is a convention
+  # (build-win32/build-win64), not something CMake fixes. So probe the layout
+  # instead of assuming it, Debug first - the baseline markers are debug-log
+  # lines, and a Release build has no log at all.
+  param([string]$RepoRoot, [string]$ExeName, [string]$BuildDir)
+  $arch = if ($ExeName -match '_x64') { 'win64' } else { 'win32' }
+  if (-not $BuildDir) { $BuildDir = Join-Path $RepoRoot "build-$arch" }
+  foreach ($sub in @('Debug', 'Release', '.')) {
+    $p = if ($sub -eq '.') { $BuildDir } else { Join-Path $BuildDir $sub }
+    if (Test-Path (Join-Path $p $ExeName)) { return $p }
+  }
+  return $null
+}
+
+function Find-CMake {
+  # cmake is not in this machine's PATH - what is installed is the copy bundled
+  # with Visual Studio (Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin).
+  # Look for the bundled one as a fallback rather than demanding cmake on PATH.
+  $c = Get-Command cmake -ErrorAction SilentlyContinue
+  if ($c) { return $c.Source }
+  $vs = 'C:\Program Files\Microsoft Visual Studio\2022\Community'
+  $bundled = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+  if (Test-Path $bundled) { return $bundled }
+  return $null
+}
+
 function New-GameRunDir {
   param([string]$ExeName, [string]$FromDir = $null)
 
   $SRC = (Resolve-Path (Join-Path $__TestsDir '..\..\SRC')).Path
   if (-not $FromDir) { $FromDir = Get-OutDirForExe $SRC $ExeName }   # the bat's per-arch output dir
+  if (-not (Test-Path (Join-Path $FromDir $ExeName))) {
+    throw "no exe at $FromDir\$ExeName - build it first (SRC\build-vs2022.bat, or CMake into build-win32/build-win64)"
+  }
   Clear-StartupDialogs $ExeName
   $RUN = Join-Path $env:TEMP 'pilots_rundir'
   New-Item -ItemType Directory -Force -Path $RUN | Out-Null
@@ -58,10 +94,10 @@ function New-GameRunDir {
     Where-Object { $_.Extension -ieq '.avi' -or $_.Extension -ieq '.bmp' } |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
-  # SDL2.dll ships one copy per arch now (the bat copies it into out\x86 and
-  # out\x64 separately), so FromDir has the matching one. The exe and the DLL are
-  # build outputs (SRC\out\<arch>); PILOTS.EXE is game data and always comes from
-  # the SRC root - it is not a build product.
+  # SDL2.dll ships one copy per arch (the bat copies it into out\x86 and out\x64
+  # separately, CMake copies it next to its own exe), so FromDir has the matching
+  # one. The exe and the DLL are build outputs; PILOTS.EXE is game data and always
+  # comes from the SRC root - it is not a build product.
   foreach ($f in @($ExeName, 'SDL2.dll', 'PILOTS.EXE')) {
     $s = if ($f -ieq 'PILOTS.EXE') { Join-Path $SRC $f } else { Join-Path $FromDir $f }
     if (-not (Test-Path $s)) { throw "missing game file: $s" }
