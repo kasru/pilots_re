@@ -1390,9 +1390,22 @@ HCURSOR LoadCursorA(HINSTANCE hInstance, LPCSTR lpCursorName)
 
 HCURSOR SetCursor(HCURSOR hCursor)
 {
-  (void)hCursor;
-  return 0;                                /* SDL cursor visibility is owned by the config
-                                              flag (SdlBackendSetCursorVisible) */
+  /* Семантика Win32: SetCursor(NULL) гасит указатель над клиентской областью, и
+     ровно так игра выключает системный курсор — Host_GetCursor (host.c) отдаёт
+     IDC_ARROW только пока заголовок игры просит systemCursor, а иначе NULL, то
+     есть всегда, когда курсор рисует сам движок (g_CursorSprite). На Windows это
+     гасит настоящий user32; прежняя заглушка принимала аргумент и игнорировала
+     его, поэтому на шимных платформах стрелка системы и стрелка игры стояли на
+     экране вместе — две мышины курсора у одной мышки.
+
+     Одно исключение, и оно ровно то же, что на Windows: во время фильма движок
+     не рисует стрелку вовсе (GmCursor_OnMouseMove выходит sớm, пока g_MovieDepth
+     != 0), а на Windows её там возвращает WM_SETCURSOR мультиокна MCI
+     (Host_AviWndProc). Ребёнка вне Windows нет, так что на этот промежуток
+     указатель должен остаться системным, иначе у игрока не будет ни того, ни
+     другого. */
+  SdlBackendSetCursorVisible(hCursor != NULL || g_MovieDepth != 0);
+  return 0;
 }
 
 int GetCursorPos(LPPOINT lpPoint)

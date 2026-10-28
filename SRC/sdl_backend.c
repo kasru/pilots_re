@@ -2996,7 +2996,30 @@ DWORD SdlBackendGetWinStyle(void)
 
 void SdlBackendSetCursorVisible(int visible)
 {
-    SDL_ShowCursor(visible ? SDL_ENABLE : SDL_DISABLE);
+    /* Состояние держится здесь же, а не у зовущего: WM_SETCURSOR приходит перед
+       КАЖДЫМ движением мыши (так устроена настоящая мышь, см. SDL_MOUSEMOTION в
+       SdlEventToGameMessage), то есть эта функция — горячий путь. SDL_ShowCursor
+       каждый раз спрашивает видеодрайвер, а в штатном драйвере Switch его и вовсе
+       нет (замерено nm'ом), так что без сравнения с прежним значением пустой зов
+       повторялся бы тысячами. -1 = «неизвестно», чтобы первый зов выполнился
+       обязательно: старое значение системы в момент создания окна мы не читали. */
+    static int s_CursorShown = -1;
+    int want = visible ? 1 : 0;
+    int rc, state;
+
+    if (s_CursorShown == want)
+        return;
+    s_CursorShown = want;
+    rc = SDL_ShowCursor(want ? SDL_ENABLE : SDL_DISABLE);
+    /* SDL_QUERY — это собственное мнение SDL, а не наблюдение за X: драйвер
+       прячет курсор, ставя пустой на сфокусированное окно, и прочитать поле
+       курсора окна через X11 нельзя вовсе (его нет в XWindowAttributes, оно
+       есть только в XSetWindowAttributes). Так что честнее всего здесь спросить
+       у SDL и записать, согласился ли он сам. */
+    state = SDL_ShowCursor(SDL_QUERY);
+    DBG_LOG("SdlBackendSetCursorVisible: %s -> rc=%d, SDL_QUERY=%d%s",
+            want ? "shown" : "hidden", rc, state,
+            rc == -1 ? " (unsupported by this video driver)" : "");
 }
 
 void SdlBackendGetClientSize(int *w, int *h)
