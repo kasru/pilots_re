@@ -11,7 +11,7 @@
 # durations off the mounted tree and the script waits that long plus slack.
 cd "$(dirname "$0")/../.." || exit 1
 BUILDDIR=${PILOTS_BUILDDIR:-build32}
-LOG=$BUILDDIR/PILOT_RV_debug.log
+LOG=$BUILDDIR/PILOT_RE_debug.log
 
 dur() {  # whole seconds of an AVI, default if ffprobe/file is missing
   d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "SRC/MOVIES/$1" 2>/dev/null | cut -d. -f1)
@@ -27,14 +27,14 @@ podman rm -f plr >/dev/null 2>&1
 : > "$LOG"
 podman run -d --name plr -v "$PWD:/w" -w /w/SRC \
   -e SDL_VIDEODRIVER=dummy -e SDL_AUDIODRIVER=dummy \
-  pilots-build "/w/$BUILDDIR/PILOT_RV" || exit 1
+  pilots-build "/w/$BUILDDIR/PILOT_RE" || exit 1
 
 sleep "$WAIT1"
 echo "---- after ${WAIT1}s (expect 1 finished movie, 1 notify) ----"
 echo "finished=$(grep -c 'playback finished' "$LOG") notifies=$(grep -c 'posting MM_MCINOTIFY' "$LOG")"
 
 sleep $((WAIT2 - WAIT1))
-pid=$(podman exec plr sh -c 'for p in /proc/[0-9]*; do c=$(cat "$p/comm" 2>/dev/null); [ "$c" = PILOT_RV ] && echo "${p#/proc/}"; done')
+pid=$(podman exec plr sh -c 'for p in /proc/[0-9]*; do c=$(cat "$p/comm" 2>/dev/null); [ "$c" = PILOT_RE ] && echo "${p#/proc/}"; done')
 echo "t=${WAIT2}s pid=$pid - SIGUSR1 for a clean quit"
 podman exec plr sh -c "kill -USR1 $pid" 2>/dev/null
 sleep 5

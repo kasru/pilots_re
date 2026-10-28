@@ -23,22 +23,22 @@ $SRC = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
 # The build needs the exe unlinked, and the script's own Stop-Process below comes
 # too late for that - so when asked to build, kill first and build here.
 if ($Build -ne 'none') {
-  Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+  Get-Process PILOT_RE,PILOT_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
   Start-Sleep -Seconds 1
 }
-$OUT = if ($Build -eq 'none') { Get-OutDirForExe $SRC 'PILOTS_RE_x64.EXE' } else {   # out\x64 | build-win64
-  try { Build-GameExe -ExeName 'PILOTS_RE_x64.EXE' -Config Debug -Build $Build }
+$OUT = if ($Build -eq 'none') { Get-OutDirForExe $SRC 'PILOT_RE_x64.EXE' } else {   # out\x64 | build-win64
+  try { Build-GameExe -ExeName 'PILOT_RE_x64.EXE' -Config Debug -Build $Build }
   catch { "$($_.Exception.Message)"; exit 1 }
 }
-$LOG = Join-Path $OUT 'PILOTS_RE_x64_debug.log'
+$LOG = Join-Path $OUT 'PILOT_RE_x64_debug.log'
 $SHOT = Join-Path $env:TEMP 'shots'
 New-Item -ItemType Directory -Force -Path $SHOT | Out-Null
 
-Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process PILOT_RE,PILOT_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 Remove-Item $LOG -ErrorAction SilentlyContinue
 
-$p = Start-Process -FilePath (Join-Path $OUT 'PILOTS_RE_x64.EXE') -WorkingDirectory $SRC -PassThru
+$p = Start-Process -FilePath (Join-Path $OUT 'PILOT_RE_x64.EXE') -WorkingDirectory $SRC -PassThru
 $h = [IntPtr]::Zero
 for ($i=0; $i -lt 150 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 200; $p.Refresh(); if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $h = $p.MainWindowHandle } }
 "window handle: $h"

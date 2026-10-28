@@ -33,13 +33,13 @@ if errorlevel 1 goto :fail
 rc /nologo /fo out\pilots.res pilots.rc
 if errorlevel 1 goto :fail
 
-link /nologo /OUT:out\PILOTS_RE.EXE /SUBSYSTEM:WINDOWS /MACHINE:X86 %LFLAGS% /LIBPATH:"%SDL2%\lib\x86" ^
+link /nologo /OUT:out\PILOT_RE.EXE /SUBSYSTEM:WINDOWS /MACHINE:X86 %LFLAGS% /LIBPATH:"%SDL2%\lib\x86" ^
     out\*.obj out\pilots.res kernel32.lib user32.lib gdi32.lib winmm.lib SDL2.lib
 if errorlevel 1 goto :fail
 
 copy /y "%SDL2%\lib\x86\SDL2.dll" out\ >nul
 
-echo SUCCESS: out\PILOTS_RE.EXE
+echo SUCCESS: out\PILOT_RE.EXE
 popd
 exit /b 0
 

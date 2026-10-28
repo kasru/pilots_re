@@ -154,7 +154,7 @@ void SdlSwitchReportEnvironment(void)
  * Either way the mapping has to be given back before the process leaves: it holds
  * references to pages hbloader owns and takes back when the app returns to it, and
  * exiting with them in place is what made hbloader break - its own report, 2001-0106
- * (module 2001 is hosloader in libnx's codes), with no PILOT_RV offset anywhere in it.
+ * (module 2001 is hosloader in libnx's codes), with no PILOT_RE offset anywhere in it.
  * Hence SdlSwitchUnmapLowMemory, called from SdlBackendShutdown.
  */
 /* Candidate addresses, all below the 2 GB the round trip dies at and all 2 MB-aligned.
@@ -321,7 +321,7 @@ void *SdlSwitchMapLowMemory(size_t bytes)
 /* Undo the alias, because leaving it mapped is not free on this console: the pages
  * belong to the region the loader gave the app, and it wants them back when the app
  * returns. Exiting with the alias in place is what produced hbloader's own break
- * (2001-0106, no PILOT_RV offset in the report) - a fatal in the loader looks exactly
+ * (2001-0106, no PILOT_RE offset in the report) - a fatal in the loader looks exactly
  * like "the game crashed on exit" from the sofa, so the port gives the mapping back as
  * the last thing it does. Called from SdlBackendShutdown, after the game's own cleanup
  * has finished with the pool.

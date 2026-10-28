@@ -15,10 +15,10 @@ param([ValidateSet('x86','x64')][string]$Arch = 'x86',
       [ValidateSet('none','bat','cmake')][string]$Build = 'none')
 
 . "$PSScriptRoot\rundir.ps1"
-$ExeName = if ($Arch -eq 'x64') { 'PILOTS_RE_x64.EXE' } else { 'PILOTS_RE.EXE' }
+$ExeName = if ($Arch -eq 'x64') { 'PILOT_RE_x64.EXE' } else { 'PILOT_RE.EXE' }
 $exeDir = $null
 if ($Build -ne 'none') {
-  Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+  Get-Process PILOT_RE,PILOT_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
   Start-Sleep -Seconds 1
   try { $exeDir = Build-GameExe -ExeName $ExeName -Config Debug -Build $Build }
   catch { "$($_.Exception.Message)"; exit 1 }

@@ -10,7 +10,7 @@
 # picture must become 960x720 at (160,0).
 #
 #   sh tests/linux/fullscreen.sh
-# Needs: a built $BUILDDIR/PILOT_RV, SRC/ with the original game data and
+# Needs: a built $BUILDDIR/PILOT_RE, SRC/ with the original game data and
 # SRC/MOVIES/INTRO.AVI, tests/linux/x11ctl.py as the X driver.
 # $0 has no slash when the script is piped into `sh -s` (run_remote.ps1 prepends the
 # tar extract and leaves us in the repo root) - then just stay where we are.
@@ -25,10 +25,10 @@ esac
 BUILDDIR=${PILOTS_BUILDDIR:-build64}
 DISP=${PILOTS_FSDISPLAY:-:98}
 SW=1280; SH=720
-LOG=$(pwd)/$BUILDDIR/PILOT_RV_debug.log
+LOG=$(pwd)/$BUILDDIR/PILOT_RE_debug.log
 X="python3 tests/linux/x11ctl.py"
 
-[ -x "$BUILDDIR/PILOT_RV" ] || { echo "no $BUILDDIR/PILOT_RV - build it first"; exit 1; }
+[ -x "$BUILDDIR/PILOT_RE" ] || { echo "no $BUILDDIR/PILOT_RE - build it first"; exit 1; }
 
 # expected letterbox for a 4:3 picture on this screen (fit the height, centre)
 EPH=$SH
@@ -43,7 +43,7 @@ pgrep -f "Xvfb $DISP" >/dev/null 2>&1 || {
 export DISPLAY=$DISP
 echo "== display $DISP ${SW}x${SH}"
 
-pkill -9 PILOT_RV 2>/dev/null
+pkill -9 PILOT_RE 2>/dev/null
 sleep 1
 : > "$LOG"
 
@@ -102,7 +102,7 @@ alt_enter() {
 }
 
 cd SRC || exit 1
-../$BUILDDIR/PILOT_RV -fullscreen >/tmp/pilots_fs.out 2>&1 &
+../$BUILDDIR/PILOT_RE -fullscreen >/tmp/pilots_fs.out 2>&1 &
 P=$!
 cd ..
 

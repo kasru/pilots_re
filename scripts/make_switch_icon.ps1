@@ -1,5 +1,5 @@
 # Builds assets/switch_icon.bmp: the 128x128 8bpp icon that elf2nro puts into
-# PILOT_RV.nro and hbmenu then shows in its grid.
+# PILOT_RE.nro and hbmenu then shows in its grid.
 #
 # Usage (either PowerShell works - this file uses nothing newer than 5.1 and no
 # System.Drawing, so it runs on Windows and on the Linux box that builds the nro):

@@ -7,11 +7,11 @@ param([ValidateSet('bat','cmake')][string]$Build = 'bat')
 
 . "$PSScriptRoot\rundir.ps1"
 
-Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process PILOT_RE,PILOT_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 try {
-  $exeDir = Build-GameExe -ExeName 'PILOTS_RE_x64.EXE' -Config Debug -Build $Build
+  $exeDir = Build-GameExe -ExeName 'PILOT_RE_x64.EXE' -Config Debug -Build $Build
 } catch {
   "$($_.Exception.Message)"; exit 1
 }

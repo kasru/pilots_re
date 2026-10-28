@@ -3,8 +3,8 @@
 # Dot-source it, then call New-GameRunDir:
 #
 #   . "$PSScriptRoot\rundir.ps1"
-#   $RUN = New-GameRunDir -ExeName 'PILOTS_RE_x64.EXE'
-#   $LOG = Join-Path $RUN 'PILOTS_RE_x64_debug.log'
+#   $RUN = New-GameRunDir -ExeName 'PILOT_RE_x64.EXE'
+#   $LOG = Join-Path $RUN 'PILOT_RE_x64_debug.log'
 #
 # The exe lives in SRC\out\<arch> (the bat's per-arch output: out\x86, out\x64),
 # the game data in the SRC root - New-GameRunDir takes both from where they are.
@@ -35,7 +35,7 @@ function Get-OutDirForExe {
   # SRC\out\<arch> — where build-vs2022.bat drops a given exe. The bat splits the
   # arches into out\x86 and out\x64 so they stop overwriting each other (shared
   # SDL2.dll name used to mean only the last-built arch could run). The subdir
-  # follows from the exe's own name: PILOTS_RE_x64.* -> x64, else x86.
+  # follows from the exe's own name: PILOT_RE_x64.* -> x64, else x86.
   param([string]$SRC, [string]$ExeName)
   $arch = if ($ExeName -match '_x64') { 'x64' } else { 'x86' }
   return (Join-Path $SRC (Join-Path 'out' $arch))
@@ -44,8 +44,8 @@ function Get-OutDirForExe {
 function Get-CMakeOutDirForExe {
   # Where a CMake build of a given arch puts its exe. Unlike the bat there is no
   # single answer: the Visual Studio generator adds a per-config subdir
-  # (build-win32\Debug\PILOTS_RE.EXE) while Ninja writes straight into the build
-  # dir (build-win32\PILOTS_RE.EXE), and the build dir itself is a convention
+  # (build-win32\Debug\PILOT_RE.EXE) while Ninja writes straight into the build
+  # dir (build-win32\PILOT_RE.EXE), and the build dir itself is a convention
   # (build-win32/build-win64), not something CMake fixes. So probe the layout
   # instead of assuming it, Debug first - the baseline markers are debug-log
   # lines, and a Release build has no log at all. -Config pins the subdir when
@@ -134,7 +134,14 @@ function Build-GameExe {
       & $cmake -S $repo -B $bdir -A $plat 2>&1 | Select-Object -Last 5 | ForEach-Object { Write-Host $_ }
     }
     $bld = & $cmake --build $bdir --config $Config 2>&1
-    $errs = $bld | Select-String -Pattern 'error [A-Z]|LNK[0-9]|CMake Error'
+    # Match link ERRORS only: a bare 'LNK[0-9]' also matched warnings - notably
+    # LNK4281 ("undesirable base address 0x10000000 for x64 image"), which this
+    # project emits by design (/BASE:0x10000000 /DYNAMICBASE:NO, deliberate).
+    # MSVC spells the two severities differently: "path : error LNK2019: ..." and
+    # "LINK : fatal error LNK1120: ...", while a warning is "LINK : warning
+    # LNK4281: ...". That false positive stayed hidden as long as the build was
+    # up to date (no relink, hence no warning); the exe rename forced a relink.
+    $errs = $bld | Select-String -Pattern 'error [A-Z]|error LNK[0-9]|CMake Error'
     if ($errs) { $errs | ForEach-Object { Write-Host $_.Line }; throw "BUILD FAILED (CMake $bdir $Config)" }
     $dir = Get-CMakeOutDirForExe -RepoRoot $repo -ExeName $ExeName -BuildDir $bdir -Config $Config
     if (-not $dir) { throw "no $ExeName under $bdir after a $Config build" }
@@ -144,7 +151,9 @@ function Build-GameExe {
 
   Write-Host "=== building $arch $Config (build-vs2022.bat) ==="
   $out = cmd /c "`"$SRC\build-vs2022.bat $($Config.ToLower()) $arch`"" 2>&1
-  $out | Select-String -Pattern 'SUCCESS|BUILD FAILED|error [A-Z]|LNK[0-9]' | ForEach-Object { Write-Host $_.Line }
+  # 'error LNK' rather than 'LNK[0-9]', same as the cmake branch: the x64 link
+  # prints LNK4281 (the deliberate /BASE:0x10000000) and it is not a problem.
+  $out | Select-String -Pattern 'SUCCESS|BUILD FAILED|error [A-Z]|error LNK[0-9]' | ForEach-Object { Write-Host $_.Line }
   $dir = Get-OutDirForExe $SRC $ExeName
   if (-not (Test-Path (Join-Path $dir $ExeName))) { throw "no exe at $dir\$ExeName after build-vs2022.bat" }
   Stage-GameDataForExe -SrcDir $SRC -ExeDir $dir
@@ -241,8 +250,8 @@ public static class StartupDiag
             var sb = new StringBuilder(512); GetWindowTextW(h, sb, 512);
             var t = sb.ToString();
             bool mine = false;
-            // Match "<exe>.EXE" rather than the bare process name: "PILOTS_RE"
-            // is a substring of "PILOTS_RE_x64", and a leftover box from the
+            // Match "<exe>.EXE" rather than the bare process name: "PILOT_RE"
+            // is a substring of "PILOT_RE_x64", and a leftover box from the
             // other arch would otherwise be taken for this process' own.
             if (name != null && name.Length > 0 && t.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
                 mine = true;
@@ -288,7 +297,7 @@ function Get-StartupDialog {
 
 function Clear-StartupDialogs {
   # Clicks shut any visible box left over from an earlier run, so a stale one is
-  # never mistaken for this run's. Takes the exe's file name ("PILOTS_RE.EXE").
+  # never mistaken for this run's. Takes the exe's file name ("PILOT_RE.EXE").
   param([string]$ExeName)
   for ($i = 0; $i -lt 8; $i++) {
     if (-not [StartupDiag]::Dismiss([uint32]0, $ExeName)) { break }

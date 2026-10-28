@@ -11,8 +11,8 @@
 #                                             of the generated game-struct headers
 #
 #   Windows (MSVC), the arch comes from the generator, NOT from a switch here:
-#     cmake -S . -B build-win64 -A x64        -> PILOTS_RE_x64.EXE
-#     cmake -S . -B build-win32 -A Win32      -> PILOTS_RE.EXE
+#     cmake -S . -B build-win64 -A x64        -> PILOT_RE_x64.EXE
+#     cmake -S . -B build-win32 -A Win32      -> PILOT_RE.EXE
 #     cmake --build build-win64 --config Release
 #   or under a vcvars prompt (Ninja picks cl.exe up from the environment):
 #     cmake -S . -B build-win64 -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -32,13 +32,13 @@ cmake_minimum_required(VERSION 3.16)
 # brings nx_create_nro() into scope for the .nro step at the bottom.
 option(PLATFORM_SWITCH "Cross-compile the Nintendo Switch .nro (devkitA64/libnx)" OFF)
 
-project(PILOT_RV C CXX)
+project(PILOT_RE C CXX)
 
 if(MSVC)
   # ---- MSVC setup, mirroring SRC/build-vs2022.bat ----
   # The .bat stays the proven Windows baseline and keeps working; this block only
   # makes the CMake path produce the same image, so a CMake x64 exe can be handed
-  # to the same tests (they look for PILOTS_RE_x64.EXE, hence the OUTPUT_NAME set
+  # to the same tests (they look for PILOT_RE_x64.EXE, hence the OUTPUT_NAME set
   # further down).
   #
   # Static CRT: the .bat links /MT (and /MTd for debug), not CMake's default /MD,
@@ -75,15 +75,15 @@ if(MSVC)
 endif()
 
 # Debug logging on by default: DBG_* macros are our only diagnostics on Linux
-# (writes PILOT_RV_debug.log next to the exe, backtrace on crash). Off by default
+# (writes PILOT_RE_debug.log next to the exe, backtrace on crash). Off by default
 # on the Switch, where the reason is app0:: a shipped NSO has its own filesystem
 # mounted read-only, so "next to the exe" cannot be written.
 #
 # An NRO is the other case, and the one we actually run: libnx chdir's to the
 # directory the .nro was loaded from (fs_dev.c __libnx_init_cwd, for anything
 # that is not an NSO), and that directory is on sdmc. GetModuleFileNameA has no
-# /proc/self/exe on newlib, so it answers the relative "PILOT_RV.EXE"
-# (win32_shim.c), debug_log.h turns that into "PILOT_RV_debug.log" in the CWD -
+# /proc/self/exe on newlib, so it answers the relative "PILOT_RE.EXE"
+# (win32_shim.c), debug_log.h turns that into "PILOT_RE_debug.log" in the CWD -
 # i.e. right next to the .nro and the game data in /switch/pilots. So the log is
 # not only possible on the console, it is the only way to see anything there:
 # scripts/build_switch_podman.sh debug turns it on.
@@ -214,8 +214,8 @@ set(GAME_SOURCES
   ${GAME_DIR}/mci_ffmpeg.c
 )
 
-add_executable(PILOT_RV ${GAME_SOURCES})
-target_include_directories(PILOT_RV PRIVATE ${GAME_DIR})
+add_executable(PILOT_RE ${GAME_SOURCES})
+target_include_directories(PILOT_RE PRIVATE ${GAME_DIR})
 if(NOT WIN32)
   # Fake <windows.h>/<mmsystem.h>/<io.h>/<vfw.h>/<intrin.h>/<crtdbg.h> -> win32_shim.h
   # ONLY off Windows: on Linux and the Switch these stand in for the SDK headers
@@ -223,7 +223,7 @@ if(NOT WIN32)
   # what the .bat builds have always used, and adding this dir to the path would
   # shadow them - the fake windows.h has no HMIDIOUT, so gm.h's winmm globals
   # (g_hMidiOut, g_hWaveOut, WAVEHDR, ...) stop parsing on the first one.
-  target_include_directories(PILOT_RV PRIVATE ${GAME_DIR}/winshim)
+  target_include_directories(PILOT_RE PRIVATE ${GAME_DIR}/winshim)
 endif()
 
 if(WIN32)
@@ -243,34 +243,34 @@ if(WIN32)
   endif()
   set(SDL2_LIB ${SDL2_ROOT}/lib/${SDL2_ARCH_DIR}/SDL2.lib)
   if(NOT EXISTS "${SDL2_LIB}")
-    message(FATAL_ERROR "PILOT_RV: ${SDL2_LIB} not found - the ${SDL2_ARCH_DIR} SDL2 "
+    message(FATAL_ERROR "PILOT_RE: ${SDL2_LIB} not found - the ${SDL2_ARCH_DIR} SDL2 "
                         "import lib is required (got it from third_party/SDL2)")
   endif()
   # SYSTEM: SDL2's own headers are not our sources, so at /W4 /WX they must not
   # contribute a single warning (build-vs2022.bat passes /external:W0 for the same
   # reason).
-  target_include_directories(PILOT_RV SYSTEM PRIVATE ${SDL2_ROOT}/include)
+  target_include_directories(PILOT_RE SYSTEM PRIVATE ${SDL2_ROOT}/include)
   # winmm is the midiOut + timeSetEvent half of the audio path (the .bat links it
   # too): on Windows midiOutShortMsg/timeSetEvent are the real winmm calls and
   # SdlMidi_* is compiled out by #ifndef _WIN32, so there is no libADLMIDI below.
-  target_link_libraries(PILOT_RV PRIVATE ${SDL2_LIB} winmm)
+  target_link_libraries(PILOT_RE PRIVATE ${SDL2_LIB} winmm)
 
   # The Windows exe entry is WinMain (host.c), so /SUBSYSTEM:WINDOWS.
-  set_target_properties(PILOT_RV PROPERTIES WIN32_EXECUTABLE TRUE)
+  set_target_properties(PILOT_RE PROPERTIES WIN32_EXECUTABLE TRUE)
   # Same names as the .bat puts in out\x86 / out\x64, so the tests in tests\
   # (audio.ps1, clickskip.ps1, datapath.ps1, ...) run against a CMake build
-  # without knowing where it came from: x86 -> PILOTS_RE.EXE, x64 ->
-  # PILOTS_RE_x64.EXE. The build dir already keeps the two apart; the name is
+  # without knowing where it came from: x86 -> PILOT_RE.EXE, x64 ->
+  # PILOT_RE_x64.EXE. The build dir already keeps the two apart; the name is
   # what the process filter matches on.
   if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set_target_properties(PILOT_RV PROPERTIES OUTPUT_NAME PILOTS_RE_x64)
+    set_target_properties(PILOT_RE PROPERTIES OUTPUT_NAME PILOT_RE_x64)
     # The game stores addresses in 32-bit int and its static buffers must fit a
     # signed int32, so the 64-bit image is pinned below 2 GB with ASLR off -
     # exactly what build-vs2022.bat does for its x64 flavour. x86 needs neither
     # (the loader puts it there anyway), and the .bat passes nothing there either.
-    target_link_options(PILOT_RV PRIVATE /BASE:0x10000000 /DYNAMICBASE:NO)
+    target_link_options(PILOT_RE PRIVATE /BASE:0x10000000 /DYNAMICBASE:NO)
   else()
-    set_target_properties(PILOT_RV PROPERTIES OUTPUT_NAME PILOTS_RE)
+    set_target_properties(PILOT_RE PROPERTIES OUTPUT_NAME PILOT_RE)
   endif()
 
   # The icon: a PE resource in the game's own PILOTS.EXE, carved out as
@@ -285,24 +285,24 @@ if(WIN32)
     # rc.exe resolves the .ico relative to its own CWD, not to the .rc, so hand
     # it SRC explicitly - under Ninja the CWD is the build dir.
     set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} /I\"${GAME_DIR}\"")
-    target_sources(PILOT_RV PRIVATE ${GAME_DIR}/pilots.rc)
+    target_sources(PILOT_RE PRIVATE ${GAME_DIR}/pilots.rc)
   else()
-    message(STATUS "PILOT_RV: no SRC/pilots.ico, building without an exe icon "
+    message(STATUS "PILOT_RE: no SRC/pilots.ico, building without an exe icon "
                    "(only Explorer/Alt-Tab will notice, the game itself does not load it)")
   endif()
 
   # SDL2.dll next to the exe: both arches ship the same DLL name, and each build
   # dir gets its own copy so the x86 and x64 outputs stay independently runnable.
-  add_custom_command(POST_BUILD TARGET PILOT_RV COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                     "${SDL2_ROOT}/lib/${SDL2_ARCH_DIR}/SDL2.dll" "$<TARGET_FILE_DIR:PILOT_RV>")
-  message(STATUS "PILOT_RV: SDL2 from ${SDL2_ROOT}/lib/${SDL2_ARCH_DIR} "
+  add_custom_command(POST_BUILD TARGET PILOT_RE COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                     "${SDL2_ROOT}/lib/${SDL2_ARCH_DIR}/SDL2.dll" "$<TARGET_FILE_DIR:PILOT_RE>")
+  message(STATUS "PILOT_RE: SDL2 from ${SDL2_ROOT}/lib/${SDL2_ARCH_DIR} "
                  "(${CMAKE_SIZEOF_VOID_P}-byte pointers)")
 else()
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
   pkg_check_modules(AV REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil libswscale)
 
-  target_link_libraries(PILOT_RV PRIVATE PkgConfig::SDL2 PkgConfig::AV m)
+  target_link_libraries(PILOT_RE PRIVATE PkgConfig::SDL2 PkgConfig::AV m)
 endif()
 
 # ---- libADLMIDI: the OPL3 synth under midiOut (the music) ----
@@ -363,32 +363,32 @@ target_compile_definitions(adlmidi PRIVATE ${ADLMIDI_OPTS})
 # start underrunning while everything else looks fine.
 target_compile_options(adlmidi PRIVATE -O2)
 
-target_link_libraries(PILOT_RV PRIVATE adlmidi)
+target_link_libraries(PILOT_RE PRIVATE adlmidi)
 endif() # NOT WIN32
 
 if(PILOTS_M32)
-  message(STATUS "PILOT_RV: 32-bit (-m32), build dir ${CMAKE_BINARY_DIR}")
+  message(STATUS "PILOT_RE: 32-bit (-m32), build dir ${CMAKE_BINARY_DIR}")
 elseif(PLATFORM_SWITCH)
-  message(STATUS "PILOT_RV: Nintendo Switch (aarch64), build dir ${CMAKE_BINARY_DIR}")
+  message(STATUS "PILOT_RE: Nintendo Switch (aarch64), build dir ${CMAKE_BINARY_DIR}")
 elseif(WIN32)
   if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    message(STATUS "PILOT_RV: Windows x64, build dir ${CMAKE_BINARY_DIR}")
+    message(STATUS "PILOT_RE: Windows x64, build dir ${CMAKE_BINARY_DIR}")
   else()
-    message(STATUS "PILOT_RV: Windows x86, build dir ${CMAKE_BINARY_DIR}")
+    message(STATUS "PILOT_RE: Windows x86, build dir ${CMAKE_BINARY_DIR}")
   endif()
 else()
-  message(STATUS "PILOT_RV: native ${CMAKE_SYSTEM_PROCESSOR}, build dir ${CMAKE_BINARY_DIR}")
+  message(STATUS "PILOT_RE: native ${CMAKE_SYSTEM_PROCESSOR}, build dir ${CMAKE_BINARY_DIR}")
 endif()
 if(PLATFORM_SWITCH)
-  message(STATUS "PILOT_RV: debug log ${PILOTS_DEBUG_LOG}, game data goes to sdmc:/switch/pilots")
+  message(STATUS "PILOT_RE: debug log ${PILOTS_DEBUG_LOG}, game data goes to sdmc:/switch/pilots")
 elseif(WIN32)
-  message(STATUS "PILOT_RV: debug log ${PILOTS_DEBUG_LOG}, run the exe from a dir "
+  message(STATUS "PILOT_RE: debug log ${PILOTS_DEBUG_LOG}, run the exe from a dir "
                  "holding the original PILOTS.EXE (the engine opens .\\PILOTS.EXE)")
 else()
-  message(STATUS "PILOT_RV: debug log ${PILOTS_DEBUG_LOG}, run with CWD = SRC (the game opens .\\PILOTS.EXE)")
+  message(STATUS "PILOT_RE: debug log ${PILOTS_DEBUG_LOG}, run with CWD = SRC (the game opens .\\PILOTS.EXE)")
 endif()
 
-# ---- Nintendo Switch: wrap the ELF into PILOT_RV.nro ----
+# ---- Nintendo Switch: wrap the ELF into PILOT_RE.nro ----
 # nx_create_nro / nx_generate_nacp come from devkitPro's
 # cmake/Platform/NintendoSwitch.cmake, which CMake loads as the platform file
 # once the toolchain has set CMAKE_SYSTEM_NAME=NintendoSwitch. elf2nro wants an
@@ -410,15 +410,15 @@ if(PLATFORM_SWITCH)
     set(SWITCH_ICON_ARGS ICON "${SWITCH_ICON}")
   else()
     set(SWITCH_ICON_ARGS "")
-    message(WARNING "PILOT_RV: no assets/switch_icon.bmp, using devkitPro's default icon "
+    message(WARNING "PILOT_RE: no assets/switch_icon.bmp, using devkitPro's default icon "
                     "(regenerate: pwsh scripts/make_switch_icon.ps1)")
   endif()
 
-  nx_generate_nacp(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/PILOT_RV.nacp"
+  nx_generate_nacp(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/PILOT_RE.nacp"
                    NAME    "Pilots"
                    AUTHOR  "pilots_re reconstruction"
                    VERSION "1.0.0")
-  nx_create_nro(PILOT_RV NACP "${CMAKE_CURRENT_BINARY_DIR}/PILOT_RV.nacp" ${SWITCH_ICON_ARGS})
-  message(STATUS "PILOT_RV: nro target PILOT_RV_nro -> ${CMAKE_CURRENT_BINARY_DIR}/PILOT_RV.nro")
-  message(STATUS "PILOT_RV: nro icon ${SWITCH_ICON_ARGS}")
+  nx_create_nro(PILOT_RE NACP "${CMAKE_CURRENT_BINARY_DIR}/PILOT_RE.nacp" ${SWITCH_ICON_ARGS})
+  message(STATUS "PILOT_RE: nro target PILOT_RE_nro -> ${CMAKE_CURRENT_BINARY_DIR}/PILOT_RE.nro")
+  message(STATUS "PILOT_RE: nro icon ${SWITCH_ICON_ARGS}")
 endif()

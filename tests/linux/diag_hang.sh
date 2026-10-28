@@ -4,14 +4,14 @@
 # so the game's own handler prints a backtrace of the stuck point.
 cd "$(dirname "$0")/../.." || exit 1
 BUILDDIR=${PILOTS_BUILDDIR:-build32}
-LOG=$BUILDDIR/PILOT_RV_debug.log
+LOG=$BUILDDIR/PILOT_RE_debug.log
 podman rm -f plr >/dev/null 2>&1
 : > "$LOG"
 podman run -d --name plr -v "$PWD:/w" -w /w/SRC \
   -e SDL_VIDEODRIVER=dummy -e SDL_AUDIODRIVER=dummy \
-  pilots-build "/w/$BUILDDIR/PILOT_RV" || exit 1
+  pilots-build "/w/$BUILDDIR/PILOT_RE" || exit 1
 sleep 15
-pid=$(podman exec plr sh -c 'for p in /proc/[0-9]*; do c=$(cat "$p/comm" 2>/dev/null); [ "$c" = PILOT_RV ] && echo "${p#/proc/}"; done')
+pid=$(podman exec plr sh -c 'for p in /proc/[0-9]*; do c=$(cat "$p/comm" 2>/dev/null); [ "$c" = PILOT_RE ] && echo "${p#/proc/}"; done')
 echo "t=15s pid=$pid - sending SIGUSR1"
 podman exec plr sh -c "kill -USR1 $pid"
 sleep 10

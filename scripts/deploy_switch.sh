@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy PILOT_RV.nro to the Nintendo Switch over FTP and reset the debug log.
+# Deploy PILOT_RE.nro to the Nintendo Switch over FTP and reset the debug log.
 #
 # Usage (from any directory, on the machine that builds the nro):
 #   scripts/deploy_switch.sh              upload the nro, archive + delete the log
@@ -25,10 +25,10 @@
 #   - The retries are there because sys-ftpd is occasionally slow to answer.
 #   - hbmenu scans /switch only at start: after the very first upload into a new
 #     directory, restart hbmenu or the icon will not show up.
-#   - The console log is PILOT_RV_debug.log *in this same directory*. There is no
+#   - The console log is PILOT_RE_debug.log *in this same directory*. There is no
 #     /config/... path here: GetModuleFileNameA has no /proc/self/exe on newlib,
-#     so it returns the relative "PILOT_RV.EXE" (win32_shim.c), debug_log.h turns
-#     that into "PILOT_RV_debug.log" in the CWD, and libnx's __libnx_init_cwd()
+#     so it returns the relative "PILOT_RE.EXE" (win32_shim.c), debug_log.h turns
+#     that into "PILOT_RE_debug.log" in the CWD, and libnx's __libnx_init_cwd()
 #     has already chdir'd to the nro's own directory (fs_dev.c). Saves land there
 #     for the same reason.
 #   - Only a build configured with -DPILOTS_DEBUG_LOG=ON writes that log, i.e.
@@ -53,17 +53,17 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 HOST="${SWITCH_HOST:-192.168.1.112}"
 PORT="${SWITCH_PORT:-5000}"
 DIR="${SWITCH_DIR:-/switch/pilots}"
-NRO="${NRO:-$REPO/${BUILDDIR:-build-switch}/PILOT_RV.nro}"
+NRO="${NRO:-$REPO/${BUILDDIR:-build-switch}/PILOT_RE.nro}"
 
 FTP="ftp://$HOST:$PORT"
-REMOTE_NRO="$DIR/PILOT_RV.nro"
-LOG_REMOTE="$DIR/PILOT_RV_debug.log"
-LOG_LOCAL="${TMPDIR:-/tmp}/PILOT_RV_debug.log"
+REMOTE_NRO="$DIR/PILOT_RE.nro"
+LOG_REMOTE="$DIR/PILOT_RE_debug.log"
+LOG_LOCAL="${TMPDIR:-/tmp}/PILOT_RE_debug.log"
 ARCHIVE_DIR="${TMPDIR:-/tmp}/pilots_deploy_logs"
 CRASH_REMOTE="/sdmc:/atmosphere/crash_reports/"     # sys-ftpd exposes the devices
-CRASH_LOCAL="${TMPDIR:-/tmp}/PILOT_RV_crash.log"    #   as top-level dirs
+CRASH_LOCAL="${TMPDIR:-/tmp}/PILOT_RE_crash.log"    #   as top-level dirs
 DUMP_LOCAL="${TMPDIR:-/tmp}/pilots_mix.wav"         # the mixer's output recorder, see --pull-dump
-SHOT_LOCAL="${TMPDIR:-/tmp}/PILOT_RV_shot.jpg"
+SHOT_LOCAL="${TMPDIR:-/tmp}/PILOT_RE_shot.jpg"
 
 # Read-only modes first: none of them needs a local nro.
 case "${1:-}" in
@@ -71,7 +71,7 @@ case "${1:-}" in
     # Atmosphere drops a report for every crash into
     # sdmc:/atmosphere/crash_reports/<tick>_<program-id>.log. It holds what our own
     # log cannot - the abort address, every register and the stack scan as
-    # "PILOT_RV + 0x<offset>" - because a CPU exception on newlib is not a POSIX
+    # "PILOT_RE + 0x<offset>" - because a CPU exception on newlib is not a POSIX
     # signal, so the SIGSEGV handler in debug_log.h is decoration there. The tick
     # in the name is monotonic, so the newest report is the largest prefix.
     NEWEST=$(curl -s --connect-timeout 8 --max-time 30 "${FTP}${CRASH_REMOTE}" \
@@ -224,7 +224,7 @@ fi
 
 # Never lose the previous run's log: archive it locally before deleting.
 mkdir -p "${ARCHIVE_DIR}"
-ARCHIVE_FILE="${ARCHIVE_DIR}/PILOT_RV_debug_$(date +%Y%m%d_%H%M%S).log"
+ARCHIVE_FILE="${ARCHIVE_DIR}/PILOT_RE_debug_$(date +%Y%m%d_%H%M%S).log"
 if curl -s --connect-timeout 8 --max-time 60 "${FTP}${LOG_REMOTE}" \
      -o "${ARCHIVE_FILE}" && [ -s "${ARCHIVE_FILE}" ]; then
   echo "LOG_ARCHIVED (${ARCHIVE_FILE})"

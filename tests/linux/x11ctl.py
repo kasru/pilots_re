@@ -2,7 +2,7 @@
 """Minimal X11/EWMH driver via ctypes + libX11 (no xdotool/wmctrl on the host).
 
 Used to reproduce window-manager interactions (maximize / restore / fullscreen)
-against PILOT_RV on DISPLAY=:0 from a script.
+against PILOT_RE on DISPLAY=:0 from a script.
 
 Usage:
   x11ctl.py list                     - client windows: <id> <name>

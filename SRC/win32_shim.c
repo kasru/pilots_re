@@ -351,7 +351,7 @@ DWORD GetModuleFileNameA(HINSTANCE hModule, LPSTR lpFilename, DWORD nSize)
   if ( n <= 0 )
   {
     /* extremely unlikely; keep something sane so DbgLogInit still works */
-    snprintf(lpFilename, nSize, "PILOT_RV.EXE");
+    snprintf(lpFilename, nSize, "PILOT_RE.EXE");
     return (DWORD)strlen(lpFilename);
   }
   exePath[n] = '\0';

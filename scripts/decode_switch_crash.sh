@@ -1,13 +1,13 @@
 #!/bin/bash
 # Turn an Atmosphere crash report into function names and source lines.
 #
-#   scripts/decode_switch_crash.sh /tmp/PILOT_RV_crash.log [elf]
+#   scripts/decode_switch_crash.sh /tmp/PILOT_RE_crash.log [elf]
 #
-#   elf defaults to build-switch-dbg/PILOT_RV.elf, which is the image the debug
-#   .nro was made from; pass build-switch/PILOT_RV.elf for a release report.
+#   elf defaults to build-switch-dbg/PILOT_RE.elf, which is the image the debug
+#   .nro was made from; pass build-switch/PILOT_RE.elf for a release report.
 #
 # WHY THE OFFSETS GO STRAIGHT TO addr2line: the report lists PC, LR and a scanned
-# stack of return addresses as "PILOT_RV + 0x<offset>". A .nro is a
+# stack of return addresses as "PILOT_RE + 0x<offset>". A .nro is a
 # position-independent image and switch.ld starts it at zero (__start__ = 0x0), so
 # the module-relative offset the report prints is already the virtual address in
 # the ELF - there is no load slide to subtract. That is the only lucky thing about
@@ -31,7 +31,7 @@ IMAGE=${PILOTS_SWITCH_IMAGE:-docker.io/devkitpro/devkita64:latest}
 ADDR2LINE=/opt/devkitpro/devkitA64/bin/aarch64-none-elf-addr2line
 
 REPORT=${1:-}
-ELF=${2:-build-switch-dbg/PILOT_RV.elf}
+ELF=${2:-build-switch-dbg/PILOT_RE.elf}
 
 [ -n "${REPORT}" ] || { echo "usage: decode_switch_crash.sh <crash-report> [elf]" >&2; exit 2; }
 [ -f "${REPORT}" ] || { echo "no such report: ${REPORT}" >&2; exit 1; }
@@ -53,9 +53,9 @@ echo "=== frames (${ELF}) ==="
 # Label + offset for every line that names our module: PC, LR, ReturnAddress[NN].
 # Duplicated offsets are kept on purpose, a scanned stack repeats a frame and the
 # repetition is itself a clue.
-PAIRS=$(sed -nE 's/^[[:space:]]*([A-Za-z0-9_]+(\[[0-9]+\])?):[[:space:]]+[0-9a-fA-F]+[[:space:]]*\(PILOT_RV \+ (0x[0-9a-fA-F]+)\).*/\1 \3/p' \
+PAIRS=$(sed -nE 's/^[[:space:]]*([A-Za-z0-9_]+(\[[0-9]+\])?):[[:space:]]+[0-9a-fA-F]+[[:space:]]*\(PILOT_RE \+ (0x[0-9a-fA-F]+)\).*/\1 \3/p' \
         "${REPORT}" | head -24)
-[ -n "${PAIRS}" ] || { echo "no PILOT_RV frames in this report - wrong build's report?" >&2; exit 1; }
+[ -n "${PAIRS}" ] || { echo "no PILOT_RE frames in this report - wrong build's report?" >&2; exit 1; }
 
 # The elf goes FIRST so the inner loop can hold it in a named variable: with the
 # frames before it, its position would depend on how many frames there are.

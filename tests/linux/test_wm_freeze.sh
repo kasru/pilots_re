@@ -5,7 +5,7 @@
 # 0 in RenderDirtyRegions, cursor gone, no repaint).
 #
 # Needs: the game already running on DISPLAY=:0 with PILOTS_DEBUG_HB=1
-# (1s heartbeat in $BUILDDIR/PILOT_RV_debug.log) and tests/linux/x11ctl.py as the WM
+# (1s heartbeat in $BUILDDIR/PILOT_RE_debug.log) and tests/linux/x11ctl.py as the WM
 # driver (no xdotool/wmctrl on the host). Run from anywhere:
 #   sh tests/linux/test_wm_freeze.sh
 set -e
@@ -18,7 +18,7 @@ ID=$($X list | awk '/[Pp]ilot/{print $1}')
 [ -n "$ID" ] || { echo "game window not found"; exit 1; }
 echo "== window $ID"
 
-hb() { grep -a HB: "$BUILDDIR/PILOT_RV_debug.log" | tail -n "$1"; }
+hb() { grep -a HB: "$BUILDDIR/PILOT_RE_debug.log" | tail -n "$1"; }
 origin() { G=$($X geom "$ID"); OX=${G%%,*}; OY=${G#*,}; OY=${OY%% *}; }
 
 echo "== phase A: maximize -> hardware mouse beyond logical size -> restore"
@@ -69,5 +69,5 @@ echo "-- HB after restore (expect client=640x480, growing presents):"
 hb 4
 
 echo "== window events of the run:"
-grep -a -n -e SDL_WINDOWEVENT -e MINIMIZED: -e RESTORED: "$BUILDDIR/PILOT_RV_debug.log" | tail -n 30
+grep -a -n -e SDL_WINDOWEVENT -e MINIMIZED: -e RESTORED: "$BUILDDIR/PILOT_RE_debug.log" | tail -n 30
 echo "== done"

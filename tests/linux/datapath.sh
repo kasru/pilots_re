@@ -25,15 +25,15 @@
 # as "ENTER: GameMainLoop" (DBG_ENTER in host.c).
 #
 #   sh tests/linux/datapath.sh
-# Needs: a built $BUILDDIR/PILOT_RV and SRC/ with the original game data.
+# Needs: a built $BUILDDIR/PILOT_RE and SRC/ with the original game data.
 case "$0" in
   */*) cd "$(dirname "$0")/../.." || exit 1 ;;
 esac
 BUILDDIR=${PILOTS_BUILDDIR:-build64}
 DISP=${PILOTS_DPDISPLAY:-:96}
 SW=1024; SH=768
-LOG=$(pwd)/$BUILDDIR/PILOT_RV_debug.log
-EXE=$(pwd)/$BUILDDIR/PILOT_RV
+LOG=$(pwd)/$BUILDDIR/PILOT_RE_debug.log
+EXE=$(pwd)/$BUILDDIR/PILOT_RE
 
 [ -x "$EXE" ] || { echo "no $EXE - build it first"; exit 1; }
 [ -f SRC/PILOTS.EXE ] || { echo "no SRC/PILOTS.EXE - game data missing"; exit 1; }
@@ -45,7 +45,7 @@ pgrep -f "Xvfb $DISP" >/dev/null 2>&1 || {
 export DISPLAY=$DISP
 echo "== display $DISP ${SW}x${SH} ($BUILDDIR)"
 
-pkill -9 PILOT_RV 2>/dev/null
+pkill -9 PILOT_RE 2>/dev/null
 sleep 1
 
 FAILED=""
