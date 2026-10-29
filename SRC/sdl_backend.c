@@ -325,6 +325,10 @@ static int s_StickY;
 static unsigned int s_LastMovePost; /* мс последнего отправленного хода */
 static int s_MovePending;           /* стик ушёл после последнего отправленного */
 static int s_RLedgesLogged;         /* L без привязки: репорт о ребре ограничен */
+static int s_PadPointerMoved;       /* пад уже вёл курсор: его позиция всегда внутри
+                                       картинки (стик зажат в ней), а реальная мышь
+                                       может быть запаркована вне окна — см.
+                                       SdlBackendPadPointerMoved */
 
 /* ========================================================================== */
 /* Оконная процедура: игровой набор сообщений → Host_MainWndProc, остальное → SDL */
@@ -1089,6 +1093,32 @@ void SdlBackendPumpEvents(void)
 #endif
 }
 
+/* Опрос пада отдельным вызовом — без прочих частей насоса (горячие точки, профиль,
+   дренаж SDL). Нужен модальному циклу Host_PlayAvi на Windows: тот блокирует в
+   НАСТОЯЩЕМ GetMessageA и потому мимо SdlBackendPumpEvents (единственный опрос пада
+   на Windows) — без этого вызова клик с джойстика не создаёт сообщения и ролик
+   (интро и start в режиме GMINTRO_AVI — оба идут через MCI) с джойстика не
+   скипается: замерено игроком, мышью/пробелом те же ролики пропускаются. На
+   не-Windows то же самое делает шимный PeekMessageA (WinShim_PumpSDLToQueue), так
+   что там вызов избыточен, но безвреден: ребро кнопки считается по предыдущему
+   состоянию, повторный опрос в пределах одного витка не даёт второго клика. */
+void SdlBackendPollPad(void)
+{
+    SdlPollPadControls();
+}
+
+/* Пад уже вёл курсор (стик двигал его или кнопка кликала)? Тогда главный цикл не
+   должен прятать курсор по GetCursorPos: та читает РЕАЛЬНУЮ мышь, которая при игре
+   с джойстиком запаркована вне окна, — а курсор ведёт именно пад, чья позиция
+   зажата внутри картинки и потому всегда «внутри». Без этого флага курсор гаснет на
+   карте уровней и в сцене при движении стика: main loop каждым кадром читал
+   cursorInWindow=false (реальная мышь вне окна) и кадровый проход переставал
+   композить курсор-спрайт, пока следующий ход стика (раз в 50 мс) не вернул его. */
+int SdlBackendPadPointerMoved(void)
+{
+    return s_PadPointerMoved;
+}
+
 #ifdef __SWITCH__
 /* hbmenu не передаёт командную строку, так что -datapath на консоли недоступен,
    а движок ищет .\PILOTS.EXE от текущего каталога (при запуске из hbmenu это
@@ -1802,19 +1832,42 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
 #define STICK_SPEED_PX_PER_SEC 640  /* px/секунду при полном отклонении: пересекает картинку за секунду */
 #define MOVE_MIN_INTERVAL_MS 50     /* троттл-интервал: 50 мс — частота отчёта настоящей мыши */
 
+/* Пост мышиного пути пада. Стик живёт в px игры (0..s_TexW/0..s_TexH), но
+   контракт lParam у платформ РАЗНЫЙ, и полный экран это показывает:
+   - Windows: сообщение уходит в реальное окно, где lParam читает подкласс
+     SdlGameWndProc — и сам гоняет его через SdlMapMousePoint (client -> game).
+     Значит пост обязан нести px КЛИЕНТА; game-px читались бы как клиентские
+     и весь ход стика схлопывался бы в клочок картинки в углу большого окна
+     (замерено игроком: в окне работает, в fullscreen курсор еле живёт).
+   - Не-Windows: PostMessageA кладёт сообщение в очередь шима, которая ведёт
+     прямо к Host_MainWndProc без какого-либо подкласса — там ждут px игры.
+   В обычном окне 640x480 оба чтения тождественны, поэтому баг и был невиден
+   без fullscreen. */
+static void SdlPadToMsgPoint(int *x, int *y)
+{
+#ifdef _WIN32
+    SdlBackendGameToClient(x, y);
+#endif
+}
+
 /* Клик кнопкой пада по позиции КУРСОРА (не кнопки — движок щупает именно её).
    Нажатие несёт WM_MOUSEMOVE перед собой: ход может отстать на один интервал
    троттла, а клик должен попасть туда, куда целится игрок. */
 static void SdlPostPadClick(UINT downMsg, UINT upMsg, int down)
 {
+    int x = s_StickX;
+    int y = s_StickY;
+
+    SdlPadToMsgPoint(&x, &y);
     if (!down)
     {
-        PostMessageA(g_MainWindow, upMsg, 0, SdlPackPoint(s_StickX, s_StickY));
+        PostMessageA(g_MainWindow, upMsg, 0, SdlPackPoint(x, y));
         return;
     }
+    s_PadPointerMoved = 1;                     /* клик пада — он и ведёт курсор */
     PostMessageA(g_MainWindow, WM_SETCURSOR, (WPARAM)g_MainWindow, HTCLIENT);
-    PostMessageA(g_MainWindow, WM_MOUSEMOVE, 0, SdlPackPoint(s_StickX, s_StickY));
-    PostMessageA(g_MainWindow, downMsg, 0, SdlPackPoint(s_StickX, s_StickY));
+    PostMessageA(g_MainWindow, WM_MOUSEMOVE, 0, SdlPackPoint(x, y));
+    PostMessageA(g_MainWindow, downMsg, 0, SdlPackPoint(x, y));
 }
 
 #ifndef __SWITCH__
@@ -1978,16 +2031,23 @@ static void SdlPollPadControls(void)
         s_StickX = nx;
         s_StickY = ny;
         s_MovePending = 1;                     /* уходит ниже, как разрешит троттл */
+        s_PadPointerMoved = 1;                 /* пад ведёт курсор — main loop не должен
+                                                  прятать его по GetCursorPos (реальная
+                                                  мышь запаркована вне окна) */
     }
     /* Троттл-ход: позиция СЕЙЧАС, никогда хвост: одного сообщения хватает сколько
        угодно пропущенных пампов, а флаг добьёт конечную точку в пределах одного
        интервала после того, как стик отпустили. */
     if (s_MovePending && SDL_GetTicks() - s_LastMovePost >= MOVE_MIN_INTERVAL_MS)
     {
+        int mx = s_StickX;
+        int my = s_StickY;
+
         s_MovePending = 0;
         s_LastMovePost = SDL_GetTicks();
+        SdlPadToMsgPoint(&mx, &my);
         PostMessageA(g_MainWindow, WM_SETCURSOR, (WPARAM)g_MainWindow, HTCLIENT);
-        PostMessageA(g_MainWindow, WM_MOUSEMOVE, 0, SdlPackPoint(s_StickX, s_StickY));
+        PostMessageA(g_MainWindow, WM_MOUSEMOVE, 0, SdlPackPoint(mx, my));
     }
 
     /* Каждое ребро — строка в лог: «игра закрылась сама» должно читаться рядом

@@ -644,12 +644,40 @@ bool Host_PlayAvi(const char *name, int x, int y, int width, int height)
            размера (только центрирующее смещение) — фон и ребёнок остаются
            выровненными. */
         SdlBackendSetNativeMovie(1);
+#ifdef _WIN32
+        /* Модальное ожидание конца AVI. Оригинал блокировался в GetMessageA — мышь и
+           клавиатура сами кладут сообщение и будят блокировку, а пад ОПРАШИВАЕТСЯ, а
+           не шлёт: на Windows его читает только SdlBackendPumpEvents (его гоняет
+           Host_PumpMessages), а в этот модальный цикл тот не заходит — и ролик с
+           джойстика не скипается (замерено игроком: в режиме GMINTRO_AVI и интро, и
+           start идут через MCI и оба не пропускаются кнопкой пада, тогда как мышью и
+           пробелом — пропускаются). Поэтому здесь неблокирующее ожидание: сообщения
+           через PeekMessageA, пад опрашивается каждый виток (его клик кладёт
+           WM_LBUTTONDOWN и гасит кино через MCI_STOP -> MM_MCINOTIFY), а Sleep отдаёт
+           CPU — кино идёт само и разбудит цикл по концу (MM_MCINOTIFY) либо по клику.
+           Выход не меняется: цикл гаснет по g_AviPlaying (MM_MCINOTIFY или WM_CLOSE ->
+           MCI_STOP), WM_QUIT здесь не участвует. На не-Windows блокирующий GetMessageA
+           шима сам пампит SDL+пад (WinShim_PumpSDLToQueue), так что там всё работает
+           по-прежнему и цикл не тронут. */
+        do
+        {
+            while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE))
+            {
+                TranslateMessage(&msg);
+                DispatchMessageA(&msg);
+            }
+            SdlBackendPollPad();
+            if (g_AviPlaying)
+                Sleep(5);
+        } while (g_AviPlaying);
+#else
         do
         {
             GetMessageA(&msg, NULL, 0, 0);
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
         } while (g_AviPlaying);
+#endif
         SdlBackendSetNativeMovie(0);
     }
 
@@ -1415,6 +1443,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             if (cursorPos.x < 0 || cursorPos.x >= g_Window.clientWidth
                 || cursorPos.y < 0 || cursorPos.y >= g_Window.clientHeight)
                 cursorInWindow = false;
+            /* Пад ведёт курсор: его позиция всегда внутри картинки (стик зажат в ней),
+               а GetCursorPos читает реальную мышь, при игре с джойстиком запаркованную
+               вне окна. Без этой строки курсор гаснет при движении стика: главный цикл
+               каждым кадром решал «мышь вне окна» и кадровый проход переставал
+               композить курсор-спрайт (game.c), пока ход стика (раз в 50 мс) не
+               возвращал его. См. SdlBackendPadPointerMoved. */
+            if (SdlBackendPadPointerMoved())
+                cursorInWindow = true;
         }
         if (!GmGame_Tick(g_Window.clientWidth, g_Window.clientHeight,
                          g_Window.mouseX, g_Window.mouseY,

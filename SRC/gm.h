@@ -1834,6 +1834,8 @@ void SdlBackendUpdatePalette(const uint8_t *rgb, int count);
 void SdlBackendClearBlack(void);
 void SdlBackendDrawGrid(int colorref);
 void SdlBackendPumpEvents(void);
+void SdlBackendPollPad(void); /* опрос пада отдельно от насоса — для модального цикла AVI на Windows */
+int SdlBackendPadPointerMoved(void); /* пад вёл курсор: не прятать его по GetCursorPos */
 void SdlBackendParseCmdLine(const char *cmdLine); /* -fullscreen, -datapath; на Switch ещё и фоллбэк пути */
 int SdlBackendDataPathGiven(void); /* был -datapath (или применился Switch-фоллбэк): путь игры от CWD */
 
