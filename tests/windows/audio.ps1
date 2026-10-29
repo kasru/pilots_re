@@ -60,7 +60,7 @@ param(
     [ValidateSet('x86','x64')][string]$Arch = 'x64'
 )
 
-$ExeName = if ($Arch -eq 'x86') { 'PILOT_RE.EXE' } else { 'PILOT_RE_x64.EXE' }
+$ExeName = if ($Arch -eq 'x86') { 'PILOTS_RE.EXE' } else { 'PILOTS_RE_x64.EXE' }
 $LogName = $ExeName -replace '\.EXE$', '_debug.log'
 
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
@@ -85,7 +85,7 @@ $SRC  = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
 $SHOT = Join-Path $env:TEMP 'shots'
 New-Item -ItemType Directory -Force -Path $SHOT | Out-Null
 
-Get-Process PILOT_RE,PILOT_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 if ($Build) {

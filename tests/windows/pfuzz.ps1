@@ -19,17 +19,17 @@ $SRC  = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
 $SHOT = Join-Path $env:TEMP 'shots'
 New-Item -ItemType Directory -Force -Path $SHOT | Out-Null
 
-Get-Process PILOT_RE,PILOT_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 # Scratch dir holding the data but NOT MOVIES: keeps the run deterministic
 # instead of depending on whether the videos are installed (see rundir.ps1).
 . "$PSScriptRoot\rundir.ps1"
-$RUN = New-GameRunDir -ExeName 'PILOT_RE_x64.EXE' -FromDir $FromDir
-$LOG = Join-Path $RUN 'PILOT_RE_x64_debug.log'
+$RUN = New-GameRunDir -ExeName 'PILOTS_RE_x64.EXE' -FromDir $FromDir
+$LOG = Join-Path $RUN 'PILOTS_RE_x64_debug.log'
 Remove-Item $LOG -ErrorAction SilentlyContinue
 
-$p = Start-Process -FilePath "$RUN\PILOT_RE_x64.EXE" -WorkingDirectory $RUN -PassThru
+$p = Start-Process -FilePath "$RUN\PILOTS_RE_x64.EXE" -WorkingDirectory $RUN -PassThru
 $h = [IntPtr]::Zero
 for ($i=0; $i -lt 150 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 200; $p.Refresh(); if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $h = $p.MainWindowHandle } }
 # When the exe cannot load, the OS box IS the process' only window, so

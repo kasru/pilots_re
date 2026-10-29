@@ -10,7 +10,7 @@
 # picture must become 960x720 at (160,0).
 #
 #   sh tests/linux/fullscreen.sh
-# Needs: a built $BUILDDIR/PILOT_RE, SRC/ with the original game data and
+# Needs: a built $BUILDDIR/PILOTS_RE, SRC/ with the original game data and
 # SRC/MOVIES/INTRO.AVI, tests/linux/x11ctl.py as the X driver.
 # $0 has no slash when the script is piped into `sh -s` (run_remote.ps1 prepends the
 # tar extract and leaves us in the repo root) - then just stay where we are.
@@ -23,12 +23,16 @@ esac
 # /lib/ld-linux.so.2, which looks like "the game never opened a window"). Override with
 # PILOTS_BUILDDIR when driving a binary that does run here.
 BUILDDIR=${PILOTS_BUILDDIR:-build64}
+# 64-bit build -> PILOTS_RE_x64, 32-bit one -> plain PILOTS_RE (the .nro/.exe
+# naming scheme); take whichever is built here.
+BIN=PILOTS_RE
+[ -x "$BUILDDIR/PILOTS_RE_x64" ] && BIN=PILOTS_RE_x64
 DISP=${PILOTS_FSDISPLAY:-:98}
 SW=1280; SH=720
-LOG=$(pwd)/$BUILDDIR/PILOT_RE_debug.log
+LOG=$(pwd)/$BUILDDIR/${BIN}_debug.log
 X="python3 tests/linux/x11ctl.py"
 
-[ -x "$BUILDDIR/PILOT_RE" ] || { echo "no $BUILDDIR/PILOT_RE - build it first"; exit 1; }
+[ -x "$BUILDDIR/$BIN" ] || { echo "no $BUILDDIR/PILOTS_RE{,_x64} - build it first"; exit 1; }
 
 # expected letterbox for a 4:3 picture on this screen (fit the height, centre)
 EPH=$SH
@@ -43,7 +47,7 @@ pgrep -f "Xvfb $DISP" >/dev/null 2>&1 || {
 export DISPLAY=$DISP
 echo "== display $DISP ${SW}x${SH}"
 
-pkill -9 PILOT_RE 2>/dev/null
+pkill -9 PILOTS_RE 2>/dev/null
 sleep 1
 : > "$LOG"
 
@@ -102,7 +106,7 @@ alt_enter() {
 }
 
 cd SRC || exit 1
-../$BUILDDIR/PILOT_RE -fullscreen >/tmp/pilots_fs.out 2>&1 &
+../$BUILDDIR/$BIN -fullscreen >/tmp/pilots_fs.out 2>&1 &
 P=$!
 cd ..
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Cross-compile PILOT_RE.nro for the Nintendo Switch, inside the
+# Cross-compile PILOTS_RE.nro for the Nintendo Switch, inside the
 # devkitpro/devkita64 podman container.
 #
 # Usage:
@@ -10,11 +10,11 @@
 #   sh scripts/build_switch_podman.sh distclean   drop the build dir entirely
 #
 # WHY A SEPARATE debug MODE AND ITS OWN DIRECTORY: both configurations produce a
-# file named PILOT_RE.nro, so they can never share a build dir - the same rule
+# file named PILOTS_RE.nro, so they can never share a build dir - the same rule
 # that keeps build32 and build64 apart. debug is also the only way to learn
 # anything from a real console run: in a Release .nro the DBG_* macros are
 # no-ops, so the app is silent, and a hang there looks exactly like a working
-# build. Its log lands as /switch/pilots/PILOT_RE_debug.log, i.e. next to the
+# build. Its log lands as /switch/pilots/PILOTS_RE_debug.log, i.e. next to the
 # .nro - see the note in CMakeLists.txt for why an NRO can write there at all.
 # Deploy it with BUILDDIR=build-switch-dbg scripts/deploy_switch.sh.
 #
@@ -82,7 +82,7 @@ IMAGE=${PILOTS_SWITCH_IMAGE:-docker.io/devkitpro/devkita64:latest}
 TOOLCHAIN=/opt/devkitpro/cmake/Switch.cmake
 MODE=${1:-build}
 
-# One directory per configuration: both produce PILOT_RE.nro. PILOTS_SWITCH_BUILDDIR
+# One directory per configuration: both produce PILOTS_RE.nro. PILOTS_SWITCH_BUILDDIR
 # overrides either way, which is also how `clean` is aimed at the debug tree:
 #   PILOTS_SWITCH_BUILDDIR=build-switch-dbg sh scripts/build_switch_podman.sh clean
 if [ "$MODE" = debug ]; then
@@ -153,10 +153,10 @@ podman run --rm -v "$REPO:/data" "$IMAGE" bash -c "
       -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN} \
       -DPLATFORM_SWITCH=ON \
       -DPILOTS_DEBUG_LOG=${DEBUG_LOG}
-    make -C ${BUILD_DIR} PILOT_RE_nro -j\$(nproc)
+    make -C ${BUILD_DIR} PILOTS_RE_nro -j\$(nproc)
 "
 
-NRO="$REPO/$BUILD_DIR/PILOT_RE.nro"
+NRO="$REPO/$BUILD_DIR/PILOTS_RE.nro"
 if [ -f "$NRO" ]; then
   echo ""
   echo "build_switch_podman: built $NRO"

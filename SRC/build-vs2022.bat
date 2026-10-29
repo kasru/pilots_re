@@ -2,7 +2,7 @@
 rem Сборка Game Maker Player (PILOTS) компилятором MSVC под VS2022.
 rem   build-vs2022.bat           — x86, выпуск (оптимизация)
 rem   build-vs2022.bat debug     — x86, отладочная сборка
-rem   build-vs2022.bat [debug] x64 — x64-сборка (out\x64\PILOT_RE_x64.EXE);
+rem   build-vs2022.bat [debug] x64 — x64-сборка (out\x64\PILOTS_RE_x64.EXE);
 rem        образ пинится ниже 2 ГБ (/BASE + /DYNAMICBASE:NO): игра хранит
 rem        адреса в 32-разрядных int, и статическим буферам (.bss) тоже
 rem        нужно помещаться в знаковый int32.
@@ -20,7 +20,7 @@ set SDKVER=10.0.26100.0
 set ARCH=x86
 set HOSTDIR=Hostx86\x86
 set MACH=X86
-set EXENAME=PILOT_RE.EXE
+set EXENAME=PILOTS_RE.EXE
 set OUTDIR=out\x86
 set LNKPLAT=
 set PLATARG=%~2
@@ -29,7 +29,7 @@ if /i "%PLATARG%"=="x64" (
     set ARCH=x64
     set HOSTDIR=Hostx64\x64
     set MACH=X64
-    set EXENAME=PILOT_RE_x64.EXE
+    set EXENAME=PILOTS_RE_x64.EXE
     set OUTDIR=out\x64
     set LNKPLAT=/BASE:0x10000000 /DYNAMICBASE:NO
 )

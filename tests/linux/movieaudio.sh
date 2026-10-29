@@ -20,15 +20,18 @@
 # what the audio strh's dwLength promises, and the port's chunk walk adds up to exactly that.
 #
 #   sh tests/linux/movieaudio.sh
-# Needs: a built $BUILDDIR/PILOT_RE (build64 by default: dummy drivers need no X, so this runs
+# Needs: a built $BUILDDIR/PILOTS_RE (build64 by default: dummy drivers need no X, so this runs
 # the host binary directly rather than in the 32-bit container) and SRC/ with the game data and
 # SRC/MOVIES/{INTRO,START}.AVI.
 case "$0" in
   */*) cd "$(dirname "$0")/../.." || exit 1 ;;
 esac
 BUILDDIR=${PILOTS_BUILDDIR:-build64}
-LOG=$(pwd)/$BUILDDIR/PILOT_RE_debug.log
-EXE=$(pwd)/$BUILDDIR/PILOT_RE
+# 64-bit build -> PILOTS_RE_x64, 32-bit one -> plain PILOTS_RE.
+BIN=PILOTS_RE
+[ -x "$BUILDDIR/PILOTS_RE_x64" ] && BIN=PILOTS_RE_x64
+LOG=$(pwd)/$BUILDDIR/${BIN}_debug.log
+EXE=$(pwd)/$BUILDDIR/$BIN
 
 [ -x "$EXE" ] || { echo "no $EXE - build it first"; exit 1; }
 [ -f SRC/PILOTS.EXE ] || { echo "no SRC/PILOTS.EXE - game data missing"; exit 1; }
@@ -43,7 +46,7 @@ START_DUR=$(dur START.AVI 50)
 WAIT=$((INTRO_DUR + START_DUR + 20))             # both movies, plus the boot and the slack
 echo "== $BUILDDIR: INTRO ${INTRO_DUR}s + START ${START_DUR}s, running ${WAIT}s (dummy video and audio)"
 
-pkill -9 PILOT_RE 2>/dev/null
+pkill -9 PILOTS_RE 2>/dev/null
 sleep 1
 : > "$LOG"
 

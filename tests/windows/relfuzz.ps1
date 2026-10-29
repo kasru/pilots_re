@@ -12,18 +12,18 @@ public class G5 {
 
 . "$PSScriptRoot\rundir.ps1"
 $SRC = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
-Get-Process PILOT_RE,PILOT_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 "### building x64 RELEASE ###"
 try {
-  $OUT = Build-GameExe -ExeName 'PILOT_RE_x64.EXE' -Config Release -Build $Build
+  $OUT = Build-GameExe -ExeName 'PILOTS_RE_x64.EXE' -Config Release -Build $Build
 } catch {
   "$($_.Exception.Message)"; exit 1
 }
 if (-not $OUT) { "build produced no exe dir"; exit 1 }
 
-$p = Start-Process -FilePath (Join-Path $OUT 'PILOT_RE_x64.EXE') -WorkingDirectory $SRC -PassThru
+$p = Start-Process -FilePath (Join-Path $OUT 'PILOTS_RE_x64.EXE') -WorkingDirectory $SRC -PassThru
 $h = [IntPtr]::Zero
 for ($i=0; $i -lt 150 -and $h -eq [IntPtr]::Zero; $i++) { Start-Sleep -Milliseconds 200; $p.Refresh(); if ($p.MainWindowHandle -ne [IntPtr]::Zero) { $h = $p.MainWindowHandle } }
 "window handle: $h"

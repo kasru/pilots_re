@@ -19,13 +19,13 @@ param([int]$Seconds = 12, [ValidateSet('bat','cmake')][string]$Build = 'bat')
 
 $SRC = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
 
-Get-Process PILOT_RE,PILOT_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 . "$PSScriptRoot\rundir.ps1"
 
 try {
-  $exeDir = Build-GameExe -ExeName 'PILOT_RE.EXE' -Config Debug -Build $Build
+  $exeDir = Build-GameExe -ExeName 'PILOTS_RE.EXE' -Config Debug -Build $Build
 } catch {
   "$($_.Exception.Message)"; exit 1
 }
@@ -46,17 +46,17 @@ if ($Build -eq 'cmake') {
     "         from the debug log, which a Release build does not write"
   }
 }
-"exe                 : $exeDir\PILOT_RE.EXE"
+"exe                 : $exeDir\PILOTS_RE.EXE"
 
 # Run from the scratch dir: it holds the data but not MOVIES. A 32-bit build DOES
 # find the intro AVI (WoW64 still ships the 32-bit MCI driver) and then spends the
 # whole measurement window on the roll, which shifts the baseline markers purely
 # because the videos happen to be installed. See rundir.ps1.
-$RUN = New-GameRunDir -ExeName 'PILOT_RE.EXE' -FromDir $exeDir
-$LOG = Join-Path $RUN 'PILOT_RE_debug.log'
+$RUN = New-GameRunDir -ExeName 'PILOTS_RE.EXE' -FromDir $exeDir
+$LOG = Join-Path $RUN 'PILOTS_RE_debug.log'
 
 Remove-Item $LOG -ErrorAction SilentlyContinue
-$p = Start-Process -FilePath "$RUN\PILOT_RE.EXE" -WorkingDirectory $RUN -PassThru
+$p = Start-Process -FilePath "$RUN\PILOTS_RE.EXE" -WorkingDirectory $RUN -PassThru
 # a loader failure (wrong SDL2.dll arch) puts up a modal box before main() runs;
 # catch it while the process is still alive instead of reporting a silent NO LOG
 $dlg = $null

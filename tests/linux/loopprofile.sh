@@ -27,7 +27,7 @@
 # in the scene, not at the menu.
 #
 #   sh tests/linux/loopprofile.sh
-# Needs: a built $BUILDDIR/PILOT_RE, SRC/ with the original game data and
+# Needs: a built $BUILDDIR/PILOTS_RE, SRC/ with the original game data and
 # tests/linux/x11ctl.py as the X driver.
 case "$0" in
   */*) cd "$(dirname "$0")/../.." || exit 1 ;;
@@ -35,12 +35,15 @@ esac
 # Same reasoning as fullscreen.sh: the host has no i386 runtime, so the default is
 # the native 64-bit build; PILOTS_BUILDDIR overrides it for a binary that runs here.
 BUILDDIR=${PILOTS_BUILDDIR:-build64}
+# 64-bit build -> PILOTS_RE_x64, 32-bit one -> plain PILOTS_RE.
+BIN=PILOTS_RE
+[ -x "$BUILDDIR/PILOTS_RE_x64" ] && BIN=PILOTS_RE_x64
 DISP=${PILOTS_HSDISPLAY:-:97}
 SW=1024; SH=768
-LOG=$(pwd)/$BUILDDIR/PILOT_RE_debug.log
+LOG=$(pwd)/$BUILDDIR/${BIN}_debug.log
 X="python3 tests/linux/x11ctl.py"
 
-[ -x "$BUILDDIR/PILOT_RE" ] || { echo "no $BUILDDIR/PILOT_RE - build it first"; exit 1; }
+[ -x "$BUILDDIR/$BIN" ] || { echo "no $BUILDDIR/PILOTS_RE{,_x64} - build it first"; exit 1; }
 
 # A dying Xvfb left behind by an earlier harness makes pgrep lie and the next
 # game silently fall back to SDL's offscreen driver - no window, no clicks.
@@ -54,7 +57,7 @@ pgrep -f "Xvfb $DISP" >/dev/null 2>&1 && DISPLAY=$DISP xdpyinfo >/dev/null 2>&1 
 export DISPLAY=$DISP
 echo "== display $DISP ${SW}x${SH} ($BUILDDIR)"
 
-pkill -9 PILOT_RE 2>/dev/null
+pkill -9 PILOTS_RE 2>/dev/null
 sleep 1
 : > "$LOG"
 
@@ -118,7 +121,7 @@ cd "$RUN" || exit 1
 # (measured: a still screen under a second under a 2036 KB burst) - the same
 # reason loadbeat.sh sets it. The big-KB pattern filters the tiny warp-close
 # episodes this makes possible (measured: 68 ms, 8 bytes).
-PILOTS_LOAD_QUIET_MS=50 "$REPO/$BUILDDIR/PILOT_RE" >/tmp/pilots_lp.out 2>&1 &
+PILOTS_LOAD_QUIET_MS=50 "$REPO/$BUILDDIR/$BIN" >/tmp/pilots_lp.out 2>&1 &
 P=$!
 cd "$REPO"
 ID=""

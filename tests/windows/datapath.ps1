@@ -38,7 +38,7 @@ param([ValidateSet('x86','x64')][string]$Arch = 'x64',
       # already in out\<arch> and never builds; 'bat'/'cmake' build first.
       [ValidateSet('none','bat','cmake')][string]$Build = 'none')
 
-$ExeName = if ($Arch -eq 'x64') { 'PILOT_RE_x64.EXE' } else { 'PILOT_RE.EXE' }
+$ExeName = if ($Arch -eq 'x64') { 'PILOTS_RE_x64.EXE' } else { 'PILOTS_RE.EXE' }
 
 $fail = 0
 function Check([string]$what, [bool]$ok, [string]$detail = '') {
@@ -46,7 +46,7 @@ function Check([string]$what, [bool]$ok, [string]$detail = '') {
 }
 
 . "$PSScriptRoot\rundir.ps1"
-Get-Process PILOT_RE,PILOT_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 $exeDir = $null

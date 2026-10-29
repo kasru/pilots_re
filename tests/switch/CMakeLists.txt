@@ -1,5 +1,5 @@
 # Standalone project on purpose: this is a diagnostic, not part of the game, and
-# building it must not require configuring PILOT_RE (or vice versa). The
+# building it must not require configuring PILOTS_RE (or vice versa). The
 # toolchain file does the real work - see the note at the top of the repository's
 # CMakeLists.txt about why CMake needs both -DPLATFORM_SWITCH and the toolchain.
 cmake_minimum_required(VERSION 3.16)

@@ -3,8 +3,8 @@
 # Dot-source it, then call New-GameRunDir:
 #
 #   . "$PSScriptRoot\rundir.ps1"
-#   $RUN = New-GameRunDir -ExeName 'PILOT_RE_x64.EXE'
-#   $LOG = Join-Path $RUN 'PILOT_RE_x64_debug.log'
+#   $RUN = New-GameRunDir -ExeName 'PILOTS_RE_x64.EXE'
+#   $LOG = Join-Path $RUN 'PILOTS_RE_x64_debug.log'
 #
 # The exe lives in SRC\out\<arch> (the bat's per-arch output: out\x86, out\x64),
 # the game data in the SRC root - New-GameRunDir takes both from where they are.
@@ -35,7 +35,7 @@ function Get-OutDirForExe {
   # SRC\out\<arch> — where build-vs2022.bat drops a given exe. The bat splits the
   # arches into out\x86 and out\x64 so they stop overwriting each other (shared
   # SDL2.dll name used to mean only the last-built arch could run). The subdir
-  # follows from the exe's own name: PILOT_RE_x64.* -> x64, else x86.
+  # follows from the exe's own name: PILOTS_RE_x64.* -> x64, else x86.
   param([string]$SRC, [string]$ExeName)
   $arch = if ($ExeName -match '_x64') { 'x64' } else { 'x86' }
   return (Join-Path $SRC (Join-Path 'out' $arch))
@@ -44,8 +44,8 @@ function Get-OutDirForExe {
 function Get-CMakeOutDirForExe {
   # Where a CMake build of a given arch puts its exe. Unlike the bat there is no
   # single answer: the Visual Studio generator adds a per-config subdir
-  # (build-win32\Debug\PILOT_RE.EXE) while Ninja writes straight into the build
-  # dir (build-win32\PILOT_RE.EXE), and the build dir itself is a convention
+  # (build-win32\Debug\PILOTS_RE.EXE) while Ninja writes straight into the build
+  # dir (build-win32\PILOTS_RE.EXE), and the build dir itself is a convention
   # (build-win32/build-win64), not something CMake fixes. So probe the layout
   # instead of assuming it, Debug first - the baseline markers are debug-log
   # lines, and a Release build has no log at all. -Config pins the subdir when
@@ -250,8 +250,8 @@ public static class StartupDiag
             var sb = new StringBuilder(512); GetWindowTextW(h, sb, 512);
             var t = sb.ToString();
             bool mine = false;
-            // Match "<exe>.EXE" rather than the bare process name: "PILOT_RE"
-            // is a substring of "PILOT_RE_x64", and a leftover box from the
+            // Match "<exe>.EXE" rather than the bare process name: "PILOTS_RE"
+            // is a substring of "PILOTS_RE_x64", and a leftover box from the
             // other arch would otherwise be taken for this process' own.
             if (name != null && name.Length > 0 && t.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
                 mine = true;
@@ -297,7 +297,7 @@ function Get-StartupDialog {
 
 function Clear-StartupDialogs {
   # Clicks shut any visible box left over from an earlier run, so a stale one is
-  # never mistaken for this run's. Takes the exe's file name ("PILOT_RE.EXE").
+  # never mistaken for this run's. Takes the exe's file name ("PILOTS_RE.EXE").
   param([string]$ExeName)
   for ($i = 0; $i -lt 8; $i++) {
     if (-not [StartupDiag]::Dismiss([uint32]0, $ExeName)) { break }

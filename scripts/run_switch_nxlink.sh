@@ -1,9 +1,9 @@
 #!/bin/sh
-# Upload PILOT_RE.nro to the Switch and RUN it from the PC, over the network.
+# Upload PILOTS_RE.nro to the Switch and RUN it from the PC, over the network.
 #
 # Usage:
-#   sh scripts/run_switch_nxlink.sh                  build-switch/PILOT_RE.nro
-#   sh scripts/run_switch_nxlink.sh debug            build-switch-dbg/PILOT_RE.nro
+#   sh scripts/run_switch_nxlink.sh                  build-switch/PILOTS_RE.nro
+#   sh scripts/run_switch_nxlink.sh debug            build-switch-dbg/PILOTS_RE.nro
 #   sh scripts/run_switch_nxlink.sh <path.nro>       any .nro by path
 #   SWITCH_HOST=192.168.1.5 sh scripts/run_switch_nxlink.sh debug
 #
@@ -42,9 +42,9 @@ HOST=${SWITCH_HOST:-192.168.1.112}
 NXLINK=/opt/devkitpro/tools/bin/nxlink
 
 case "${1:-}" in
-  debug)  NRO="$REPO/build-switch-dbg/PILOT_RE.nro" ;;
+  debug)  NRO="$REPO/build-switch-dbg/PILOTS_RE.nro" ;;
   -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
-  "")   NRO="$REPO/build-switch/PILOT_RE.nro" ;;
+  "")   NRO="$REPO/build-switch/PILOTS_RE.nro" ;;
   *.nro) NRO="$1" ;;
   *) echo "run_switch_nxlink: what is '$1'? (no argument, 'debug', or a .nro path)" >&2; exit 2 ;;
 esac

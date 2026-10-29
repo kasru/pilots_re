@@ -11,7 +11,7 @@ $failed = 0
 . "$PSScriptRoot\rundir.ps1"
 foreach ($c in $combos) {
   $cfg, $arch = $c -split '/'
-  $exe = if ($arch -eq 'x64') { 'PILOT_RE_x64.EXE' } else { 'PILOT_RE.EXE' }
+  $exe = if ($arch -eq 'x64') { 'PILOTS_RE_x64.EXE' } else { 'PILOTS_RE.EXE' }
   try {
     $dir = Build-GameExe -ExeName $exe -Config $cfg -Build $Build
     "OK: $dir\$exe"

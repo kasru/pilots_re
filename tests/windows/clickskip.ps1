@@ -104,7 +104,7 @@ public static class CSEx {
 
 $ErrorActionPreference = 'Stop'
 $SRC  = (Resolve-Path (Join-Path $PSScriptRoot '..\..\SRC')).Path
-$exe  = if ($Arch -eq 'x64') { 'PILOT_RE_x64.EXE' } else { 'PILOT_RE.EXE' }
+$exe  = if ($Arch -eq 'x64') { 'PILOTS_RE_x64.EXE' } else { 'PILOTS_RE.EXE' }
 $SHOT = Join-Path $env:TEMP 'shots'
 New-Item -ItemType Directory -Force -Path $SHOT | Out-Null
 
@@ -118,7 +118,7 @@ function Check([string]$name, [bool]$ok) {
 # BUILD FAILED, и тест молча продолжит на предыдущем бинарнике. Собирается именно
 # та архитектура, что гоняется (у каждой свой каталог out\x86 / out\x64 со своей
 # SDL2.dll, так что чужой бинарник тут уже не помешает).
-Get-Process PILOT_RE,PILOT_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process PILOTS_RE,PILOTS_RE_x64 -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 1
 
 . "$PSScriptRoot\rundir.ps1"
