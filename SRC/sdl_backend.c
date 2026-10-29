@@ -68,6 +68,7 @@ static void SdlApplyFullscreen(void); /* SDL-сторона s_Fullscreen (no-op 
 static int SdlPictureTransformed(void);
 static int SdlMapMousePoint(int *x, int *y); /* px окна -> px игры; 0 = вне картинки */
 static int SdlFloorDiv(int a, int b);
+static void SdlPollPadControls(void); /* стик/кнопки пада -> сообщения игры */
 
 /* ---- Оверлей кликабельного (фича порта): Ctrl зажат — отметить объекты, в
    которые попал бы hit-test клика. Клавиша читается через GetAsyncKeyState:
@@ -313,17 +314,17 @@ static volatile sig_atomic_t s_Usr1Quit;
 #ifdef _DEBUG
 static int s_FingerLogged;          /* первые касания — в лог, для отладки */
 #endif
-#ifdef __SWITCH__
-/* Курсор со стика консоли: клиентские px игры, -1 до первого опроса (тогда
-   паркуется по центру картинки). Ход мышью от стика троттлится — см.
-   комментарий у SdlPollSwitchControls. */
+#endif /* _WIN32 */
+
+/* Курсор со стика пада — на Switch его читает hid напрямую, на Windows/Linux
+   SDL_GameController (оба в SdlPollPadControls): клиентские px игры, -1 до
+   первого опроса (тогда паркуется по центру картинки). Ход мышью от стика
+   троттлится — см. комментарий у SdlPollPadControls. */
 static int s_StickX = -1;
 static int s_StickY;
 static unsigned int s_LastMovePost; /* мс последнего отправленного хода */
 static int s_MovePending;           /* стик ушёл после последнего отправленного */
 static int s_RLedgesLogged;         /* L без привязки: репорт о ребре ограничен */
-#endif
-#endif
 
 /* ========================================================================== */
 /* Оконная процедура: игровой набор сообщений → Host_MainWndProc, остальное → SDL */
@@ -1066,6 +1067,12 @@ void SdlBackendPumpEvents(void)
            граница сообщенческого пути профиля — сам подкласс (см.
            SdlGameWndProc), так что оборачивать дренаж не нужно. */
     }
+    /* Пад на Windows читается здесь: WinShim_PumpSDLToQueue этой платформе
+       неизвестен (его зовёт только шимный PeekMessageA), а Host_PumpMessages
+       гоняет этот насос и в главном цикле, и в ожидании фильма — так что
+       со стика работают курсор, клики и пропуск интро теми же путями, что
+       и на Switch. После дренажа, как там: состояние hotplug свежее. */
+    SdlPollPadControls();
     /* Крестик окна: WM_CLOSE -> Host_CloseWindow -> DestroyWindow -> WM_DESTROY
        -> PostQuitMessage уходит ВНУТРИ этого дренажа (его дёрнул тот же насос
        SDL), и поднятый WM_QUIT тот же насос тут же снимает обратно — до
@@ -1768,10 +1775,15 @@ static void SdlDispatchSdlEvent(const SDL_Event *ev)
     }
 }
 
-#ifdef __SWITCH__
-/* Стик и кнопки консоли -> те же мышиные сообщения, что шлёт настоящая мышь
+#endif /* !_WIN32 — до сюда не-Windows-ввод; пад-блок ниже общий для ВСЕХ платформ */
+
+/* Стик и кнопки пада -> те же мышиные сообщения, что шлёт настоящая мышь
    (SdlDispatchSdlEvent делает то же для SDL-событий): игра не отличает одно от
-   другого — тот же WM_SETCURSOR перед ходом, те же координаты в LPARAM.
+   другого — тот же WM_SETCURSOR перед ходом, те же координаты в LPARAM. На
+   Switch пад читает hid напрямую (SdlSwitchPollPad, switch_libnx.c), на
+   Windows/Linux — SDL_GameController (SdlReadGameController, ниже); маппинг
+   один: стик левый -> курсор, A -> левый клик, B -> правый, '-' (Back/View/
+   Share) -> переключатель картинки, R (RB) -> оверлей кликабельного.
 
    Поток ХОДОВ троттлится, и вся история в этом слове. Каждый WM_MOUSEMOVE
    гоняет wndproc по UpdateCursorPosition -> RenderDirtyRegions СИНХРОННО, а
@@ -1805,7 +1817,108 @@ static void SdlPostPadClick(UINT downMsg, UINT upMsg, int down)
     PostMessageA(g_MainWindow, downMsg, 0, SdlPackPoint(s_StickX, s_StickY));
 }
 
-static void SdlPollSwitchControls(void)
+#ifndef __SWITCH__
+/* SDL-геймпад (Windows/Linux): тот же контракт, что у SdlSwitchPollPad — стик
+   ±0x7FFF с «вверх» положительно, кнопки битами SWITCH_PAD_*. Подсистема
+   поднимается лениво первым опросом: без геймпада цена — один InitSubSystem и
+   нули, которые ниже честный «паппу нет». */
+static void SdlReadGameController(int *stickX, int *stickY, unsigned int *buttons)
+{
+    static int s_SubsysInited;
+    static int s_SubsysFailed;
+    static SDL_GameController *s_Ctl;  /* открытое устройство; hotplug следит сам опрос */
+    int i, n, ax, ay;
+
+    *stickX = 0;
+    *stickY = 0;
+    *buttons = 0;
+
+    if (!s_SubsysInited)
+    {
+        s_SubsysInited = 1;
+        if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) != 0)
+        {
+            s_SubsysFailed = 1;
+            DBG_LOG("SdlReadGameController: SDL_InitSubSystem(GAMECONTROLLER) failed: %s",
+                    SDL_GetError());
+            return;
+        }
+        /* Событиям геймпада здесь никто не нужен: состояние читается опросом, а
+           дренаж (SdlBackendPumpEvents) молча выбросит и включённые — глушим,
+           чтобы горячее подключение не плодило необработанные события. */
+        SDL_GameControllerEventState(SDL_DISABLE);
+    }
+    if (s_SubsysFailed)
+        return;
+
+    /* Hotplug: устройство могли выдернуть — открыть заново первое подключённое.
+       Каждый опрос проверяет прикрепление и NumJoysticks, так что подключение
+       геймпада во время игры подхватывается без перезапуска. */
+    if (s_Ctl && !SDL_GameControllerGetAttached(s_Ctl))
+    {
+        DBG_LOG("SdlReadGameController: '%s' detached",
+                SDL_GameControllerName(s_Ctl) ? SDL_GameControllerName(s_Ctl) : "?");
+        SDL_GameControllerClose(s_Ctl);
+        s_Ctl = NULL;
+    }
+    if (!s_Ctl)
+    {
+        n = SDL_NumJoysticks();
+        for (i = 0; i < n; ++i)
+        {
+            if (!SDL_IsGameController(i))
+                continue;
+            s_Ctl = SDL_GameControllerOpen(i);
+            if (!s_Ctl)
+            {
+                DBG_LOG("SdlReadGameController: open #%d failed: %s", i, SDL_GetError());
+                continue;
+            }
+            DBG_LOG("SdlReadGameController: opened '%s'",
+                    SDL_GameControllerName(s_Ctl) ? SDL_GameControllerName(s_Ctl) : "?");
+            break;
+        }
+        if (!s_Ctl)
+            return;                         /* ни одного геймпада — нули выше уже ответ */
+    }
+
+    SDL_GameControllerUpdate();             /* свежее состояние до чтения */
+    /* Ось SDL: вверх ОТРИЦАТЕЛЬНА, а интеграция ниже ждёт «вверх положительно»,
+       как hid на Switch, — инвертируем здесь, а не в ней. Обрезка до 0x7FFF:
+       полный низ оси (-32768) в обратном знаке даёт 32768. */
+    ax = SDL_GameControllerGetAxis(s_Ctl, SDL_CONTROLLER_AXIS_LEFTX);
+    ay = SDL_GameControllerGetAxis(s_Ctl, SDL_CONTROLLER_AXIS_LEFTY);
+    if (ax > 0x7FFF)
+        ax = 0x7FFF;
+    if (ay > 0x7FFF)
+        ay = 0x7FFF;
+    *stickX = ax;
+    *stickY = -ay;
+
+    /* Кнопки. SDL нормализует раскладку к Xbox (A — нижняя, B — правая), т.е.
+       сохраняет РОЛИ: A — основное действие, каковым на Switch была физическая
+       A, — так что буквальное соответствие маппинга честно: A -> левый клик,
+       B -> правый. Back (Xbox View / PS Share / '-' Pro Controller) — тот же
+       '-' пада, что на Switch; RB — оверлей кликабельного, LB пока без
+       привязки, но мёртвая кнопка тихой быть не должна. */
+    if (SDL_GameControllerGetButton(s_Ctl, SDL_CONTROLLER_BUTTON_A))
+        *buttons |= SWITCH_PAD_A;
+    if (SDL_GameControllerGetButton(s_Ctl, SDL_CONTROLLER_BUTTON_B))
+        *buttons |= SWITCH_PAD_B;
+    if (SDL_GameControllerGetButton(s_Ctl, SDL_CONTROLLER_BUTTON_X))
+        *buttons |= SWITCH_PAD_X;
+    if (SDL_GameControllerGetButton(s_Ctl, SDL_CONTROLLER_BUTTON_Y))
+        *buttons |= SWITCH_PAD_Y;
+    if (SDL_GameControllerGetButton(s_Ctl, SDL_CONTROLLER_BUTTON_LEFTSHOULDER))
+        *buttons |= SWITCH_PAD_L;
+    if (SDL_GameControllerGetButton(s_Ctl, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER))
+        *buttons |= SWITCH_PAD_R;
+    if (SDL_GameControllerGetButton(s_Ctl, SDL_CONTROLLER_BUTTON_BACK))
+        *buttons |= SWITCH_PAD_MINUS;
+}
+#endif /* !__SWITCH__ */
+
+static void SdlPollPadControls(void)
 {
     static unsigned int s_PrevButtons;
     static unsigned int s_LastStickPoll;       /* мс предыдущего опроса — стик
@@ -1828,7 +1941,11 @@ static void SdlPollSwitchControls(void)
         s_StickY = s_TexH / 2;
     }
 
-    SdlSwitchPollPad(&sx, &sy, &buttons);
+#ifdef __SWITCH__
+    SdlSwitchPollPad(&sx, &sy, &buttons);     /* hid напрямую: в этой сборке SDL без npad */
+#else
+    SdlReadGameController(&sx, &sy, &buttons); /* SDL_GameController: Windows, Linux */
+#endif
 
     if (sx > -STICK_DEADZONE && sx < STICK_DEADZONE)
         sx = 0;                                /* курсор, ползущий сам по себе, хуже мёртвой зоны */
@@ -1878,18 +1995,18 @@ static void SdlPollSwitchControls(void)
        привязки, но мёртвая кнопка тихой быть не должна. */
     if ((buttons & SWITCH_PAD_A) != (s_PrevButtons & SWITCH_PAD_A))
     {
-        DBG_LOG("SdlSwitchControls: A %s -> left click at (%d,%d)",
+        DBG_LOG("SdlPad: A %s -> left click at (%d,%d)",
                 (buttons & SWITCH_PAD_A) ? "down" : "up", s_StickX, s_StickY);
         SdlPostPadClick(WM_LBUTTONDOWN, WM_LBUTTONUP, (buttons & SWITCH_PAD_A) != 0);
     }
     if ((buttons & SWITCH_PAD_B) != (s_PrevButtons & SWITCH_PAD_B))
     {
-        DBG_LOG("SdlSwitchControls: B %s -> right click at (%d,%d)",
+        DBG_LOG("SdlPad: B %s -> right click at (%d,%d)",
                 (buttons & SWITCH_PAD_B) ? "down" : "up", s_StickX, s_StickY);
         SdlPostPadClick(WM_RBUTTONDOWN, WM_RBUTTONUP, (buttons & SWITCH_PAD_B) != 0);
     }
     if ((buttons & (SWITCH_PAD_X | SWITCH_PAD_Y)) != (s_PrevButtons & (SWITCH_PAD_X | SWITCH_PAD_Y)))
-        DBG_LOG("SdlSwitchControls: X/Y edge, prev=0x%X now=0x%X (no binding, ignored)",
+        DBG_LOG("SdlPad: X/Y edge, prev=0x%X now=0x%X (no binding, ignored)",
                 s_PrevButtons & (SWITCH_PAD_X | SWITCH_PAD_Y),
                 buttons & (SWITCH_PAD_X | SWITCH_PAD_Y));
     /* '-' (минус Joy-Con): собственный переключатель картинки порта, на том же
@@ -1900,7 +2017,7 @@ static void SdlPollSwitchControls(void)
        всём экране. */
     if ((buttons & SWITCH_PAD_MINUS) && !(s_PrevButtons & SWITCH_PAD_MINUS))
     {
-        DBG_LOG("SdlSwitchControls: '-' (minus) pressed -> the port's picture toggle");
+        DBG_LOG("SdlPad: '-' (minus) pressed -> the port's picture toggle");
         SdlBackendToggleStretch();
     }
     /* R (правый плечевой) — оверлей кликабельного, та же картинка, что даёт
@@ -1913,7 +2030,7 @@ static void SdlPollSwitchControls(void)
         && s_RLedgesLogged < 8)
     {
         ++s_RLedgesLogged;
-        DBG_LOG("SdlSwitchControls: L edge, prev=0x%X now=0x%X (no binding); %d edge line(s) of 8",
+        DBG_LOG("SdlPad: L edge, prev=0x%X now=0x%X (no binding); %d edge line(s) of 8",
                 s_PrevButtons & SWITCH_PAD_L,
                 buttons & SWITCH_PAD_L,
                 s_RLedgesLogged);
@@ -1921,8 +2038,8 @@ static void SdlPollSwitchControls(void)
 
     s_PrevButtons = buttons;
 }
-#endif /* __SWITCH__ */
 
+#ifndef _WIN32
 #ifdef __SWITCH__
 /* Стрелка, которую движок перерисовывает только при движении указателя. На Windows и X11
    стрелку система рисует поверх окна сама; на Switch её нет вовсе (в штатном драйвере
@@ -2031,14 +2148,14 @@ int WinShim_PumpSDLToQueue(void)
 {
     SDL_Event ev;
 
-#ifdef __SWITCH__
     /* Пад и здесь, а не только из главного цикла: именно в эту pump ходит
        модальный цикл Host_PlayAvi (ожидание g_VideoPlaying через PeekMessageA),
        и без опроса здесь стик с кнопками оглохли бы ровно на время фильма —
-       а A это и есть пропуск интро. Стрелка — по той же причине: во время
-       фильма памп главного цикла не крутится, и без этого вызова стрелка
-       гасла бы на всю его длительность. */
-    SdlPollSwitchControls();
+       а A это и есть пропуск интро. На Switch то же касается стрелки (она
+       только консольная): во время фильма памп главного цикла не крутится, и
+       без этого вызова стрелка гасла бы на всю его длительность. */
+    SdlPollPadControls();
+#ifdef __SWITCH__
     SdlCursorKeepAlive();
 #endif
     if (s_Usr1Quit)
