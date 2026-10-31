@@ -46,6 +46,10 @@
 #include <sys/stat.h>
 #include <errno.h>
 
+#ifdef __APPLE__
+#include <mach-o/dyld.h>  /* _NSGetExecutablePath: macOS has no /proc/self/exe */
+#endif
+
 #ifdef remove
 #undef remove          /* use the real glibc remove() inside WinShim_remove */
 #endif
@@ -347,6 +351,22 @@ DWORD GetModuleFileNameA(HINSTANCE hModule, LPSTR lpFilename, DWORD nSize)
   (void)hModule;
   if ( !lpFilename || !nSize )
     return 0;
+#ifdef __APPLE__
+  {
+    /* macOS has no /proc/self/exe: readlink fails, the shim fell back to a bare
+       "PILOTS_RE.EXE" with no directory and no '\', and Host_FindAviNextToExe's
+       strrchr(basePath, '\\')[1] then wrote through NULL. _NSGetExecutablePath
+       gives the real image path, so the '\' separated g_ExecutablePath keeps its
+       directory like on Windows/Linux. */
+    uint32_t exePathSize = (uint32_t)sizeof exePath;
+    if ( _NSGetExecutablePath(exePath, &exePathSize) != 0 )
+    {
+      snprintf(lpFilename, nSize, "PILOTS_RE.EXE");
+      return (DWORD)strlen(lpFilename);
+    }
+    n = (ssize_t)strlen(exePath);
+  }
+#else
   n = readlink("/proc/self/exe", exePath, sizeof exePath - 1);
   if ( n <= 0 )
   {
@@ -354,6 +374,7 @@ DWORD GetModuleFileNameA(HINSTANCE hModule, LPSTR lpFilename, DWORD nSize)
     snprintf(lpFilename, nSize, "PILOTS_RE.EXE");
     return (DWORD)strlen(lpFilename);
   }
+#endif
   exePath[n] = '\0';
   ShimPathToWin(exePath);
   /* Windows module paths always carry ".EXE" and the game relies on it:
