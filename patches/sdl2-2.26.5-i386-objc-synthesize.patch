@@ -1,0 +1,150 @@
+--- a/src/video/cocoa/SDL_cocoavideo.h	2023-04-05 21:45:47.000000000 +0300
++++ b/src/video/cocoa/SDL_cocoavideo.h	2026-10-31 12:32:31.000000000 +0300
+@@ -97,7 +97,16 @@
+ 
+ @class SDLTranslatorResponder;
+ 
+-@interface SDL_VideoData : NSObject
++@interface SDL_VideoData : NSObject {
++    int _allow_spaces;
++    int _trackpad_is_touch_only;
++    unsigned int _modifierFlags;
++    void *_key_layout;
++    SDLTranslatorResponder *_fieldEdit;
++    NSInteger _clipboard_count;
++    IOPMAssertionID _screensaver_assertion;
++    SDL_mutex *_swaplock;
++}
+     @property (nonatomic) int allow_spaces;
+     @property (nonatomic) int trackpad_is_touch_only;
+     @property (nonatomic) unsigned int modifierFlags;
+--- a/src/video/cocoa/SDL_cocoavideo.m	2023-04-05 21:45:47.000000000 +0300
++++ b/src/video/cocoa/SDL_cocoavideo.m	2026-10-31 12:32:31.000000000 +0300
+@@ -35,7 +35,14 @@
+ #include "SDL_cocoaopengles.h"
+ 
+ @implementation SDL_VideoData
+-
++@synthesize allow_spaces = _allow_spaces;
++@synthesize trackpad_is_touch_only = _trackpad_is_touch_only;
++@synthesize modifierFlags = _modifierFlags;
++@synthesize key_layout = _key_layout;
++@synthesize fieldEdit = _fieldEdit;
++@synthesize clipboard_count = _clipboard_count;
++@synthesize screensaver_assertion = _screensaver_assertion;
++@synthesize swaplock = _swaplock;
+ @end
+ 
+ /* Initialization/Query functions */
+--- a/src/video/cocoa/SDL_cocoawindow.h	2023-04-05 21:45:47.000000000 +0300
++++ b/src/video/cocoa/SDL_cocoawindow.h	2026-10-31 12:32:31.000000000 +0300
+@@ -121,7 +121,21 @@
+ @class SDLOpenGLContext;
+ @class SDL_VideoData;
+ 
+-@interface SDL_WindowData : NSObject
++@interface SDL_WindowData : NSObject {
++    SDL_Window *_window;
++    NSWindow *_nswindow;
++    NSView *_sdlContentView;
++    NSMutableArray *_nscontexts;
++    SDL_bool _created;
++    SDL_bool _inWindowFullscreenTransition;
++    NSInteger _window_number;
++    NSInteger _flash_request;
++    Cocoa_WindowListener *_listener;
++    SDL_VideoData *_videodata;
++#if SDL_VIDEO_OPENGL_EGL
++    EGLSurface _egl_surface;
++#endif
++}
+     @property (nonatomic) SDL_Window *window;
+     @property (nonatomic) NSWindow *nswindow;
+     @property (nonatomic) NSView *sdlContentView;
+--- a/src/video/cocoa/SDL_cocoawindow.m	2023-04-05 21:45:47.000000000 +0300
++++ b/src/video/cocoa/SDL_cocoawindow.m	2026-10-31 12:32:31.000000000 +0300
+@@ -63,7 +63,19 @@
+ #endif
+ 
+ @implementation SDL_WindowData
+-
++@synthesize window = _window;
++@synthesize nswindow = _nswindow;
++@synthesize sdlContentView = _sdlContentView;
++@synthesize nscontexts = _nscontexts;
++@synthesize created = _created;
++@synthesize inWindowFullscreenTransition = _inWindowFullscreenTransition;
++@synthesize window_number = _window_number;
++@synthesize flash_request = _flash_request;
++@synthesize listener = _listener;
++@synthesize videodata = _videodata;
++#if SDL_VIDEO_OPENGL_EGL
++@synthesize egl_surface = _egl_surface;
++#endif
+ @end
+ 
+ @interface NSWindow (SDL)
+--- a/src/video/cocoa/SDL_cocoashape.h	2023-04-05 21:45:47.000000000 +0300
++++ b/src/video/cocoa/SDL_cocoashape.h	2026-10-31 12:32:31.000000000 +0300
+@@ -29,7 +29,11 @@
+ #include "SDL_shape.h"
+ #include "../SDL_shape_internals.h"
+ 
+-@interface SDL_ShapeData : NSObject
++@interface SDL_ShapeData : NSObject {
++    NSGraphicsContext* _context;
++    SDL_bool _saved;
++    SDL_ShapeTree* _shape;
++}
+     @property (nonatomic) NSGraphicsContext* context;
+     @property (nonatomic) SDL_bool saved;
+     @property (nonatomic) SDL_ShapeTree* shape;
+--- a/src/video/cocoa/SDL_cocoashape.m	2023-04-05 21:45:47.000000000 +0300
++++ b/src/video/cocoa/SDL_cocoashape.m	2026-10-31 12:32:31.000000000 +0300
+@@ -28,15 +28,25 @@
+ #include "../SDL_sysvideo.h"
+ 
+ @implementation SDL_ShapeData
++@synthesize context = _context;
++@synthesize saved = _saved;
++@synthesize shape = _shape;
+ @end
+ 
+-@interface SDL_CocoaClosure : NSObject
++@interface SDL_CocoaClosure : NSObject {
++    NSView* _view;
++    NSBezierPath* _path;
++    SDL_Window* _window;
++}
+     @property (nonatomic) NSView* view;
+     @property (nonatomic) NSBezierPath* path;
+     @property (nonatomic) SDL_Window* window;
+ @end
+ 
+ @implementation SDL_CocoaClosure
++@synthesize view = _view;
++@synthesize path = _path;
++@synthesize window = _window;
+ @end
+ 
+ SDL_WindowShaper*
+--- a/src/video/cocoa/SDL_cocoaopengl.h	2023-04-05 21:45:47.000000000 +0300
++++ b/src/video/cocoa/SDL_cocoaopengl.h	2026-10-31 12:32:31.000000000 +0300
+@@ -48,6 +48,7 @@
+     @public SDL_cond *swapIntervalCond;
+     @public SDL_atomic_t swapIntervalSetting;
+     @public SDL_atomic_t swapIntervalsPassed;
++    NSOpenGLPixelFormat *_openglPixelFormat;
+ }
+ 
+ - (id)initWithFormat:(NSOpenGLPixelFormat *)format
+--- a/src/video/cocoa/SDL_cocoaopengl.m	2023-04-05 21:45:47.000000000 +0300
++++ b/src/video/cocoa/SDL_cocoaopengl.m	2026-10-31 12:32:31.000000000 +0300
+@@ -80,6 +80,7 @@
+ }
+ 
+ @implementation SDLOpenGLContext : NSOpenGLContext
++@synthesize openglPixelFormat = _openglPixelFormat;
+ 
+ - (id)initWithFormat:(NSOpenGLPixelFormat *)format
+         shareContext:(NSOpenGLContext *)share
