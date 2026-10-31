@@ -93,6 +93,13 @@ else()
   option(PILOTS_DEBUG_LOG "Define _DEBUG (debug log + crash handlers)" ON)
 endif()
 option(PILOTS_M32 "Build 32-bit (-m32) instead of native" OFF)
+# Non-Windows only: link SDL2 statically so the exe is one self-contained file
+# (macOS i386: without it the image wants @rpath/libSDL2-2.0.0.dylib, which no
+# other machine has - the game data sits next to the exe and a dylib would have
+# to travel with it). The private deps a static SDL2 drags in (Cocoa & friends,
+# iconv) come from `pkg-config --static --libs sdl2`, so an SDL2 built without
+# its .a is caught at configure time below, not at link time.
+option(PILOTS_STATIC_SDL2 "Link SDL2 statically (self-contained exe, non-Windows)" OFF)
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Debug)
@@ -302,7 +309,63 @@ else()
   pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
   pkg_check_modules(AV REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil libswscale)
 
-  target_link_libraries(PILOTS_RE PRIVATE PkgConfig::SDL2 PkgConfig::AV m)
+  if(PILOTS_STATIC_SDL2)
+    # A framework reference from pkg-config arrives as the two tokens
+    # "-framework" "X". Kept as-is, those confuse CMake's link-flag handling:
+    # it de-duplicates the repeated "-framework" and orphans the names
+    # ("clang: error: no such file or directory: 'CoreFoundation'"). Collapsing
+    # each pair into one -Wl,-framework,X token (the form SDL2's own
+    # Libs.private already uses) makes every framework reference self-contained
+    # and dedup-safe - AV and SDL2 both name CoreVideo, which then simply
+    # collapses into one copy.
+    function(pilots_merge_frameworks OUT)
+      set(result "")
+      set(pending "")
+      foreach(flag IN LISTS ARGN)
+        if(pending)
+          list(APPEND result "-Wl,-framework,${flag}")
+          set(pending "")
+        elseif(flag STREQUAL "-framework")
+          set(pending 1)
+        else()
+          list(APPEND result "${flag}")
+        endif()
+      endforeach()
+      set(${OUT} ${result} PARENT_SCOPE)
+    endfunction()
+
+    # Explicit archive, not -lSDL2: the linker prefers the dylib sitting next to
+    # libSDL2.a, which is exactly what this option exists to avoid. The .a is
+    # also how the arch is pinned (a fat SDL2 would silently pick its slice).
+    set(SDL2_STATIC_LIB ${SDL2_LIBDIR}/libSDL2.a)
+    if(NOT EXISTS "${SDL2_STATIC_LIB}")
+      message(FATAL_ERROR "PILOTS_RE: ${SDL2_STATIC_LIB} not found - "
+                          "PILOTS_STATIC_SDL2 needs an SDL2 built with static libs")
+    endif()
+    # Everything a static SDL2 references but that -lSDL2 would have carried
+    # via the dylib's own install name (Cocoa, CoreAudio, iconv, ...). This is
+    # `Libs.private` from sdl2.pc - the list SDL2 itself declares.
+    execute_process(COMMAND pkg-config --static --libs sdl2
+                    OUTPUT_VARIABLE SDL2_PRIVATE_LIBS
+                    OUTPUT_STRIP_TRAILING_WHITESPACE)
+    separate_arguments(SDL2_PRIVATE_LIBS_LIST UNIX_COMMAND "${SDL2_PRIVATE_LIBS}")
+    list(REMOVE_ITEM SDL2_PRIVATE_LIBS_LIST -lSDL2)  # that is what we just pinned
+    # Same for AV, but linked by hand: PkgConfig::AV stays the source of the
+    # headers, and its INTERFACE (imported targets put raw flags there) is what
+    # the framework-merging above has to dodge.
+    execute_process(COMMAND pkg-config --libs libavcodec libavformat libavutil libswscale
+                    OUTPUT_VARIABLE AV_LIBS
+                    OUTPUT_STRIP_TRAILING_WHITESPACE)
+    separate_arguments(AV_LIBS_LIST UNIX_COMMAND "${AV_LIBS}")
+    pilots_merge_frameworks(SDL2_PRIVATE_LIBS_LIST ${SDL2_PRIVATE_LIBS_LIST})
+    pilots_merge_frameworks(AV_LIBS_LIST ${AV_LIBS_LIST})
+    target_compile_options(PILOTS_RE PRIVATE ${SDL2_CFLAGS_OTHER} ${AV_CFLAGS_OTHER})
+    target_include_directories(PILOTS_RE SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS} ${AV_INCLUDE_DIRS})
+    target_link_libraries(PILOTS_RE PRIVATE ${SDL2_STATIC_LIB} ${SDL2_PRIVATE_LIBS_LIST} ${AV_LIBS_LIST} m)
+    message(STATUS "PILOTS_RE: static SDL2 ${SDL2_STATIC_LIB}")
+  else()
+    target_link_libraries(PILOTS_RE PRIVATE PkgConfig::SDL2 PkgConfig::AV m)
+  endif()
 endif()
 
 if(NOT WIN32 AND NOT PLATFORM_SWITCH AND CMAKE_SIZEOF_VOID_P EQUAL 8)

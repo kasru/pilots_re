@@ -71,9 +71,13 @@ cmake --build build-i386 --config Release
 5. **Наш проект**:
    ```sh
    cmake -S . -B build-mac32 -DCMAKE_OSX_ARCHITECTURES=i386 -DCMAKE_OSX_SYSROOT=/ \
+         -DPILOTS_STATIC_SDL2=ON \
          -DCMAKE_PREFIX_PATH=<каталоги SDL2 и ffmpeg>
    cmake --build build-mac32
    ```
+   `-DPILOTS_STATIC_SDL2=ON` линкует `libSDL2.a` вместо dylib — иначе exe требует
+   `@rpath/libSDL2-2.0.0.dylib`, которого на чужой машине нет. С опцией единственными
+   зависимостями остаются системные фреймворги; ffmpeg статический и так.
 6. **Данные игры** — положить рядом с бинарником: `PILOTS.EXE` и `MOVIES/`. Запуск:
    ```sh
    cd build-mac32 && ./PILOTS_RE
