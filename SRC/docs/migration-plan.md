@@ -26,7 +26,7 @@
 | `audio.c` | Каналы звука, микшер 8-разрядного PCM, выбор звукового слоя через таблицу `g_pfn*` |
 | `wave.c` | Звуковые слои: waveOut, музыка в собственном MIDI-формате через midiOut, шлюз Win32s GMW.DLL |
 | `build.bat`, `build-vs2022.bat` | Сборка MSVC x86 (C17, `/W4 /WX`, glob `*.c`), линкует `kernel32 user32 gdi32 winmm`, результат `out\PILOT_RE.EXE` |
-| `pilots.rc`, `pilots.ico` | Ресурсы: значок окна |
+| `pilots.rc`, `pilots.ico` | Ресурсы: значок окна — свой (пропеллер), рисуется `scripts/make_icons.ps1` |
 
 Документация подсистем — `SRC/docs/*.md` (рус.), таблица модулей в `SRC/docs/README.md:22-42`.
 

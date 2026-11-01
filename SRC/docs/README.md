@@ -38,7 +38,7 @@
 | movie.c | Проигрыватель фильмов и добавочные блиттеры кадров |
 | audio.c | Каналы звука, микшер, выбор звукового слоя |
 | wave.c | Звуковые слои: waveOut, MIDI через midiOut, шлюз GMW |
-| pilots.rc, pilots.ico | Ресурсы: значок окна (из оригинального PILOTS.EXE) |
+| pilots.rc, pilots.ico | Ресурсы: значок окна — свой (пропеллер), рисуется `scripts/make_icons.ps1` |
 | build.bat | Сборка MSVC x86: `build.bat` — выпуск, `build.bat debug` — отладка |
 
 ## Документация
