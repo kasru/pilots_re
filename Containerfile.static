@@ -11,31 +11,89 @@
 # cannot load drivers at runtime, and the whole point of the static link here is
 # to drop the two libraries that are NOT part of a desktop - SDL2 and ffmpeg.
 #
-# WHY FFMPEG IS BUILT FROM SOURCE: Debian's libavcodec.a carries every decoder
-# and encoder the distro enabled (x264, x265, dav1d, jxl, rav1e, SvtAv1, mfx,
-# ...) because av_codec_iterate() keeps a table of all of them, so a static link
-# pulls the lot in - 1653 undefined symbols from two archives under -no-pie,
-# measured - and turns the binary GPL. The port needs exactly one demuxer and
-# three decoders: mci_ffmpeg.c opens AVI, INTRO.AVI/START.AVI are MS RLE and
-# FINAL.AVI is Cinepak (see the strh/strf chunks in SRC/MOVIES). A minimal
-# --disable-everything build links to libc/libm only, stays LGPL-2.1+, and
-# decodes all three files.
+# WHY BULLSEYE AND NOT A NEWER DEBIAN: the binary can only run where glibc is at
+# least as new as the one it was linked against, so the build has to happen on
+# the oldest glibc the release is meant to support. Bookworm (glibc 2.36) was
+# measured first and produced exactly that floor: 2.36, which refuses to start
+# on Ubuntu 22.04 (2.35) and Debian 11 (2.31). Two symbols were the culprits and
+# both come from the *environment*, not from our code - Debian's libSDL2.a uses
+# arc4random (glibc 2.36) and libavutil's expression parser calls hypot, which
+# was re-versioned in 2.35. On bullseye nothing of the sort is available, and
+# the result asks for glibc 2.31 - Debian 11, Ubuntu 20.04 and newer.
 #
-#   podman build -f Containerfile.static -t pilots-static .
+# WHY BOTH LIBRARIES ARE BUILT FROM SOURCE:
+#   ffmpeg - Debian's libavcodec.a carries every decoder and encoder the distro
+#     enabled (x264, x265, dav1d, jxl, rav1e, SvtAv1, mfx, ...) because
+#     av_codec_iterate() keeps a table of all of them, so a static link pulls the
+#     lot in - 1653 undefined symbols from two archives under -no-pie, measured -
+#     and turns the binary GPL. The port needs exactly one demuxer and three
+#     decoders: mci_ffmpeg.c opens AVI, INTRO.AVI/START.AVI are MS RLE and
+#     FINAL.AVI is Cinepak (see the strh/strf chunks in SRC/MOVIES). A minimal
+#     --disable-everything build links to libc/libm only, stays LGPL-2.1+, and
+#     decodes all three files.
+#   SDL2 - the distro archive is the one that pulled in arc4random: Debian builds
+#     it against the newest glibc and static-links whatever it found there.
+#     Building 2.26.5 (the version the Linux port has been tested against) on
+#     bullseye gives a static archive that only knows the 2.31 symbols, and
+#     -fPIC keeps the image a normal PIE.
+#
+# Both tarballs are pinned by version AND SHA-256, and ffmpeg's configure runs
+# with --disable-network + --disable-autodetect so it does not reach for
+# anything else on the machine: its output ends with "License: LGPL version 2.1
+# or later".
+#
+#   podman build --dns 8.8.8.8 --dns 1.1.1.1 -f Containerfile.static -t pilots-static .
 #   sh scripts/build_linux_static_podman.sh
-#
-# The ffmpeg tarball is pinned by version AND SHA-256, and --disable-network +
-# --disable-autodetect keep the build from reaching for anything else on the
-# machine: the configure output ends with "License: LGPL version 2.1 or later".
-FROM debian:bookworm-slim
+FROM debian:bullseye-slim
 
+# Debian 11 left standard support on 31 Aug 2026 and its packages moved to
+# archive.debian.org. deb.debian.org still hands out a Release file for
+# bullseye, but the pool it points at has been emptied, so a plain
+# `apt-get update` + install ends in a wall of "404 Not Found" for every
+# package (measured: linux-libc-dev, libc6-dev, curl, alsa-lib, mesa, ...).
+# Redirecting to the archive - whose Release files are expired by definition,
+# hence Check-Valid-Until off - is the supported way to build from an EOL
+# release. A frozen base is what a release build wants anyway: the glibc floor
+# this image exists for cannot move under us.
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update \
+RUN sed -i -e 's|deb.debian.org/debian|archive.debian.org/debian|g' \
+           -e '/bullseye-backports/d' /etc/apt/sources.list \
+ && printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99archive \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential cmake pkg-config \
       nasm yasm xz-utils curl ca-certificates \
-      libsdl2-dev \
+      libasound2-dev libpulse-dev libudev-dev \
+      libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+      libxfixes-dev libxss-dev libxinerama-dev libxxf86vm-dev \
+      libxkbcommon-dev libwayland-dev libdrm-dev libgbm-dev \
  && rm -rf /var/lib/apt/lists/*
+
+# SDL2 2.26.5: the version every Linux build of the port has run against. Only
+# the backends the -dev packages above provide get compiled in (X11, Wayland,
+# KMSDRM, ALSA, PulseAudio, dummy); jack, pipewire and libdecor are absent by
+# not being installed, which is also why the release does not need them.
+ARG SDL2_VERSION=2.26.5
+ARG SDL2_SHA256=ad8fea3da1be64c83c45b1d363a6b4ba8fd60f5bde3b23ec73855709ec5eabf7
+
+# The tarball comes from the GitHub release, not from www.libsdl.org: the
+# libsdl.org host refuses connections from some networks (measured: "Failed to
+# connect ... port 443: Connection refused" on two unrelated machines), while
+# GitHub serves the byte-identical file - same 8085012 bytes, same SHA-256,
+# verified. The hash is what actually pins the content, so the mirror only has
+# to be reachable.
+RUN cd /tmp \
+ && curl -fsSL -o "SDL2-${SDL2_VERSION}.tar.gz" \
+      "https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VERSION}/SDL2-${SDL2_VERSION}.tar.gz" \
+ && echo "${SDL2_SHA256}  SDL2-${SDL2_VERSION}.tar.gz" | sha256sum -c - \
+ && tar xf "SDL2-${SDL2_VERSION}.tar.gz" \
+ && cd "SDL2-${SDL2_VERSION}" \
+ && CFLAGS="-O2 -fPIC" ./configure --prefix=/opt/sdl2 \
+      --disable-shared --enable-static \
+ && make -j"$(nproc)" \
+ && make install \
+ && cd /tmp \
+ && rm -rf "SDL2-${SDL2_VERSION}" "SDL2-${SDL2_VERSION}.tar.gz"
 
 # ffmpeg 5.1.9 is the version Debian bookworm ships, i.e. the one the port's
 # Linux builds have been tested against; only the component set differs.
@@ -61,6 +119,6 @@ RUN cd /tmp \
  && cd /tmp \
  && rm -rf "ffmpeg-${FFMPEG_VERSION}" "ffmpeg-${FFMPEG_VERSION}.tar.xz"
 
-# pkg-config must find this ffmpeg, not a distro libav* that a later layer or
-# the mounted source tree might bring in.
-ENV PKG_CONFIG_PATH=/opt/ffmpeg/lib/pkgconfig
+# pkg-config must find these builds, not a distro libSDL2/libav* that a later
+# layer or the mounted source tree might bring in.
+ENV PKG_CONFIG_PATH=/opt/sdl2/lib/pkgconfig:/opt/ffmpeg/lib/pkgconfig

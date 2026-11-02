@@ -19,6 +19,12 @@
 # runtime, and a statically linked glibc cannot do that. The script checks the
 # result with ldd and fails if either library family leaked back in.
 #
+# The glibc floor is 2.31 (Debian 11, Ubuntu 20.04) and it is a property of the
+# image, not of the code: the binary can only run where glibc is at least as new
+# as the one it was linked against. So the script measures the highest versioned
+# symbol the result asks for and fails if it went above 2.31 - a silent raise of
+# that floor is exactly the bug the bullseye base exists to prevent.
+#
 # The build dirs are separate per flavour for the same reason build32 and
 # build64 are: both produce a file called PILOTS_RE_x64 and a debug binary must
 # never be mistaken for the release one. The release file is stripped (8.4 MB
@@ -60,6 +66,16 @@ build() {
         ldd '$builddir/PILOTS_RE_x64'
         if ldd '$builddir/PILOTS_RE_x64' | grep -Eq 'lib(SDL2|avcodec|avformat|avutil|swscale|swresample)\.so'; then
             echo 'error: the binary still links SDL2/ffmpeg dynamically' >&2
+            exit 1
+        fi
+        echo '--- glibc floor:'
+        objdump -T '$builddir/PILOTS_RE_x64' | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
+        too_new=\$(objdump -T '$builddir/PILOTS_RE_x64' | grep -o 'GLIBC_[0-9.]*' \
+            | sed 's/^GLIBC_//' | sort -Vu \
+            | awk -F. '\$1 > 2 || (\$1 == 2 && \$2 > 31)')
+        if [ -n "\$too_new" ]; then
+            echo "error: needs glibc above 2.31: \$too_new" >&2
+            echo "       the release promises Debian 11 / Ubuntu 20.04 - see Containerfile.static" >&2
             exit 1
         fi
         # The release asset is stripped: a static link of SDL2 and libav*
