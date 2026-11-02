@@ -9,6 +9,10 @@
 #   cmake -S . -B build32 -DPILOTS_M32=ON    32-bit (-m32) - the proven baseline
 #   cmake -S . -B build64                    native (x86_64) - the LP64 layout
 #                                             of the generated game-struct headers
+#   cmake -S . -B build-static -DPILOTS_STATIC_SDL2=ON -DPILOTS_STATIC_AV=ON
+#                                            one self-contained Linux binary (the
+#                                            release asset; scripts/build_linux_static_podman.sh
+#                                            runs exactly this in Containerfile.static)
 #
 #   Windows (MSVC), the arch comes from the generator, NOT from a switch here:
 #     cmake -S . -B build-win64 -A x64        -> PILOTS_RE_x64.EXE
@@ -101,6 +105,29 @@ option(PILOTS_M32 "Build 32-bit (-m32) instead of native" OFF)
 # iconv) come from `pkg-config --static --libs sdl2`, so an SDL2 built without
 # its .a is caught at configure time below, not at link time.
 option(PILOTS_STATIC_SDL2 "Link SDL2 statically (self-contained exe, non-Windows)" OFF)
+# The same for ffmpeg, which is what the Linux release binary needs: the four
+# libav* libraries are linked from their .a files, and whatever they need from
+# outside ffmpeg (libm, pthread, zlib, ...) comes from `pkg-config --static`.
+# A distro ffmpeg .a is usually built without -fPIC, so an executable that uses
+# one has to be linked non-PIE as well - that is PILOTS_NO_PIE below, separate
+# on purpose: our own minimal ffmpeg build passes --enable-pic and needs no
+# such flag, while a user pointing this at Debian's archives does.
+option(PILOTS_STATIC_AV "Link ffmpeg (libav*) statically (self-contained exe, non-Windows)" OFF)
+# Some distributions ship their static archives compiled without -fPIC (Debian's
+# libavcodec.a is such a case: linking it into a PIE image fails with
+# "relocation R_X86_64_32S ... can not be used when making a PIE object"). Such
+# an archive still links into a plain non-PIE executable, which is all this
+# option does. It is a no-op on macOS and MSVC (no such flag, and neither builds
+# a PIE by default), and it must not be set on the Switch, whose link is a
+# static PIE by design.
+option(PILOTS_NO_PIE "Link a non-PIE executable (non-PIC static archives, Linux)" OFF)
+# The C++ runtime is the last thing a "static" Linux binary would otherwise ask
+# the target for: libADLMIDI is C++, so libstdc++ and libgcc_s end up in ldd.
+# Folding them in with -static-libgcc/-static-libstdc++ leaves glibc and the
+# desktop libraries SDL2 itself uses, which is the intended dependency set of
+# the release asset. GCC/Clang only: MSVC has its own static CRT (/MT), and the
+# Switch toolchain links its runtime statically already.
+option(PILOTS_STATIC_RUNTIME "Link libgcc/libstdc++ statically (GCC, non-Windows)" OFF)
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Debug)
@@ -158,6 +185,24 @@ if(NOT PLATFORM_SWITCH AND NOT WIN32)
   # supported nor useful - and MSVC has no such option at all, it has no dynamic
   # symbol table to export in the first place.
   add_link_options(-rdynamic)
+endif()
+
+if(PILOTS_NO_PIE)
+  if(WIN32 OR APPLE OR PLATFORM_SWITCH)
+    message(STATUS "PILOTS_NO_PIE: not a PIE platform / no such flag, ignoring")
+  else()
+    # -no-pie is a driver link flag: the objects may still be compiled as PIE,
+    # it is the final image type that has to be non-PIE to accept a non-PIC .a.
+    add_link_options(-no-pie)
+  endif()
+endif()
+
+if(PILOTS_STATIC_RUNTIME)
+  if(WIN32 OR APPLE OR PLATFORM_SWITCH)
+    message(STATUS "PILOTS_STATIC_RUNTIME: the platform links its runtime already, ignoring")
+  else()
+    add_link_options(-static-libgcc -static-libstdc++)
+  endif()
 endif()
 
 if(PILOTS_M32)
@@ -311,7 +356,7 @@ else()
   pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
   pkg_check_modules(AV REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil libswscale)
 
-  if(PILOTS_STATIC_SDL2)
+  if(PILOTS_STATIC_SDL2 OR PILOTS_STATIC_AV)
     # A framework reference from pkg-config arrives as the two tokens
     # "-framework" "X". Kept as-is, those confuse CMake's link-flag handling:
     # it de-duplicates the repeated "-framework" and orphans the names
@@ -336,35 +381,102 @@ else()
       set(${OUT} ${result} PARENT_SCOPE)
     endfunction()
 
-    # Explicit archive, not -lSDL2: the linker prefers the dylib sitting next to
-    # libSDL2.a, which is exactly what this option exists to avoid. The .a is
-    # also how the arch is pinned (a fat SDL2 would silently pick its slice).
-    set(SDL2_STATIC_LIB ${SDL2_LIBDIR}/libSDL2.a)
-    if(NOT EXISTS "${SDL2_STATIC_LIB}")
-      message(FATAL_ERROR "PILOTS_RE: ${SDL2_STATIC_LIB} not found - "
-                          "PILOTS_STATIC_SDL2 needs an SDL2 built with static libs")
-    endif()
-    # Everything a static SDL2 references but that -lSDL2 would have carried
-    # via the dylib's own install name (Cocoa, CoreAudio, iconv, ...). This is
-    # `Libs.private` from sdl2.pc - the list SDL2 itself declares.
-    execute_process(COMMAND pkg-config --static --libs sdl2
-                    OUTPUT_VARIABLE SDL2_PRIVATE_LIBS
-                    OUTPUT_STRIP_TRAILING_WHITESPACE)
-    separate_arguments(SDL2_PRIVATE_LIBS_LIST UNIX_COMMAND "${SDL2_PRIVATE_LIBS}")
-    list(REMOVE_ITEM SDL2_PRIVATE_LIBS_LIST -lSDL2)  # that is what we just pinned
-    # Same for AV, but linked by hand: PkgConfig::AV stays the source of the
-    # headers, and its INTERFACE (imported targets put raw flags there) is what
-    # the framework-merging above has to dodge.
-    execute_process(COMMAND pkg-config --libs libavcodec libavformat libavutil libswscale
-                    OUTPUT_VARIABLE AV_LIBS
-                    OUTPUT_STRIP_TRAILING_WHITESPACE)
-    separate_arguments(AV_LIBS_LIST UNIX_COMMAND "${AV_LIBS}")
-    pilots_merge_frameworks(SDL2_PRIVATE_LIBS_LIST ${SDL2_PRIVATE_LIBS_LIST})
-    pilots_merge_frameworks(AV_LIBS_LIST ${AV_LIBS_LIST})
+    # Headers and -D flags still come from pkg-config either way; only the
+    # linking differs. Taking them from the imported targets would drag their
+    # INTERFACE_LINK_LIBRARIES (-lSDL2, -lavcodec) into the link line too, which
+    # is precisely what the archive paths below have to avoid.
     target_compile_options(PILOTS_RE PRIVATE ${SDL2_CFLAGS_OTHER} ${AV_CFLAGS_OTHER})
     target_include_directories(PILOTS_RE SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS} ${AV_INCLUDE_DIRS})
-    target_link_libraries(PILOTS_RE PRIVATE ${SDL2_STATIC_LIB} ${SDL2_PRIVATE_LIBS_LIST} ${AV_LIBS_LIST} m)
-    message(STATUS "PILOTS_RE: static SDL2 ${SDL2_STATIC_LIB}")
+
+    set(PILOTS_LINK_LIBS "")
+
+    if(PILOTS_STATIC_SDL2)
+      # Explicit archive, not -lSDL2: the linker prefers the dylib sitting next
+      # to libSDL2.a, which is exactly what this option exists to avoid. The .a
+      # is also how the arch is pinned (a fat SDL2 would silently pick its slice).
+      set(SDL2_STATIC_LIB ${SDL2_LIBDIR}/libSDL2.a)
+      if(NOT EXISTS "${SDL2_STATIC_LIB}")
+        message(FATAL_ERROR "PILOTS_RE: ${SDL2_STATIC_LIB} not found - "
+                            "PILOTS_STATIC_SDL2 needs an SDL2 built with static libs")
+      endif()
+      # Everything a static SDL2 references but that -lSDL2 would have carried
+      # via the dylib's own install name (Cocoa, CoreAudio, iconv, ...). This is
+      # `Libs.private` from sdl2.pc - the list SDL2 itself declares.
+      execute_process(COMMAND pkg-config --static --libs sdl2
+                      OUTPUT_VARIABLE SDL2_PRIVATE_LIBS
+                      OUTPUT_STRIP_TRAILING_WHITESPACE)
+      separate_arguments(SDL2_PRIVATE_LIBS_LIST UNIX_COMMAND "${SDL2_PRIVATE_LIBS}")
+      list(REMOVE_ITEM SDL2_PRIVATE_LIBS_LIST -lSDL2)  # that is what we just pinned
+      pilots_merge_frameworks(SDL2_PRIVATE_LIBS_LIST ${SDL2_PRIVATE_LIBS_LIST})
+      list(APPEND PILOTS_LINK_LIBS ${SDL2_STATIC_LIB} ${SDL2_PRIVATE_LIBS_LIST})
+      message(STATUS "PILOTS_RE: static SDL2 ${SDL2_STATIC_LIB}")
+    endif()
+
+    if(PILOTS_STATIC_AV)
+      # -lavformat would let the linker take the shared object sitting next to
+      # the archive, so every archive is pinned by path, in dependency order:
+      # avformat -> avcodec -> swscale/swresample -> avutil. The directory comes
+      # from each module's own .pc (`libdir`), not from AV_LIBDIR: pkg_check_modules
+      # only fills <prefix>_LIBDIR for a single-module query and leaves it empty
+      # for the four-module AV one (AV_LIBRARY_DIRS would work here, but it does
+      # not say which of its -L paths belongs to which library).
+      foreach(av_lib avformat avcodec swscale swresample avutil)
+        execute_process(COMMAND pkg-config --variable=libdir lib${av_lib}
+                        OUTPUT_VARIABLE av_libdir
+                        OUTPUT_STRIP_TRAILING_WHITESPACE)
+        set(av_archive "${av_libdir}/lib${av_lib}.a")
+        if(NOT EXISTS "${av_archive}")
+          message(FATAL_ERROR "PILOTS_RE: ${av_archive} not found - "
+                              "PILOTS_STATIC_AV needs an ffmpeg built with static libs")
+        endif()
+        list(APPEND PILOTS_LINK_LIBS "${av_archive}")
+        if(NOT av_libdir_reported)
+          set(av_libdir_reported "${av_libdir}")
+        endif()
+      endforeach()
+      # Whatever those archives need from outside ffmpeg (libm, pthread, zlib,
+      # ...) is what Libs.private declares. The -lav*/-lsw* tokens are dropped
+      # because they would re-open the shared objects the paths above avoid.
+      execute_process(COMMAND pkg-config --static --libs libavcodec libavformat libavutil libswscale
+                      OUTPUT_VARIABLE AV_PRIVATE_LIBS
+                      OUTPUT_STRIP_TRAILING_WHITESPACE)
+      separate_arguments(AV_PRIVATE_LIBS_LIST UNIX_COMMAND "${AV_PRIVATE_LIBS}")
+      set(AV_EXTERNAL_LIBS "")
+      foreach(flag IN LISTS AV_PRIVATE_LIBS_LIST)
+        if(NOT flag MATCHES "^-l(av|sw)")
+          list(APPEND AV_EXTERNAL_LIBS "${flag}")
+        endif()
+      endforeach()
+      pilots_merge_frameworks(AV_EXTERNAL_LIBS ${AV_EXTERNAL_LIBS})
+      list(APPEND PILOTS_LINK_LIBS ${AV_EXTERNAL_LIBS})
+      message(STATUS "PILOTS_RE: static ffmpeg from ${av_libdir_reported}")
+    endif()
+
+    # The half that was not asked to be static is linked the way the original
+    # single-option code did: from `pkg-config --libs`, with the framework
+    # pairs collapsed first. An imported target cannot be used there -
+    # PkgConfig::AV carries "-framework" "VideoToolbox" as separate interface
+    # items, CMake de-duplicates the repeated "-framework" and the names are
+    # left dangling ("clang: error: no such file or directory: 'CoreFoundation'").
+    function(pilots_pkg_link_flags OUT)
+      execute_process(COMMAND pkg-config --libs ${ARGN}
+                      OUTPUT_VARIABLE raw_flags
+                      OUTPUT_STRIP_TRAILING_WHITESPACE)
+      separate_arguments(flags UNIX_COMMAND "${raw_flags}")
+      pilots_merge_frameworks(flags ${flags})
+      set(${OUT} ${flags} PARENT_SCOPE)
+    endfunction()
+
+    if(NOT PILOTS_STATIC_SDL2)
+      pilots_pkg_link_flags(SDL2_LINK_FLAGS sdl2)
+      list(APPEND PILOTS_LINK_LIBS ${SDL2_LINK_FLAGS})
+    endif()
+    if(NOT PILOTS_STATIC_AV)
+      pilots_pkg_link_flags(AV_LINK_FLAGS libavcodec libavformat libavutil libswscale)
+      list(APPEND PILOTS_LINK_LIBS ${AV_LINK_FLAGS})
+    endif()
+    list(APPEND PILOTS_LINK_LIBS m)
+    target_link_libraries(PILOTS_RE PRIVATE ${PILOTS_LINK_LIBS})
   else()
     target_link_libraries(PILOTS_RE PRIVATE PkgConfig::SDL2 PkgConfig::AV m)
   endif()

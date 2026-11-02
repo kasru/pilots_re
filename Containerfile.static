@@ -1,0 +1,66 @@
+# Build image for the self-contained Linux release binary of the port.
+#
+# WHY THIS IMAGE EXISTS: the Linux asset in the release is one file with SDL2
+# and ffmpeg inside it, so a player does not have to install libSDL2-2.0.so.0
+# and the libav* stack before the game starts. The CMake side of that is
+# PILOTS_STATIC_SDL2 + PILOTS_STATIC_AV (see CMakeLists.txt); this file is the
+# toolchain those two options are built with.
+#
+# WHAT STAYS DYNAMIC, ON PURPOSE: glibc, and with it the X11/Wayland/ALSA/
+# PulseAudio libraries SDL2 links or dlopen()s at runtime. A fully static glibc
+# cannot load drivers at runtime, and the whole point of the static link here is
+# to drop the two libraries that are NOT part of a desktop - SDL2 and ffmpeg.
+#
+# WHY FFMPEG IS BUILT FROM SOURCE: Debian's libavcodec.a carries every decoder
+# and encoder the distro enabled (x264, x265, dav1d, jxl, rav1e, SvtAv1, mfx,
+# ...) because av_codec_iterate() keeps a table of all of them, so a static link
+# pulls the lot in - 1653 undefined symbols from two archives under -no-pie,
+# measured - and turns the binary GPL. The port needs exactly one demuxer and
+# three decoders: mci_ffmpeg.c opens AVI, INTRO.AVI/START.AVI are MS RLE and
+# FINAL.AVI is Cinepak (see the strh/strf chunks in SRC/MOVIES). A minimal
+# --disable-everything build links to libc/libm only, stays LGPL-2.1+, and
+# decodes all three files.
+#
+#   podman build -f Containerfile.static -t pilots-static .
+#   sh scripts/build_linux_static_podman.sh
+#
+# The ffmpeg tarball is pinned by version AND SHA-256, and --disable-network +
+# --disable-autodetect keep the build from reaching for anything else on the
+# machine: the configure output ends with "License: LGPL version 2.1 or later".
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      build-essential cmake pkg-config \
+      nasm yasm xz-utils curl ca-certificates \
+      libsdl2-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# ffmpeg 5.1.9 is the version Debian bookworm ships, i.e. the one the port's
+# Linux builds have been tested against; only the component set differs.
+ARG FFMPEG_VERSION=5.1.9
+ARG FFMPEG_SHA256=d9b593bb2ba93d4b50f74177e0cdcd41747e708596367deed0c30348a71dd176
+
+RUN cd /tmp \
+ && curl -fsSLO "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+ && echo "${FFMPEG_SHA256}  ffmpeg-${FFMPEG_VERSION}.tar.xz" | sha256sum -c - \
+ && tar xf "ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+ && cd "ffmpeg-${FFMPEG_VERSION}" \
+ && ./configure --prefix=/opt/ffmpeg \
+      --disable-shared --enable-static --enable-pic \
+      --disable-programs --disable-doc --disable-network --disable-autodetect \
+      --disable-everything \
+      --enable-avformat --enable-avcodec --enable-avutil \
+      --enable-swscale --enable-swresample \
+      --enable-demuxer=avi \
+      --enable-decoder=msrle,cinepak,rawvideo \
+      --enable-protocol=file \
+ && make -j"$(nproc)" \
+ && make install \
+ && cd /tmp \
+ && rm -rf "ffmpeg-${FFMPEG_VERSION}" "ffmpeg-${FFMPEG_VERSION}.tar.xz"
+
+# pkg-config must find this ffmpeg, not a distro libav* that a later layer or
+# the mounted source tree might bring in.
+ENV PKG_CONFIG_PATH=/opt/ffmpeg/lib/pkgconfig
