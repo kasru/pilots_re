@@ -53,6 +53,8 @@ PILOTS/
 На Nintendo Switch каталог с данными — `sdmc:/switch/pilots/` (в нём же `PILOTS.EXE`); запуск — из
 hbmenu, командной строки на консоли нет.
 
+На Linux скачанному файлу нужно вернуть право на запуск — `chmod +x PILOTS_RE_x64`.
+
 ## Управление
 
 ### Клавиатура и мышь (Windows, Linux)
@@ -152,8 +154,17 @@ hbmenu, командной строки на консоли нет.
 | Windows, CMake | `cmake -S . -B build-win64 -A x64` → `cmake --build build-win64 --config Release` | `build-win64\Release\` |
 | Linux i386 | `cmake -S . -B build32 -DPILOTS_M32=ON` (в контейнере `pilots-build`) | `build32/PILOTS_RE` |
 | Linux x86_64 | `cmake -S . -B build64` | `build64/PILOTS_RE_x64` |
+| Linux x86_64, самодостаточный | `sh scripts/build_linux_static_podman.sh` | `build-static/PILOTS_RE_x64` |
 | Nintendo Switch | `sh scripts/build_switch_podman.sh debug` | `build-switch-dbg/PILOTS_RE.nro` |
 | macOS i386 | `cmake -S . -B build-mac32 -DCMAKE_OSX_ARCHITECTURES=i386 -DCMAKE_OSX_SYSROOT=/ -DPILOTS_STATIC_SDL2=ON` | `build-mac32/PILOTS_RE` |
+
+Обычная Linux-сборка использует системные SDL2 и ffmpeg. Самодостаточная (`build-static`, она же
+лежит в релизе) вшивает их в один файл: скачанный `PILOTS_RE_x64` запускается на любом десктопном
+дистрибутиве, где есть X11 или Wayland, без `libSDL2-2.0.so.0` и `libav*`. Динамическими остаются
+glibc и графика/звук, которые SDL2 загружает во время работы, — статическая glibc этого не умеет.
+Сборка идёт в контейнере `Containerfile.static`, где ffmpeg собран из исходников минимальным
+набором (AVI, MS RLE, Cinepak, rawvideo; LGPL-2.1+): брать `libavcodec.a` из дистрибутива нельзя —
+там включены все декодеры, и статическая линковка тянет их все вместе с GPL-кодеками.
 
 Windows-сборке нужны Visual Studio 2022 (MSVC) и Windows SDK, Linux и Switch — CMake, SDL2 и
 libavcodec (для Switch — devkitA64/libnx из devkitPro), macOS — SDL2, собранный под i386, и ffmpeg
