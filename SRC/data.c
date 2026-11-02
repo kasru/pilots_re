@@ -253,12 +253,13 @@ GM_WINDOW g_Window;
 HGDIOBJ g_hDibSection;
 void * g_DibBits;
 HDC g_hDibDC;
-#ifdef _DEBUG
-/* Канал отладочного лога (см. debug_log.h): файл в каталоге EXE и критическая
-   секция вокруг записи. Определяются здесь, объявлены в debug_log.h. */
+/* Канал отладочного лога (см. debug_log.h): файл, критическая секция вокруг
+   записи и флаг «лог включён». Определяются здесь, объявлены в debug_log.h.
+   Глобалы нужны в обеих конфигурациях: в release канал тоже скомпилирован,
+   просто выключен, пока ключ -log его не включит (g_DbgLogOn = 1). */
 HANDLE g_hDebugLogFile = INVALID_HANDLE_VALUE;
 CRITICAL_SECTION g_DebugLogCS;
-#endif
+int g_DbgLogOn = 0;
 int g_AviX;
 int g_AviY;
 int g_AviWidth;

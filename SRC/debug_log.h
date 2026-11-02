@@ -12,24 +12,127 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _DEBUG
-
 /* Заголовок определяет много static-функций, которые используются не в каждом
-   трансляционном единице; при /W4 /WX это ошибка C4505. Подавляем здесь же. */
+   трансляционном единице; при /W4 /WX это ошибка C4505. Подавляем здесь же —
+   и в debug, и в release: канал лога скомпилирован в обеих конфигурациях,
+   в release он просто выключен по умолчанию (ветка #else внизу). */
 #pragma warning(disable: 4505)
 
 /*
- * Debug logging via OutputDebugString.
- * View output with:
+ * Лог движка: файл + OutputDebugString.
+ *   _DEBUG  — включён всегда, файл <имя образа>_debug.log рядом с ним;
+ *   release — выключен по умолчанию; включает его ключ -log [файл], см.
+ *             DbgScanLogSwitch ниже.
+ * View OutputDebugString output with:
  *   - Visual Studio Output window (Debug -> Windows -> Output)
  *   - DebugView (Sysinternals) - https://learn.microsoft.com/en-us/sysinternals/downloads/debugview
  *   - WinDbg
  *
- * Also writes to debug_log.txt in the EXE directory.
+ * Канал (файл, критическая секция вокруг записи, флаг «включён») определяется
+ * в data.c и объявлен здесь — общий для обеих конфигураций.
  */
-
 extern HANDLE g_hDebugLogFile;
 extern CRITICAL_SECTION g_DebugLogCS;
+extern int g_DbgLogOn;
+
+/* ---- Ключ -log [файл] ---------------------------------------------------- */
+
+/* Следующий токен командной строки. Токен в кавычках может содержать пробелы,
+   и кавычки в него не входят. Возвращает 0, когда строка исчерпана, и 1, когда
+   токен прочитан — *len может быть 0 для пустого "" (поэтому вызывающий не
+   должен считать 0 признаком «ничего не найдено»). Тот же разбор, что
+   SdlNextToken в sdl_backend.c: ключ -log читается в DbgLogInit, то есть раньше,
+   чем туда дойдёт SdlBackendParseCmdLine, и дублировать ради одного ключа
+   общий токенизатор не стоило. */
+static int DbgNextToken(const char **pp, const char **ptok, int *len)
+{
+    const char *p = *pp;
+    const char *tok;
+
+    while (*p == ' ' || *p == '\t')
+        ++p;
+    if (!*p)
+        return 0;
+    if (*p == '"')
+    {
+        ++p;
+        tok = p;
+        while (*p && *p != '"')
+            ++p;
+        *len = (int)(p - tok);
+        if (*p == '"')
+            ++p;
+    }
+    else
+    {
+        tok = p;
+        while (*p && *p != ' ' && *p != '\t')
+            ++p;
+        *len = (int)(p - tok);
+    }
+    *ptok = tok;
+    *pp = p;
+    return 1;
+}
+
+/* Весь токен — «-name» (или «/name»), без учёта регистра, и ничего больше. */
+static int DbgArgIs(const char *tok, int len, const char *name)
+{
+    int i;
+
+    for (i = 0; name[i]; ++i)
+    {
+        char a = (i + 1 < len) ? tok[i + 1] : 0;   /* +1 пропускает ведущий - или / */
+        if (a >= 'A' && a <= 'Z')
+            a += 32;
+        if (a != name[i])
+            return 0;
+    }
+    return len == i + 1;
+}
+
+/* Ключ -log [файл]. Возвращает:
+ *   0 — ключа нет (в release лог не пишется вовсе, в debug это ничего не меняет);
+ *   1 — ключ есть, имени файла нет: пишем как обычно, <имя образа>_debug.log;
+ *   2 — ключ есть с именем файла: пишем в него.
+ * Имя берётся, только если следующий токен не начинается с - или /: иначе
+ * «-log -fullscreen» создал бы файл с именем «-fullscreen», а ключ остался бы
+ * неразобранным. Относительный путь разрешается от каталога запуска, а не от
+ * каталога данных: -log читается в DbgLogInit, то есть раньше, чем -datapath
+ * может сменить рабочий каталог. */
+static int DbgScanLogSwitch(const char *cmdLine, const char **val, int *len)
+{
+    const char *p = cmdLine;
+    const char *tok;
+    int tlen;
+
+    *val = NULL;
+    *len = 0;
+    if (!p)
+        return 0;
+    while (DbgNextToken(&p, &tok, &tlen))
+    {
+        const char *look;
+        const char *v;
+        int vlen;
+
+        if (tlen <= 1 || (tok[0] != '-' && tok[0] != '/'))
+            continue;
+        if (!DbgArgIs(tok, tlen, "log"))
+            continue;
+        look = p;
+        if (DbgNextToken(&look, &v, &vlen) && vlen > 0 && v[0] != '-' && v[0] != '/')
+        {
+            *val = v;
+            *len = vlen;
+            return 2;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+#ifdef _DEBUG
 
 #ifdef _WIN32
 /*
@@ -50,12 +153,26 @@ static void __cdecl DbgInvalidParameterHandler(
     (void)expression; (void)function; (void)file; (void)line; (void)pReserved;
 }
 #endif /* _WIN32 */
+#endif /* _DEBUG: обработчик параметров нужен только debug-ветке CRT */
 
-static void DbgLogInit(void)
+/* Открыть лог. cmdLine — командная строка, полученная WinMain: в ней ищется
+   ключ -log (DbgScanLogSwitch). В debug лог включён всегда, -log там может
+   только сменить файл; в release без ключа функция выходит, не создав ни
+   файла, ни строки — ровно то, что и обещает «в release лог не пишется».
+   Зовётся раньше SdlBackendParseCmdLine, поэтому строки про -datapath тоже
+   попадают в лог. */
+static void DbgLogInit(const char *cmdLine)
 {
     char logPath[MAX_PATH];
+    const char *val;
+    int vlen;
+    int which;
 
-#ifdef _WIN32
+    g_hDebugLogFile = INVALID_HANDLE_VALUE;
+    g_DbgLogOn = 0;
+    InitializeCriticalSection(&g_DebugLogCS);
+
+#if defined(_DEBUG) && defined(_WIN32)
     /* Suppress MSVC debug CRT assertion popups for invalid I/O handles.
      * Original Watcom CRT returned -1 on invalid handles; MSVC debug CRT
      * fires assertions. This makes _read/_write/_close/_lseek behave like
@@ -64,22 +181,39 @@ static void DbgLogInit(void)
     _CrtSetReportMode(_CRT_ASSERT, 0);  /* Disable assert popups */
 #endif
 
-    /* Path of the running image: real GetModuleFileNameA on Windows, /proc/self/exe
-       (formatted as a Win path) via win32_shim on Linux; CreateFileA below converts
-       '\' -> '/' there, so the resulting log sits next to the executable. */
-    GetModuleFileNameA(NULL, logPath, MAX_PATH);
-    /* Replace .exe with _debug.log */
+    which = DbgScanLogSwitch(cmdLine, &val, &vlen);
+#ifndef _DEBUG
+    if (!which)
+        return;                         /* release без -log: лога нет */
+#endif
+
+    if (which == 2 && vlen < (int)sizeof(logPath))
     {
-        char *dot = strrchr(logPath, '.');
-        if (dot) *dot = 0;
+        /* -log <файл>: пишем в указанный файл. Относительный путь — от каталога
+           запуска (см. DbgScanLogSwitch). Кавычки снял токенизатор, пробелы в
+           имени пути этим токеном и собираются. */
+        memcpy(logPath, val, vlen);
+        logPath[vlen] = '\0';
     }
-    strcat(logPath, "_debug.log");
+    else
+    {
+        /* Path of the running image: real GetModuleFileNameA on Windows, /proc/self/exe
+           (formatted as a Win path) via win32_shim on Linux; CreateFileA below converts
+           '\' -> '/' there, so the resulting log sits next to the executable. */
+        GetModuleFileNameA(NULL, logPath, MAX_PATH);
+        /* Replace .exe with _debug.log */
+        {
+            char *dot = strrchr(logPath, '.');
+            if (dot) *dot = 0;
+        }
+        strcat(logPath, "_debug.log");
+    }
 
     g_hDebugLogFile = CreateFileA(logPath, GENERIC_WRITE, FILE_SHARE_READ,
         NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
-    InitializeCriticalSection(&g_DebugLogCS);
-
+    g_DbgLogOn = 1;
+    /* Текст не менять: scripts/deploy_switch.sh ищет эту строку в .nro. */
     OutputDebugStringA("[PILOTS] Debug logging started\n");
 }
 
@@ -97,6 +231,12 @@ static void DbgPrintf(const char *fmt, ...)
     char buf[2048];
     va_list ap;
     DWORD written;
+
+    /* Первым делом — выключено ли: в release без -log здесь выход до всякой
+       работы, поэтому цена выключенного лога — один вызов и один переход.
+       Разбор формата идёт только когда лог действительно пишется. */
+    if (!g_DbgLogOn)
+        return;
 
     va_start(ap, fmt);
     wvsprintfA(buf, fmt, ap);
@@ -125,6 +265,11 @@ static void DbgPrintf(const char *fmt, ...)
 
 /* Log an error */
 #define DBG_ERR(msg, ...) DbgPrintf("[PILOTS] ERROR: " msg "\n", ##__VA_ARGS__)
+
+/* Дамп регистров и стека на крахе — только debug-ветка: в release его нет и
+   с -log тоже, поэтому падения по-прежнему воспроизводятся на debug-сборке
+   (см. AGENTS.md). Сам лог при этом в release с -log уже пишется. */
+#ifdef _DEBUG
 
 #ifdef _WIN32
 /* ===== SEH Exception Handler ===== */
@@ -313,17 +458,11 @@ static void DbgInstallExceptionHandler(void)
 
 #endif /* _WIN32 */
 
-#else /* Release build - all macros become no-ops */
+#else /* !_DEBUG: дампа нет, но сам лог живой — см. DbgPrintf выше */
 
-#define DbgLogInit()                ((void)0)
-#define DbgLogClose()               ((void)0)
-#define DbgPrintf(...)              ((void)0)
+/* Единственное, что в release остаётся no-op: крах-дамп регистров/стека.
+   DBG_* и DbgPrintf в release скомпилированы и включаются ключом -log. */
 #define DbgInstallExceptionHandler() ((void)0)
-#define DBG_ENTER(func)             ((void)0)
-#define DBG_EXIT(func)              ((void)0)
-#define DBG_LOG(msg, ...)           ((void)0)
-#define DBG_MSG(msg)                ((void)0)
-#define DBG_ERR(msg, ...)           ((void)0)
 
 #endif /* _DEBUG */
 

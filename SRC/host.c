@@ -1336,9 +1336,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     POINT cursorPos;
 
     (void)hPrevInstance;
-    (void)lpCmdLine;
 
-    DbgLogInit();
+    /* -log разбирается здесь, а не в SdlBackendParseCmdLine: лог должен быть
+       открыт ещё до первого DBG_*, иначе строки про -fullscreen/-datapath
+       (они печатаются в разборе) в файл бы не попали. */
+    DbgLogInit(lpCmdLine);
     DbgInstallExceptionHandler();
     DBG_ENTER("WinMain");
 
