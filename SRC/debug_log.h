@@ -91,15 +91,40 @@ static int DbgArgIs(const char *tok, int len, const char *name)
     return len == i + 1;
 }
 
+/* Токен похож на ключ, а не на значение. «-...» — ключом бывает всегда; «/...»
+   — ключом бывает, только если за слэшем идёт одно из имён, которые вообще
+   бывают ключами (тот же список, что в SdlBackendParseCmdLine: если там
+   появится новый ключ, добавить его и сюда). Без этого списка выбор был бы
+   ложным в обе стороны: запретить любой «/...» — и «-log /tmp/журнал.log» на
+   Linux/macOS молча превращается в «-log без имени» (абсолютный posix-путь
+   начинается со слэша, файл уходит не туда); разрешить любой — и
+   «-log /fullscreen» съедает ключ вместо того, чтобы его пропустить. */
+static int DbgLooksLikeSwitch(const char *tok, int len)
+{
+    static const char *const names[] = { "fullscreen", "datapath", "log" };
+    size_t i;
+
+    if (len > 1 && tok[0] == '-')
+        return 1;
+    if (len < 2 || tok[0] != '/')
+        return 0;
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+    {
+        if (DbgArgIs(tok, len, names[i]))
+            return 1;
+    }
+    return 0;
+}
+
 /* Ключ -log [файл]. Возвращает:
  *   0 — ключа нет (в release лог не пишется вовсе, в debug это ничего не меняет);
  *   1 — ключ есть, имени файла нет: пишем как обычно, <имя образа>_debug.log;
  *   2 — ключ есть с именем файла: пишем в него.
- * Имя берётся, только если следующий токен не начинается с - или /: иначе
- * «-log -fullscreen» создал бы файл с именем «-fullscreen», а ключ остался бы
- * неразобранным. Относительный путь разрешается от каталога запуска, а не от
- * каталога данных: -log читается в DbgLogInit, то есть раньше, чем -datapath
- * может сменить рабочий каталог. */
+ * Имя берётся, только если следующий токен не похож на ключ (см.
+ * DbgLooksLikeSwitch): иначе «-log -fullscreen» создал бы файл с именем
+ * «-fullscreen», а ключ остался бы неразобранным. Относительный путь
+ * разрешается от каталога запуска, а не от каталога данных: -log читается в
+ * DbgLogInit, то есть раньше, чем -datapath может сменить рабочий каталог. */
 static int DbgScanLogSwitch(const char *cmdLine, const char **val, int *len)
 {
     const char *p = cmdLine;
@@ -121,7 +146,7 @@ static int DbgScanLogSwitch(const char *cmdLine, const char **val, int *len)
         if (!DbgArgIs(tok, tlen, "log"))
             continue;
         look = p;
-        if (DbgNextToken(&look, &v, &vlen) && vlen > 0 && v[0] != '-' && v[0] != '/')
+        if (DbgNextToken(&look, &v, &vlen) && vlen > 0 && !DbgLooksLikeSwitch(v, vlen))
         {
             *val = v;
             *len = vlen;

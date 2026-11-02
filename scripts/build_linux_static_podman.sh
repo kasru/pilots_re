@@ -29,6 +29,12 @@
 # build64 are: both produce a file called PILOTS_RE_x64 and a debug binary must
 # never be mistaken for the release one. The release file is stripped (8.4 MB
 # -> 3.9 MB, measured); the debug one is not.
+#
+# If you rebuilt the IMAGE (different base, different glibc), run `clean` first:
+# CMake cannot see a toolchain change and will happily relink objects the old
+# image compiled - the result then carries the OLD image's glibc floor, which is
+# exactly the bug this script's floor check exists to catch (measured: a
+# bullseye rebuild on top of bookworm objects came out needing GLIBC_2.36).
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -73,9 +79,15 @@ build() {
         too_new=\$(objdump -T '$builddir/PILOTS_RE_x64' | grep -o 'GLIBC_[0-9.]*' \
             | sed 's/^GLIBC_//' | sort -Vu \
             | awk -F. '\$1 > 2 || (\$1 == 2 && \$2 > 31)')
-        if [ -n "\$too_new" ]; then
-            echo "error: needs glibc above 2.31: \$too_new" >&2
-            echo "       the release promises Debian 11 / Ubuntu 20.04 - see Containerfile.static" >&2
+        # Внимание на кавычки: весь этот текст лежит внутри строки sh -c,
+        # поэтому двойные кавычки здесь должны быть экранированы: неэкранированная
+        # обрывает саму строку у outer-shell, inner sh получает обрезанный
+        # скрипт и падает на 'end of file unexpected (expecting fi)', а strip
+        # ниже просто не выполняется. Кавычки нельзя и в комментариях: они
+        # закрывают строку ровно так же.
+        if [ -n \"\$too_new\" ]; then
+            echo \"error: needs glibc above 2.31: \$too_new\" >&2
+            echo \"       the release promises Debian 11 / Ubuntu 20.04 - see Containerfile.static\" >&2
             exit 1
         fi
         # The release asset is stripped: a static link of SDL2 and libav*

@@ -69,6 +69,27 @@ RUN sed -i -e 's|deb.debian.org/debian|archive.debian.org/debian|g' \
       libxkbcommon-dev libwayland-dev libdrm-dev libgbm-dev \
  && rm -rf /var/lib/apt/lists/*
 
+# Debian 11 ships CMake 3.18, and CMAKE_C_STANDARD 17 only became a legal value
+# in CMake 3.21 - the configure step fails with "C_STANDARD is set to invalid
+# value '17'" otherwise, and the project needs C17 (game_globals_struct.h
+# relies on () not meaning (void), see CMakeLists.txt). So the image carries its
+# own CMake from the official binary tarball, pinned by version AND SHA-256
+# like everything else here. The binary is x86_64 and self-contained, which is
+# the whole point of taking it from upstream rather than from a newer distro.
+ARG CMAKE_VERSION=3.27.9
+ARG CMAKE_SHA256=72b01478eeb312bf1a0136208957784fe55a7b587f8d9f9142a7fc9b0b9e9a28
+
+RUN cd /tmp \
+ && curl -fsSL -o cmake.tar.gz \
+      "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
+ && echo "${CMAKE_SHA256}  cmake.tar.gz" | sha256sum -c - \
+ && tar xf cmake.tar.gz \
+ && mv "cmake-${CMAKE_VERSION}-linux-x86_64" /opt/cmake \
+ && rm cmake.tar.gz \
+ && /opt/cmake/bin/cmake --version
+
+ENV PATH=/opt/cmake/bin:$PATH
+
 # SDL2 2.26.5: the version every Linux build of the port has run against. Only
 # the backends the -dev packages above provide get compiled in (X11, Wayland,
 # KMSDRM, ALSA, PulseAudio, dummy); jack, pipewire and libdecor are absent by
