@@ -43,6 +43,14 @@ rem в заголовках SDL при /W4 /WX; /external:I добавляет �
 set SDL2=%~dp0..\third_party\SDL2
 
 pushd "%~dp0"
+rem VERSIONINFO в pilots.rc один на обе архитектуры, но имена файлов в нём
+rem разные — x64-сборка отмечает себя определением PILOTS_X64, иначе
+rem OriginalFilename в свойствах файла соврал бы про имя на диске. Без
+rem pilots.ico ресурс тоже должен собраться: PILOTS_NO_ICON гасит только
+rem ICON-строку, а версия от наличия картинки не зависит.
+set RCDEF=
+if /i "%ARCH%"=="x64" set RCDEF=/d PILOTS_X64
+if not exist "pilots.ico" set RCDEF=%RCDEF% /d PILOTS_NO_ICON
 rem Один каталог вывода на архитектуру: x86 и x64 иначе перетирают друг друга
 rem (общая SDL2.dll лежит в обоих), и запустить можно только последнюю сборку.
 if not exist "%OUTDIR%" mkdir "%OUTDIR%"
@@ -58,7 +66,7 @@ if /i "%1"=="debug" (
 cl /nologo /std:c17 /W4 /WX /utf-8 /D_CRT_SECURE_NO_WARNINGS %CFLAGS% /external:W0 /external:I "%SDL2%\include" /Fo"%OUTDIR%\\" /Fd"%OUTDIR%\\" /c *.c
 if errorlevel 1 goto :fail
 
-rc /nologo /fo "%OUTDIR%\pilots.res" pilots.rc
+rc /nologo %RCDEF% /fo "%OUTDIR%\pilots.res" pilots.rc
 if errorlevel 1 goto :fail
 
 link /nologo /OUT:"%OUTDIR%\%EXENAME%" /SUBSYSTEM:WINDOWS /MACHINE:%MACH% %LNKPLAT% %LFLAGS% /LIBPATH:"%SDL2%\lib\%ARCH%" ^

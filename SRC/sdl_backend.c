@@ -12,6 +12,7 @@
  * Host_Flush после уже показанного кадра становится no-op.
  */
 #include "gm.h"
+#include "version.h"    /* PILOTS_VERSION/PILOTS_DESCRIPTION: ключ -version */
 
 /* WinMain наш, SDL_main не нужен: объявляем управление главной функцией сами. */
 #define SDL_MAIN_HANDLED
@@ -1228,6 +1229,25 @@ int SdlBackendDataPathGiven(void)
     return s_DataPathGiven;
 }
 
+/* -version: назвать версию и выйти. Нужен тем платформам, где системы ресурсов
+   нет вовсе (Linux: у ELF нет VERSIONINFO, macOS — только Info.plist, который
+   без otool не виден): GNU-стандарт для такого случая — флаг с версией, и он
+   же даёт проверяемый признак того, что в бинарник версия попала. На Windows
+   у GUI-подсистемы stdout недоступен, поэтому окно. */
+static void SdlShowVersion(void)
+{
+    char text[512];
+
+    snprintf(text, sizeof text, "%s\nversion %s", PILOTS_DESCRIPTION, PILOTS_VERSION);
+#ifdef _WIN32
+    MessageBoxA(NULL, text, "PILOTS_RE", MB_OK | MB_ICONINFORMATION);
+#else
+    fputs(text, stdout);
+    fputc('\n', stdout);
+#endif
+    exit(0);
+}
+
 /* Разбор командной строки: -fullscreen и -datapath <каталог>. Зовётся из
    WinMain (host.c) ДО того, как движок открыл хоть один файл — именно это
    и делает -datapath работающим. На консоли командной строки нет вовсе,
@@ -1246,7 +1266,9 @@ void SdlBackendParseCmdLine(const char *cmdLine)
         {
             if (len <= 1 || (tok[0] != '-' && tok[0] != '/'))
                 continue;
-            if (SdlArgIs(tok, len, "fullscreen"))
+            if (SdlArgIs(tok, len, "version"))
+                SdlShowVersion();
+            else if (SdlArgIs(tok, len, "fullscreen"))
                 found = 1;
             else if (SdlArgIs(tok, len, "datapath"))
             {

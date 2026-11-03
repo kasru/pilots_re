@@ -98,6 +98,7 @@ hbmenu, командной строки на консоли нет.
 | `-fullscreen` | запуститься сразу в полноэкранном режиме |
 | `-datapath <каталог>` | взять данные игры из указанного каталога |
 | `-log [файл]` | записывать журнал работы: с именем файла — в него, без имени — в `<имя exe>_debug.log` |
+| `-version` | показать описание и версию и выйти (окно на Windows, строка в stdout на остальных) |
 
 > [!NOTE]
 > В release-сборке журнала по умолчанию нет вообще — ни файла, ни строк; включает его только ключ
@@ -174,6 +175,12 @@ hbmenu, командной строки на консоли нет.
 | Linux x86_64, самодостаточный | `sh scripts/build_linux_static_podman.sh` | `build-static/PILOTS_RE_x64` |
 | Nintendo Switch | `sh scripts/build_switch_podman.sh debug` | `build-switch-dbg/PILOTS_RE.nro` |
 | macOS i386 | `cmake -S . -B build-mac32 -DCMAKE_OSX_ARCHITECTURES=i386 -DCMAKE_OSX_SYSROOT=/ -DPILOTS_STATIC_SDL2=ON` | `build-mac32/PILOTS_RE` |
+| Релиз (архивы) | `pwsh scripts\make_release_archives.ps1 -Dist <каталог> -Out <куда>` | `pilots-re_<версия>_<платформа>.zip/.tar.gz` |
+
+Собранные бинарники складываются в каталоги по платформам (`x64/`, `x86/`, `linux/`, `linux386/`,
+`mac/`, `switch/`) и одной командой превращаются в архивы релиза: версия в именах берётся из
+`SRC/version.h`, в каждый архив идут `README.md` и `LICENSE`, а `.zip` создаётся без сжатия —
+такой читает браузер установщика без inflate.
 
 Обычная Linux-сборка использует системные SDL2 и ffmpeg. Самодостаточная (`build-static`, она же
 лежит в релизе) вшивает их в один файл: скачанный `PILOTS_RE_x64` запускается на любом десктопном

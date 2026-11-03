@@ -1,2 +1,55 @@
-/* Ресурсы программы: значок окна (номер HOST_ICON_RESOURCE в host.c). */
+/* Ресурсы пересобранного движка: иконка и VERSIONINFO.
+
+   pilots.ico — собственная графика этого проекта (пропеллер в кольце,
+   генерируется scripts/make_icons.ps1), лежит в репозитории; игра и её
+   ресурсы сюда не входят. Без файла иконки сборка не падает: сборщик передаёт
+   PILOTS_NO_ICON, и гасится только ICON-строка — VERSIONINFO остаётся всегда,
+   потому что версия не должна зависеть от наличия картинки.
+
+   Один .rc на обе архитектуры, но exe разные, поэтому x64-сборка передаёт
+   /d PILOTS_X64: без него OriginalFilename в свойствах файла соврал бы про
+   имя, под которым игра реально лежит на диске. */
+
+#include <windows.h>
+#include "version.h"
+
+#ifdef PILOTS_X64
+#define ORIGINAL_FILENAME "PILOTS_RE_x64.EXE"
+#define INTERNAL_NAME     "PILOTS_RE_x64"
+#else
+#define ORIGINAL_FILENAME "PILOTS_RE.EXE"
+#define INTERNAL_NAME     "PILOTS_RE"
+#endif
+
+#ifndef PILOTS_NO_ICON
 100 ICON "pilots.ico"
+#endif
+
+/* Ни LegalCopyright, ни CompanyName: это реконструкция, а не продукт, и
+   авторство оригинала не наше, чтобы его называть. */
+1 VERSIONINFO
+ FILEVERSION    1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"    /* U.S. English, Unicode */
+        BEGIN
+            VALUE "FileDescription",    PILOTS_DESCRIPTION
+            VALUE "FileVersion",        PILOTS_VERSION
+            VALUE "InternalName",       INTERNAL_NAME
+            VALUE "OriginalFilename",   ORIGINAL_FILENAME
+            VALUE "ProductName",        "Pilots"
+            VALUE "ProductVersion",     PILOTS_VERSION
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

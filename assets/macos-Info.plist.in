@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Метаданные, которые CMake вшивает в голый Mach-O через
+  ld -sectcreate __TEXT,__info_plist (бандла .app у нас нет, поэтому это
+  единственное место, где macOS ждёт такие сведения). Читается так:
+
+      otool -s __TEXT __info_plist PILOTS_RE
+
+  @PILOTS_VERSION@ подставляется из SRC/version.h при configure — того же
+  файла, что читает rc.exe для VERSIONINFO на Windows.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.kasru.pilots-re</string>
+    <key>CFBundleName</key>
+    <string>PILOTS_RE</string>
+    <key>CFBundleDisplayName</key>
+    <string>Братья Пилоты</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@PILOTS_VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@PILOTS_VERSION@</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <!-- 10.13/10.14 — последние macOS с поддержкой 32-битных программ,
+         а наш бинарь именно 32-битный (движок хранит адреса в int32). -->
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Reconstruction of the 1997 game engine. Game data is not included.</string>
+</dict>
+</plist>
